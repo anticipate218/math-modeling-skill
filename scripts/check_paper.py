@@ -107,6 +107,16 @@ ABSTRACT_INGREDIENTS = {
     "关键词": [r"关键词", r"关键字"],
 }
 
+# 美赛 Summary Sheet 用英文，且官方并未要求关键词——因此单独一套要素，且不含关键词
+MCM_INGREDIENTS = {
+    "problem/goal": [r"\bproblem\b", r"\bwe\s+(?:address|consider|study|model|solve|examine)",
+                     r"\bgoal\b", r"\bobjective\b"],
+    "method/model": [r"\bmodels?\b", r"\bmethods?\b", r"\balgorithm", r"\bregression\b",
+                     r"\bsimulation\b", r"\boptimi", r"\bnetwork"],
+    "results/conclusions": [r"\bresults?\b", r"\bconclude", r"\bwe\s+find", r"\boptimal\b",
+                            r"\baccurac", r"\berror", r"\bimprov"],
+}
+
 PROGRAM_DECLARATIONS = [
     r"本论文没有用到程序",
     r"没有用到程序",
@@ -177,9 +187,10 @@ def check_sections(text: str, contest: str) -> list[Finding]:
 def check_abstract(text: str, contest: str) -> list[Finding]:
     findings: list[Finding] = []
     plain = strip_code_blocks(text)
-    # 摘要区块：从"摘要/Summary"到下一个标题（Markdown 标题或中文序号标题）
+    # 摘要区块：必须是"行首标题"（可带 # 或 ** 标记），避免被正文中提到"摘要页"之类的字样抢先匹配
     m = re.search(
-        r"(?:摘\s*要|summary|abstract)\s*[:：]?\s*\n?(.*?)(?=\n\s*#{1,4}\s|\n\s*[一二三四五六七八九十]+\s*、|\Z)",
+        r"(?:^|\n)[ \t]*(?:[#*]{0,4}[ \t]*)?(?:摘\s*要|summary|abstract)[ \t]*[:：]?[ \t]*\n?(.*?)"
+        r"(?=\n\s*#{1,4}\s|\n\s*[一二三四五六七八九十]+\s*、|\Z)",
         plain, re.IGNORECASE | re.DOTALL)
     if not m:
         # 摘要标题缺失由 structure 检查负责，这里只做提示
@@ -201,14 +212,15 @@ def check_abstract(text: str, contest: str) -> list[Finding]:
                                     "国赛规范要求摘要原则上不超过一页（含标题与关键词）。"))
         else:
             findings.append(Finding("INFO", "abstract-length", f"摘要约 {chars} 字"))
-    missing = [k for k, pats in ABSTRACT_INGREDIENTS.items()
+    ingredients = MCM_INGREDIENTS if contest == "mcm" else ABSTRACT_INGREDIENTS
+    missing = [k for k, pats in ingredients.items()
                if not any(re.search(p, body, re.IGNORECASE) for p in pats)]
     if missing:
         findings.append(Finding("FAIL", "abstract-ingredients",
                                 "摘要缺少要素：" + "、".join(missing),
                                 "摘要必须让评委在 1 分钟内看到：问题→方法→结果→结论。"))
     else:
-        findings.append(Finding("INFO", "abstract-ingredients", "摘要四要素齐备"))
+        findings.append(Finding("INFO", "abstract-ingredients", "摘要要素齐备"))
     return findings
 
 
@@ -560,6 +572,193 @@ def solve():
 ]
 
 
+SCAFFOLD_CUMCM = """# 【论文题目：一句话，含方法或结论】
+
+## 摘要
+
+针对问题一，【一句话说明要解决的问题】，本文建立【模型名称】模型，求得【关键结果：数值 + 单位】，
+相对误差约【x%】。
+
+针对问题二，【……】。针对问题三，【……】。
+
+本文的创新点在于【一句话】；灵敏度分析表明在【扰动范围】内【结论是否稳定】。
+
+关键词：【关键词1】；【关键词2】；【关键词3】；【关键词4】
+
+---
+
+## 一、问题重述
+
+用自己的语言复述背景、已知条件与待求目标。**不要直接复制题面文字**。
+
+## 二、问题分析
+
+### 2.1 问题一的分析
+### 2.2 问题二的分析
+### 2.3 问题三的分析
+
+## 三、模型假设
+
+- **假设 1**：【内容】。理由：【依据】。对模型的影响：【影响】。
+- **假设 2**：【内容】。理由：【依据】。对模型的影响：【影响】。
+
+（建议 3–6 条，每条都要有"理由 + 对模型的影响"，不要只列结论）
+
+## 四、符号说明
+
+| 符号 | 含义 | 单位 |
+| --- | --- | --- |
+| $x_i$ | 【含义】 | 【单位】 |
+
+## 五、模型的建立与求解
+
+### 5.1 问题一：模型的建立与求解
+
+【为什么选这个模型（动机）、与替代方案的对比、公式推导、求解算法】
+
+求解结果见图 1 与表 1。
+
+### 5.2 问题二：模型的建立与求解
+### 5.3 问题三：模型的建立与求解
+
+## 六、结果分析与检验
+
+【误差分析 / 与朴素基线的对比 / 灵敏度分析（扰动的是你自己做的假设）/ 稳健性讨论】
+
+- 图 1【图题，含单位与刻度说明】
+- 表 1【表题，含单位】
+
+对比结果表明【结论】；图 1 显示【趋势】，表 1 给出具体数值。
+
+## 七、模型的评价与改进
+
+**优点**：【……】　**缺点**：【……】　**改进方向**：【……】
+
+## AI 工具使用声明
+
+本参赛队在竞赛过程中未使用任何AI工具。
+
+> 若实际使用了 AI（辅助编程、数据分析、润色等），这一句必须按官方两种表述之一改写，
+> 并在支撑材料中附《AI工具使用详情.pdf》。详见 references/checklists.md。
+> 本声明必须位于**参考文献之前**。
+
+## 参考文献
+
+[1] 姜启源, 谢金星, 叶俊. 数学模型（第五版）. 北京: 高等教育出版社, 2018: 1-50.
+[2] 【作者】. 【题名】. 【期刊名】, 2023, 53(4): 12-20.
+[3] 【作者】. 【题名】. 【网址】, 2025-01-01.
+
+## 附录
+
+### 支撑材料文件列表
+
+- `code/q1.py`：问题一求解程序
+- `data/raw.csv`：原始数据
+
+（若确实没有支撑材料，请写"本论文没有支撑材料"）
+
+### 程序代码
+
+```python
+# 在此粘贴与论文结果一致的完整、可直接运行的源程序
+```
+"""
+
+SCAFFOLD_MCM = """# Summary
+
+We address the problem of 【what you are asked to do】. We develop a 【model/method】 based on
+【approach】, and we find 【key result with numbers】, with an error of 【x%】. We conclude that
+【decision-relevant conclusion】.
+
+（Summary Sheet 必须**单页、≥12pt**，置于全文第 1 页；官方 FAQ 明言评委不太可能读一份糟糕摘要之后的内容。
+建议写 250–400 词，**最后写**、反复迭代。目录可选但计入 25 页。）
+
+## Introduction
+
+Restate the problem in your own words — do not copy the problem statement. See [1].
+
+## Assumptions and Justifications
+
+- **Assumption 1**: 【...】 Justification: 【...】 Impact on the model: 【...】
+
+## Notations
+
+| Symbol | Meaning | Unit |
+| --- | --- | --- |
+| $x_i$ | 【...】 | 【...】 |
+
+## Model Development
+
+【Motivation for this model, comparison with alternatives; long derivations go to the Appendix】
+
+## Results
+
+【Figures and tables, each referenced and explained in the text】 See Figure 1 and Table 1.
+
+## Sensitivity Analysis
+
+【Error analysis, conditioning, and sensitivity of the results to your own assumptions】
+Figure 1 shows the sensitivity curve; Table 1 lists the perturbed results.
+
+## Strengths and Weaknesses
+
+**Strengths**: 【...】 **Weaknesses**: 【...】
+
+## Conclusions
+
+【Explicit answers to every question asked, with numbers】
+
+## References
+
+[1] 【Author】. 【Title】. 【Journal】, 2023, 53(4): 12-20.
+
+## Appendix
+
+```python
+# Complete, runnable code that reproduces every number in the report
+```
+
+## Report on Use of AI
+
+We did not use AI tools. 【If AI was used: name the tool and version, state the purpose, add inline
+citations, and verify all output. This section goes AFTER the 25-page solution and does not count
+toward the page limit.】"""
+
+SCAFFOLDS = {"cumcm": SCAFFOLD_CUMCM, "yjs": SCAFFOLD_CUMCM,
+             "mcm": SCAFFOLD_MCM, "generic": SCAFFOLD_CUMCM}
+
+SCAFFOLD_HEADERS = {
+    "cumcm": "<!-- 国赛 CUMCM：电子版第 1 页必须是摘要页（不要放承诺书与编号专用页）；正文 ≤30 页；"
+             "附录须含全部完整可运行源程序。 -->\n\n",
+    "yjs": "<!-- 研赛（华为杯）：没有承诺书与编号专用页，摘要页即第 1 页；摘要 ≤2 页；"
+           "全篇不得有页眉与身份信息。 -->\n\n",
+    "mcm": "<!-- MCM/ICM：全篇 ≤25 页（含摘要页、目录、参考文献、附录与代码）；"
+           "每页页眉必须含队号与页码。 -->\n\n",
+    "generic": "<!-- 数学建模论文骨架（通用）。 -->\n\n",
+}
+
+
+def scaffold(contest: str) -> str:
+    """返回对应竞赛的论文骨架（Markdown）。生成的骨架本身应当不含任何 FAIL。"""
+    return SCAFFOLD_HEADERS.get(contest, SCAFFOLD_HEADERS["generic"]) + SCAFFOLDS.get(
+        contest, SCAFFOLD_CUMCM)
+
+
+def init_paper(contest: str, out: str | None) -> int:
+    text = scaffold(contest)
+    if out == "-":
+        print(text)
+        return 0
+    target = Path(out) if out else Path(f"paper-{contest}.md")
+    if target.exists():
+        print(f"错误：{target} 已存在，为避免覆盖已停止；请用 --out 指定其它路径。", file=sys.stderr)
+        return 2
+    target.write_text(text, encoding="utf-8")
+    print(f"已生成论文骨架：{target}（竞赛：{contest}）")
+    print(f"下一步：填写完成后运行  python scripts/check_paper.py {target} --contest {contest}")
+    return 0
+
+
 def self_test() -> int:
     failures = 0
     for name, contest, text in SELF_TEST_CASES:
@@ -573,6 +772,15 @@ def self_test() -> int:
             print(f"[self-test] 预期不符：{name} 期望 FAIL={expected_fail}，实际 {bool(fails)}",
                   file=sys.stderr)
             failures += 1
+    # 骨架自检：生成的模板本身不应出现任何 FAIL，否则用户一开局就被判不合格
+    for contest in ("cumcm", "yjs", "mcm"):
+        skeleton_fails = [f for f in run_checks(scaffold(contest), contest) if f.level == "FAIL"]
+        if skeleton_fails:
+            print(f"[self-test] 骨架 {contest} 出现 FAIL："
+                  + "; ".join(f"{f.code}: {f.message}" for f in skeleton_fails), file=sys.stderr)
+            failures += 1
+        else:
+            print(f"[self-test] 骨架 {contest}: FAIL=0")
     if failures:
         print(f"[self-test] 失败 {failures} 项", file=sys.stderr)
         return 1
@@ -597,9 +805,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--contest", choices=sorted(SECTION_RULES), default="cumcm",
                         help="竞赛类型：cumcm=国赛，yjs=研赛，mcm=美赛，generic=通用（默认 cumcm）")
     parser.add_argument("--json", action="store_true", help="以 JSON 输出结果")
+    parser.add_argument("--init", action="store_true",
+                        help="生成该竞赛的论文骨架（用 --out 指定路径，默认 paper-<contest>.md）")
+    parser.add_argument("--out", default=None, help="--init 的输出路径；用 - 打印到标准输出")
     parser.add_argument("--self-test", action="store_true", help="运行内置固件自检并退出")
     args = parser.parse_args(argv)
 
+    if args.init:
+        return init_paper(args.contest, args.out)
     if args.self_test:
         return self_test()
     if not args.paper:

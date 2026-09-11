@@ -1,0 +1,70 @@
+name: Bug 报告 / 检查误报
+description: 脚本输出不符合预期、文档有误、或自检工具误判
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: dropdown
+    id: component
+    attributes:
+      label: 问题组件
+      options:
+        - scripts/check_paper.py
+        - scripts/validate_skill.py
+        - references/ 文档
+        - SKILL.md
+        - 其它
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: 问题描述
+      description: 期望行为 vs 实际行为
+      placeholder: |
+        **期望**：check_paper.py 应判定为 FAIL=0
+        **实际**：报告 FAIL abstract-ingredients: 摘要缺少要素：关键词
+        **原因**：我的摘要含"Keywords: ..."，但检查器只识别中文"关键词"
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 复现步骤
+      description: 附最小可复现示例（如论文片段、命令行）
+      placeholder: |
+        1. 创建文件 test.md，内容为：
+           ```
+           ## Abstract
+           Keywords: optimization, model
+           ```
+        2. 运行 `python scripts/check_paper.py test.md --contest mcm`
+        3. 输出：FAIL abstract-ingredients: 摘要缺少要素：关键词
+      render: markdown
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: 使用的版本
+      description: Git commit SHA 或 Release 版本号
+      placeholder: "v1.2.0 / commit abc1234"
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: 依据（若报告文档错误）
+      description: 附官方文件链接或权威来源，说明正确的应该是什么
+      placeholder: "根据《2026 年国赛格式规范》第 X 条原文：……"
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 我已附上最小可复现示例
+          required: true
+        - label: 我已搜索过 Issues，确认不是重复报告
+          required: true

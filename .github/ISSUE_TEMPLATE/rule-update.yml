@@ -1,0 +1,66 @@
+name: 规则更新 / 官方文件变更
+description: 竞赛组织方发布了新规则、修订了格式规范、或更新了 AI 使用政策
+title: "[规则更新] "
+labels: ["rule-update"]
+body:
+  - type: dropdown
+    id: contest
+    attributes:
+      label: 涉及竞赛
+      options:
+        - 国赛 CUMCM
+        - 研赛 华为杯
+        - 美赛 MCM/ICM
+        - 多个竞赛
+    validations:
+      required: true
+
+  - type: input
+    id: source
+    attributes:
+      label: 官方文件链接
+      description: 必须是官网、官方公众号、或国家级媒体报道
+      placeholder: "https://..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: change
+    attributes:
+      label: 变更内容
+      description: |
+        对比新旧版本，说明哪些条款变了（附条款号与原文）。
+        示例：
+        - 旧：《2025 年格式规范》第 3 条"摘要不超过一页"
+        - 新：《2026 年格式规范》第 3 条"摘要原则上不超过一页"（新增"原则上"）
+      placeholder: "- 旧：……\n- 新：……"
+    validations:
+      required: true
+
+  - type: textarea
+    id: impact
+    attributes:
+      label: 影响范围
+      description: 需要更新本仓库的哪些文件？（如 contests.md、check_paper.py、checklists.md）
+      placeholder: "- references/contests.md: 第 X 行需改为……\n- scripts/check_paper.py: AI 声明检查逻辑需调整……"
+    validations:
+      required: true
+
+  - type: input
+    id: effective-date
+    attributes:
+      label: 生效时间
+      description: 从哪一届/哪一年开始适用？
+      placeholder: "2026 年国赛起 / 2027 年美赛起"
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 我已附上官方文件链接（不是二手转述或社区贴）
+          required: true
+        - label: 我已对比新旧版本，给出具体条款号与原文
+          required: true

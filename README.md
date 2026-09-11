@@ -11,6 +11,51 @@
 
 > 它不是一个"自动写论文"的工具，而是一位**懂规则、懂评阅、懂建模流程的教练**：帮你审题选题、选对模型、把检验做扎实、把论文写到规范里，并在提交前逐项卡住那些"会直接出局"的红线。
 
+**English**: An agent skill for mathematical modeling competitions (China Undergraduate/Graduate MCM and COMAP MCM/ICM), providing workflow coaching from problem analysis to submission compliance, grounded in official rules and award-winning paper practices.
+
+---
+
+## 目录
+
+- [快速开始](#快速开始)
+- [为什么需要它](#为什么需要它)
+- [安装](#安装)
+- [它会做什么](#它会做什么)
+- [质量保障](#质量保障)
+- [仓库结构](#仓库结构)
+- [AI 使用合规](#一个重要提醒ai-使用的合规)
+- [资料可信度约定](#资料可信度约定)
+- [与同类项目的关系](#与同类项目的关系)
+- [免责声明](#免责声明)
+- [License](#license)
+
+---
+
+## 快速开始
+
+```bash
+# 1. 生成论文骨架（选择你的竞赛）
+python scripts/check_paper.py --init --contest cumcm -o my_paper.md
+
+# 2. 填写【占位符】提示的内容
+
+# 3. 边写边自检
+python scripts/check_paper.py my_paper.md --contest cumcm
+```
+
+**示例输出**（FAIL=0 即可提交）：
+```
+论文自检报告 — my_paper.md（cumcm）
+结果：FAIL 0 项，WARN 2 项
+
+[INFO] structure: 必备章节齐全（10 项）
+[INFO] abstract-ingredients: 摘要要素齐备
+[INFO] anonymity: 未检出疑似身份信息
+[WARN] references: 参考文献仅 3 条，偏少
+[INFO] ai-disclosure: AI 工具使用声明存在（声明为：未使用）
+[INFO] validation: 存在结果验证/误差分析
+```
+
 ---
 
 ## 为什么需要它
@@ -114,12 +159,18 @@ math-modeling-skill/
 │   ├── checklists.md             # 提交前自检清单（通用 / AI 合规 / 三赛事各自专用）
 │   └── templates.md              # LaTeX 模板选型、编译、图表与参考文献排版规范
 ├── scripts/
-│   ├── check_paper.py            # 论文自检工具（纯标准库，非交互，支持 --json/--self-test）
+│   ├── check_paper.py            # 论文自检工具（纯标准库，非交互，支持 --json/--self-test/--init）
 │   └── validate_skill.py         # 技能结构校验（frontmatter / 篇幅 / 文件引用）
 ├── assets/
-│   └── abstract-template.md      # 摘要模板：中文（国赛/研赛）+ 英文 Summary Sheet（美赛）
+│   ├── abstract-template.md      # 摘要模板：中文（国赛/研赛）+ 英文 Summary Sheet（美赛）
+│   ├── cheatsheet.md             # 一页纸红线清单（可打印，提交前 30 分钟核对）
+│   └── paper-outline.md          # 可填空论文骨架（三赛事，含占位符提示）
 ├── evals/                        # 触发评测与行为用例（含 near-miss 负例）
-├── .github/workflows/ci.yml      # 持续集成
+├── .github/
+│   ├── workflows/ci.yml          # 持续集成
+│   └── ISSUE_TEMPLATE/           # Issue 模板（规则更新 / Bug 报告）
+├── CONTRIBUTING.md               # 贡献指南（规则追踪项目的特殊要求）
+├── CITATION.cff                  # 引用元数据
 ├── README.md
 ├── CHANGELOG.md
 └── LICENSE
@@ -166,10 +217,14 @@ math-modeling-skill/
 
 写作本技能时参考并致谢以下公开项目与资料（各自版权归原作者）：
 
-- [latexstudio/CUMCMThesis](https://github.com/latexstudio/CUMCMThesis) —— 国赛 LaTeX 论文模板（社区维护，已适配最新格式）。
+- [latexstudio/CUMCMThesis](https://github.com/latexstudio/CUMCMThesis) —— 国赛 LaTeX 论文模板（已适配 2026 年格式，含 AI 声明书）。
+- [redefine0130/GMCMthesis-LaTeX-Template](https://github.com/redefine0130/GMCMthesis-LaTeX-Template) —— 研赛 LaTeX 模板。
+- [latexstudio-org/mcmthesis](https://github.com/latexstudio-org/mcmthesis) —— 美赛 LaTeX 模板（CTAN 事实标准）。
 - [handsomeZR-netizen/mathmodel-skill](https://github.com/handsomeZR-netizen/mathmodel-skill)、[LiXiang106991/MathModelAgent](https://github.com/LiXiang106991/MathModelAgent) —— 面向数学建模的 AI 技能/Agent 实践，本项目的参考资料之一（未复制其内容）。
 - [agentskills.io](https://agentskills.io/specification) —— Agent Skills 开放标准（格式规范与写作方法论的依据）。
 - 各竞赛官方文件：全国大学生数学建模竞赛官网、中国研究生创新实践系列大赛平台、COMAP 官方竞赛规则。
+
+语料统计参考：[yuanchen-home/cumcm-step-review](https://github.com/yuanchen-home/cumcm-step-review) 的 64 篇国赛获奖论文结构分析。
 
 本仓库内容为独立撰写。若你认为某处引用不当，欢迎提 issue。
 

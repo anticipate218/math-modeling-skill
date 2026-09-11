@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 快速问题（非 Bug / 规则更新）
+    url: https://github.com/anticipate218/math-modeling-skill/discussions
+    about: 使用问题、功能建议等请到 Discussions

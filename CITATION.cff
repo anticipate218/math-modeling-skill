@@ -1,0 +1,20 @@
+cff-version: 1.2.0
+message: "如果本技能对你的研究或项目有帮助，请按以下方式引用："
+title: "math-modeling-skill"
+abstract: "面向 AI 助手的数学建模竞赛技能：覆盖国赛 CUMCM / 研赛华为杯 / 美赛 MCM-ICM 的选题、建模、检验与论文写作自检。"
+type: software
+authors:
+  - family-names: "DSH Agent"
+    given-names: ""
+    affiliation: "DeepSeek Harness"
+repository-code: "https://github.com/anticipate218/math-modeling-skill"
+license: MIT
+version: "1.2.0"
+date-released: 2026-09-11
+keywords:
+  - mathematical-modeling
+  - agent-skills
+  - cumcm
+  - mcm-icm
+  - competition
+  - paper-writing

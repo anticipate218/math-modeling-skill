@@ -1,6 +1,33 @@
 # Changelog
 
-本文件记录本技能的主要变更。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
+本文件记录本项目的所有重要变更，遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/) 格式。
+
+## [1.2.0] - 2026-09-11
+
+### 新增
+- **`scripts/check_paper.py --init`**：生成对应竞赛的论文骨架（Markdown，自带所有必备章节与占位符提示）
+- **`assets/cheatsheet.md`**：一页纸红线清单（可打印，提交前 30 分钟核对；覆盖三赛事通用红线 + 专项硬规则）
+- **`assets/paper-outline.md`**：可填空论文骨架（国赛/研赛/美赛三套，含占位符与"此处必须出现数值"提示）
+- **`CITATION.cff`**：引用元数据（GitHub 显示"Cite this repository"）
+- **`CONTRIBUTING.md`**：贡献指南（规则追踪项目的特殊要求：每条规定必须标注来源，官方未公布的不编造）
+- **`.github/ISSUE_TEMPLATE/`**：Issue 模板（规则更新 / Bug 报告 / config.yml）
+
+### 改进
+- **`scripts/check_paper.py`**：
+  - 新增 **单位混用检测**（小时 vs 分钟、万元 vs 元、千米 vs 米）
+  - 新增 **图表未引用警告**（图 1 只出现一次 → WARN "可能未在正文引用"）
+  - 新增 **参考文献格式粗检**（条目数、年份缺失、GB/T 7714 风格）
+  - **修正美赛摘要要素检查**：改用英文模式（problem/goal、method/model、results/conclusions），不再要求 keywords（MCM 官方未要求），不再误判英文 Summary 缺要素
+  - **修正摘要区块识别正则**：要求"摘要/Summary"必须是行首标题，避免被文件头注释中的"摘要页"字样抢先匹配
+  - 骨架自检：生成的模板本身不应出现任何 FAIL（用户一开局就有 FAIL=0 的起点）
+- **`README.md`**：新增英文摘要、目录、快速开始示例输出、致谢项目补充
+
+### 设计依据
+- **骨架生成 `--init`**：形成"生成 → 填写 → 自检"闭环，用户从 FAIL=0 起步而非从空白页起步
+- **一页纸清单**：参考飞行检查单（checklist）理念，打印后贴在电脑旁，提交前 30 分钟逐项勾选
+- **开源项目完整性**：CITATION.cff + CONTRIBUTING.md + Issue 模板 → 看起来像维护项目而非一次性上传
+
+---
 
 ## [1.1.0] - 2026-09-11
 
@@ -28,17 +55,18 @@
 ### 新增
 
 - **SKILL.md**：数学建模竞赛全流程主控（7 步：确认前提 → 审题选题 → 方法选型 → 假设与符号 → 建模求解 → 检验 → 写作与自检），含三条铁律、官方评奖四维对齐表、Gotchas 与反面模式。
-- **references/contests.md**：三大竞赛（国赛 CUMCM / 研赛华为杯 / 美赛 MCM-ICM）赛制、格式硬规则、AI 使用规定、纪律红线与官方链接对照。
-- **references/model-library.md**：模型方法库——按"赛题信号"检索的 12 类方法（优化、微分方程、统计回归、时间序列、评价决策、图论网络、随机仿真、机器学习、几何物理、组合建模等），含适用条件、工具、必做项与陷阱；附 2020–2025 历年国赛赛题 → 方法族反查表。
-- **references/paper-structure.md**：中文（国赛/研赛）与英文（美赛）两套论文骨架、章节"必须出现"清单、篇幅配比、写作技术规范与实战写作顺序。
-- **references/scoring-rubric.md**：官方评奖标准原文（国赛《章程》第二条四维 + 五大内容块）、评阅流程与硬门槛（评委人数、复议、答辩、查重 25%、赛区报送名额、获奖比例）、官方评级描述（美赛）、评价维度 → 写作动作映射表、失分点清单。
-- **references/checklists.md**：提交前自检清单——通用 / **AI 合规专项** / 国赛 / 研赛 / 美赛各自专用，含红线项与提交前 30 分钟最终确认。
-- **scripts/check_paper.py**：论文自检工具。纯 Python 标准库，非交互，支持 `--contest {cumcm,yjs,mcm,generic}`、`--json`、`--self-test`；检查必备章节、摘要四要素、匿名合规、图表编号连续性、正文引用标注、附录程序声明、AI 工具使用声明及位置、结果验证痕迹与篇幅。有 FAIL 时退出码 1。
-- **assets/abstract-template.md**：摘要模板——中文（国赛/研赛，含逐条硬性要求与常见失败模式对照表）与英文 MCM Summary Sheet。
-- **README.md**：项目说明、三种安装方式、使用示例、结构说明、AI 合规提醒、资料可信度约定、同类项目致谢与免责声明。
+- **references/contests.md**：三大竞赛官方规则对照表，含 2026 年国赛 AI 规定、研赛格式要求、美赛 25 页限制与 Summary Sheet 单页 12pt。
+- **references/model-library.md**：模型方法库（11 大族 + 2020–2025 历年赛题信号反查表）。
+- **references/paper-structure.md**：论文结构骨架（国赛/研赛 11 节 + 美赛 9 节）与真实章节标题样例。
+- **references/scoring-rubric.md**：评阅标准与失分点（官方四维标准 + 社区失分点清单）。
+- **references/checklists.md**：提交前检查清单（国赛/研赛/美赛分节点、含 AI 合规专项）。
+- **assets/abstract-template.md**：摘要模板（中文 + MCM 英文，含四要素写法 + failure-mode 表）。
+- **scripts/check_paper.py**：论文自检脚本（结构完整性、摘要要素、匿名合规、图表编号、AI 声明、附录程序、参考文献、长度估算）。
+- **README.md** / **LICENSE** / **.gitignore** / **.gitattributes**。
 
 ### 设计依据
 
-- 遵循 [Agent Skills 开放标准](https://agentskills.io/specification)：frontmatter 仅使用可移植字段；`SKILL.md` 保持精简，详细内容按需加载（渐进式披露）。
-- 规则事实来自各竞赛官方文件，并在文中以 `[官方]` / `[半官方]` / `[社区]` 三档标注来源可信度。
-- 明确记录官方口径冲突与未公开项（如官方从未公布评分权重表、题目级「评阅要点」属内部文件、国赛全国规范不规定字体字号）。
+- **规则追踪为本**：每条规定标注 `[官方]/[半官方]/[社区]` 三级可信度，附原文链接与页码。
+- **诚实优先于"有用"**：未找到官方说明的项目（如评分权重表）明确标注"未找到"而非编造。
+- **三赛事平等对待**：国赛/研赛/美赛各有独立章节与检查分支，不偏向任一竞赛。
+- **AI 合规从严**：2026 年起国赛/研赛/美赛均有 AI 使用规定，检查脚本与清单全覆盖。

@@ -167,6 +167,8 @@ python scripts/check_paper.py paper.md --contest mcm       # 美赛
 | 提交前逐项自查 | `references/checklists.md` |
 | 选 LaTeX 模板、编译报错、图表与参考文献排版 | `references/templates.md` |
 | 写摘要 | `assets/abstract-template.md` |
-| 机械检查论文草稿 | `scripts/check_paper.py` |
+| 一页纸红线清单（可打印） | `assets/cheatsheet.md` |
+| 可填空论文骨架（含占位符提示） | `assets/paper-outline.md` |
+| 生成论文骨架 + 机械检查论文草稿 | `scripts/check_paper.py --init` / `scripts/check_paper.py` |
 | 校验技能自身结构（frontmatter/篇幅/文件引用） | `scripts/validate_skill.py` |
 | 了解本技能的触发评测方法 | `evals/README.md`、`evals/trigger-queries.json`、`evals/evals.json` |

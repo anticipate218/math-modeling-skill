@@ -1,0 +1,26 @@
+# 依赖
+node_modules/
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# 构建/输出
+dist/
+build/
+*.log
+
+# 论文与竞赛产物（避免误提交个人论文/身份信息）
+paper.pdf
+*.docx
+参赛论文*
+支撑材料*
+!assets/templates/**
+
+# 系统与编辑器
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+*.swp

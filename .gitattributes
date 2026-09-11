@@ -1,0 +1,16 @@
+# 统一换行符为 LF，避免跨平台协作时整文件 diff
+* text=auto eol=lf
+
+# 二进制文件不参与文本转换
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.zip binary
+*.pdf binary
+*.mp3 binary
+*.ttf binary
+*.otf binary
+*.woff binary
+*.woff2 binary

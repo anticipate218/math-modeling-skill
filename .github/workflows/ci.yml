@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 校验技能结构（frontmatter / 篇幅 / 文件引用）
+        run: python scripts/validate_skill.py .
+
+      - name: 自检脚本固件测试
+        run: python scripts/check_paper.py --self-test
+
+      - name: 校验评测用例为合法 JSON
+        run: |
+          python - <<'PY'
+          import json
+          for f in ("evals/evals.json", "evals/trigger-queries.json"):
+              with open(f, encoding="utf-8") as fh:
+                  data = json.load(fh)
+              print(f, "OK")
+          PY
+
+      - name: 检查是否有 Windows 风格路径
+        run: |
+          if grep -rnE '(references|scripts|assets|evals)\\' --include='*.md' .; then
+            echo "发现反斜杠路径，请统一为正斜杠"; exit 1
+          fi
+          echo "路径风格检查通过"

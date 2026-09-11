@@ -1,5 +1,10 @@
 # math-modeling-skill
 
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![Agent Skill](https://img.shields.io/badge/Agent%20Skill-spec%20compliant-blue.svg)](https://agentskills.io/specification)
+[![CI](https://github.com/anticipate218/math-modeling-skill/actions/workflows/ci.yml/badge.svg)](https://github.com/anticipate218/math-modeling-skill/actions/workflows/ci.yml)
+[![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)](scripts/check_paper.py)
+
 一个给 AI 编码/科研助手用的 **数学建模竞赛技能**（Agent Skill）：把一道赛题变成一篇**评委愿意给高分的论文**。
 
 覆盖三大赛事：**全国大学生数学建模竞赛（国赛 CUMCM）**、**中国研究生数学建模竞赛（华为杯研赛）**、**美国大学生数学建模竞赛（MCM/ICM 美赛）**。
@@ -71,12 +76,28 @@ git clone https://github.com/anticipate218/math-modeling-skill.git ~/.claude/ski
 python scripts/check_paper.py paper.md --contest cumcm   # 国赛
 python scripts/check_paper.py paper.md --contest yjs     # 研赛
 python scripts/check_paper.py paper.md --contest mcm     # 美赛
+python scripts/check_paper.py paper.md --contest cumcm --json   # 机器可读输出（接入 CI）
 python scripts/check_paper.py --self-test                # 验证脚本自身可用
 ```
 
-它检查：必备章节、摘要要素（问题/方法/结果/关键词）、**匿名合规**（国赛/研赛）、图表编号连续性、正文引用标注、附录程序声明、**AI 工具使用声明**及其位置、结果验证痕迹、篇幅提示。输出 `FAIL/WARN/INFO` 分级，有 FAIL 时退出码为 1，可直接接入 CI。
+它检查：必备章节、摘要要素（问题/方法/结果/关键词）、**匿名合规**（国赛/研赛）、图表编号连续性与**是否在正文被引用**、正文引用标注、**参考文献数量与著录完整性**、附录程序声明、**AI 工具使用声明**及其位置、结果验证痕迹、**单位混用**、篇幅提示。输出 `FAIL/WARN/INFO` 分级，有 FAIL 时退出码为 1，可直接接入 CI。
 
 > 脚本只做**可机械校验**的结构与合规检查；模型合理性、创新性与结果正确性必须人工复核。
+
+---
+
+## 质量保障
+
+这个仓库不只有文档，还带四层可自动运行的检查（CI 每次提交都会跑）：
+
+| 层 | 命令 | 检查什么 |
+|---|---|---|
+| 结构 | `python scripts/validate_skill.py .` | frontmatter 字段白名单、`name` 与目录一致、description/compatibility 长度、正文行数、**文件引用是否存在**、Windows 反斜杠路径 |
+| 自检工具 | `python scripts/check_paper.py --self-test` | 用「好稿/坏稿」固件验证检查逻辑本身没坏 |
+| 触发评测 | 见 `evals/` | 20 条查询（10 正例 + 10 个 near-miss 负例）测 description 触发率；6 条行为用例含**反幻觉断言**（如"不得编造官方评分权重"） |
+| 持续集成 | `.github/workflows/ci.yml` | 上述全部 + JSON 合法性 + 路径风格 |
+
+其中 `validate_skill.py` 对所有 Agent Skill 作者都有用：它专门拦"跨工具分发时会硬报错"的 frontmatter 问题（比如多写了非标准字段）。
 
 ---
 
@@ -88,13 +109,17 @@ math-modeling-skill/
 ├── references/                   # 按需加载的详细资料（渐进式披露第二/三层）
 │   ├── contests.md               # 三大竞赛规则对照（格式硬规则、AI 规定、纪律、提交物、官方链接）
 │   ├── model-library.md          # 模型方法库：赛题信号 → 方法 → 工具 → 陷阱 + 历年赛题反查
-│   ├── paper-structure.md        # 论文结构与写作规范（中/英文两套骨架 + 篇幅配比）
+│   ├── paper-structure.md        # 论文结构与写作规范（中/英文两套骨架 + 篇幅配比 + 获奖论文章节实证）
 │   ├── scoring-rubric.md         # 评阅标准与失分点（官方原文 + 非官方经验明确标注）
-│   └── checklists.md             # 提交前自检清单（通用 / AI 合规 / 三赛事各自专用）
+│   ├── checklists.md             # 提交前自检清单（通用 / AI 合规 / 三赛事各自专用）
+│   └── templates.md              # LaTeX 模板选型、编译、图表与参考文献排版规范
 ├── scripts/
-│   └── check_paper.py            # 论文自检工具（纯标准库，非交互，支持 --json/--self-test）
+│   ├── check_paper.py            # 论文自检工具（纯标准库，非交互，支持 --json/--self-test）
+│   └── validate_skill.py         # 技能结构校验（frontmatter / 篇幅 / 文件引用）
 ├── assets/
 │   └── abstract-template.md      # 摘要模板：中文（国赛/研赛）+ 英文 Summary Sheet（美赛）
+├── evals/                        # 触发评测与行为用例（含 near-miss 负例）
+├── .github/workflows/ci.yml      # 持续集成
 ├── README.md
 ├── CHANGELOG.md
 └── LICENSE

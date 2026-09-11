@@ -165,5 +165,8 @@ python scripts/check_paper.py paper.md --contest mcm       # 美赛
 | 要写论文、搭章节骨架、安排篇幅 | `references/paper-structure.md` |
 | 想知道评委怎么打分、哪里最容易丢分 | `references/scoring-rubric.md` |
 | 提交前逐项自查 | `references/checklists.md` |
+| 选 LaTeX 模板、编译报错、图表与参考文献排版 | `references/templates.md` |
 | 写摘要 | `assets/abstract-template.md` |
 | 机械检查论文草稿 | `scripts/check_paper.py` |
+| 校验技能自身结构（frontmatter/篇幅/文件引用） | `scripts/validate_skill.py` |
+| 了解本技能的触发评测方法 | `evals/README.md`、`evals/trigger-queries.json`、`evals/evals.json` |

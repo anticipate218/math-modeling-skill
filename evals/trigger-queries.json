@@ -1,0 +1,22 @@
+[
+  {"id": "t01", "query": "帮我看看这道数学建模题该怎么建模，A题，关于光伏板布局优化", "should_trigger": true, "note": "典型：赛题+建模诉求"},
+  {"id": "t02", "query": "国赛论文的摘要该怎么写？我们摘要总是被说太空洞", "should_trigger": true, "note": "关键词：国赛/摘要"},
+  {"id": "t03", "query": "研赛华为杯的论文格式有什么要求？摘要页算不算第一页", "should_trigger": true, "note": "关键词：研赛/格式"},
+  {"id": "t04", "query": "美赛 MCM 的 Summary Sheet 要写多长？25 页限制包含附录吗", "should_trigger": true, "note": "关键词：美赛/规则"},
+  {"id": "t05", "query": "我们做了个多目标规划模型，但评委说缺少检验，应该补什么", "should_trigger": true, "note": "近义表述：未直接说数学建模"},
+  {"id": "t06", "query": "三天后就要交赛题论文了，帮我把结构理一遍并检查有没有违规的地方", "should_trigger": true, "note": "近义表述：交论文+违规检查"},
+  {"id": "t07", "query": "这道预测题用 ARIMA 还是灰色预测更合适？数据只有 8 个点", "should_trigger": true, "note": "方法选型诉求"},
+  {"id": "t08", "query": "评价类题目用熵权法和 AHP 哪个好，需要做权重敏感性分析吗", "should_trigger": true, "note": "方法选型 + 灵敏度"},
+  {"id": "t09", "query": "国赛论文里用了 AI 帮忙调试代码，需要写什么声明吗", "should_trigger": true, "note": "AI 合规"},
+  {"id": "t10", "query": "帮我把这篇建模论文草稿自检一下，看看附录和匿名有没有问题", "should_trigger": true, "note": "自检诉求"},
+  {"id": "t11", "query": "用 Python 帮我写个函数把 CSV 读进来并算平均值", "should_trigger": false, "note": "near-miss：纯编程任务"},
+  {"id": "t12", "query": "解释一下 ARIMA 模型的原理和定阶方法", "should_trigger": false, "note": "near-miss：概念问答，非竞赛任务"},
+  {"id": "t13", "query": "帮我写一个贪心算法求最小生成树", "should_trigger": false, "note": "near-miss：算法实现"},
+  {"id": "t14", "query": "我的毕业论文要做问卷数据的回归分析，帮我看看用什么方法", "should_trigger": false, "note": "near-miss：学术论文但非建模竞赛"},
+  {"id": "t15", "query": "帮我用 LaTeX 排版一封信", "should_trigger": false, "note": "near-miss：模板/排版但与本技能无关"},
+  {"id": "t16", "query": "这个数学题的积分怎么解", "should_trigger": false, "note": "near-miss：数学但非建模"},
+  {"id": "t17", "query": "帮我查一下明天北京的天气", "should_trigger": false, "note": "明显无关"},
+  {"id": "t18", "query": "Excel 里怎么用数据透视表统计销量", "should_trigger": false, "note": "near-miss：数据处理工具操作"},
+  {"id": "t19", "query": "帮我写一篇关于气候变化的科普文章", "should_trigger": false, "note": "near-miss：写作任务，非建模论文"},
+  {"id": "t20", "query": "怎么把 matplotlib 的图导出成高分辨率 PDF", "should_trigger": false, "note": "near-miss：绘图技巧，属通用编程"}
+]

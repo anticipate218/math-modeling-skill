@@ -408,6 +408,83 @@ def check_sensitivity_and_evaluation(text: str, contest: str) -> list[Finding]:
     return findings
 
 
+# 单位混用检测：同一篇论文里同时出现互斥单位，通常意味着单位不统一
+UNIT_CONFLICT_PAIRS = [
+    ("时间", r"\d+\s*(?:小时|h\b|hrs?\b|hours?\b)", r"\d+\s*(?:分钟|min(?:ute)?s?\b)"),
+    ("金额", r"\d+\s*万元", r"\d+\s*元(?!胞)"),
+    ("长度", r"\d+\s*(?:千米|公里|km\b)",
+     r"\d+\s*(?<!千)(?<!厘)(?<!毫)(?<!微)(?:米|m\b)"),
+    ("质量", r"\d+\s*(?:千克|公斤|kg\b)", r"\d+\s*(?<!千)(?<!毫)(?:克|g\b)"),
+]
+
+REF_ENTRY_RE = re.compile(r"^\s*\[(\d+)\]\s*(.+)$", re.MULTILINE)
+YEAR_RE = re.compile(r"(?:19|20)\d{2}")
+
+
+def check_units(text: str, contest: str) -> list[Finding]:
+    """单位混用：同一量纲下同时出现两种单位，提示人工确认（不判失败）。"""
+    findings: list[Finding] = []
+    plain = strip_code_blocks(text)
+    conflicts = []
+    for name, pat_a, pat_b in UNIT_CONFLICT_PAIRS:
+        if re.search(pat_a, plain) and re.search(pat_b, plain):
+            conflicts.append(name)
+    if conflicts:
+        findings.append(Finding(
+            "WARN", "units", "疑似单位混用：" + "、".join(conflicts),
+            "同一量纲出现两种单位时务必统一（或显式做换算），单位混用是低级但致命的错误。"))
+    else:
+        findings.append(Finding("INFO", "units", "未检出明显单位混用"))
+    return findings
+
+
+def check_figure_citation(text: str, contest: str) -> list[Finding]:
+    """图表是否在正文被引用：编号只出现一次，通常意味着只有图题、正文未引用。"""
+    findings: list[Finding] = []
+    plain = strip_code_blocks(text)
+    uncited = []
+    for label, rx in (("图", FIGURE_RE), ("表", TABLE_RE)):
+        counts: dict[int, int] = {}
+        for n in rx.findall(plain):
+            counts[int(n)] = counts.get(int(n), 0) + 1
+        for num, cnt in sorted(counts.items()):
+            if cnt < 2:
+                uncited.append(f"{label}{num}")
+    if uncited:
+        findings.append(Finding(
+            "WARN", "figure-citation", "以下图表编号只出现一次，可能未在正文引用：" + "、".join(uncited),
+            "每个图表都应在正文被引用并解释其含义（规范与评阅都关注这一点）。"))
+    else:
+        findings.append(Finding("INFO", "figure-citation", "图表编号均被重复提及（疑似已引用）"))
+    return findings
+
+
+def check_references(text: str, contest: str) -> list[Finding]:
+    """参考文献数量与条目完整性（作者. 题名. 出处, 年）粗检。"""
+    findings: list[Finding] = []
+    plain = strip_code_blocks(text)
+    m = re.search(r"(参考文献|references)(.*)$", plain, re.IGNORECASE | re.DOTALL)
+    if not m:
+        return findings  # 缺少参考文献由 check_citations 负责
+    block = m.group(2)
+    entries = REF_ENTRY_RE.findall(block)
+    if not entries:
+        findings.append(Finding("WARN", "references", "参考文献部分未检出 [n] 形式的条目",
+                                "正文引用与文献列表要一一对应。"))
+        return findings
+    findings.append(Finding("INFO", "references", f"检出参考文献 {len(entries)} 条"))
+    if len(entries) < 3:
+        findings.append(Finding("WARN", "references",
+                                f"参考文献仅 {len(entries)} 条，偏少",
+                                "即使是自建模型，也应列出数据来源、方法出处与背景资料。"))
+    missing_year = [n for n, body in entries if not YEAR_RE.search(body)]
+    if missing_year and len(missing_year) >= max(1, len(entries) // 2):
+        findings.append(Finding(
+            "WARN", "references", f"{len(missing_year)}/{len(entries)} 条文献未检出出版年份",
+            "国赛/研赛要求按科技论文规范著录（研赛还要求引书标页码）；美赛须含规范引用。"))
+    return findings
+
+
 def run_checks(text: str, contest: str) -> list[Finding]:
     findings: list[Finding] = []
     findings += check_sections(text, contest)
@@ -415,10 +492,13 @@ def run_checks(text: str, contest: str) -> list[Finding]:
     findings += check_abstract(text, contest)
     findings += check_anonymity(text, contest)
     findings += check_numbering(text, contest)
+    findings += check_figure_citation(text, contest)
     findings += check_citations(text, contest)
+    findings += check_references(text, contest)
     findings += check_appendix(text, contest)
     findings += check_ai_disclosure(text, contest)
     findings += check_model_validation(text, contest)
+    findings += check_units(text, contest)
     findings += check_length(text, contest)
     return findings
 
@@ -461,6 +541,22 @@ def solve():
 ## 模型的建立
 结果见图 3 与图 1、表 2。
 """),
+    ("美赛坏稿", "mcm", """# Summary
+We model the problem and solve it.
+
+## Introduction
+## Assumptions
+## Model Development
+We use 30 minutes per step and 2 小时 in total.
+## Results
+## References
+[1] Someone. A paper.
+## Appendix
+```
+def solve():
+    return 1
+```
+"""),
 ]
 
 
@@ -472,7 +568,7 @@ def self_test() -> int:
         print(f"[self-test] {name}: FAIL={len(fails)} WARN={sum(1 for f in findings if f.level == 'WARN')}")
         for f in findings:
             print(f"           - {f.level:4} {f.code}: {f.message}")
-        expected_fail = name == "坏稿"
+        expected_fail = "坏" in name
         if bool(fails) != expected_fail:
             print(f"[self-test] 预期不符：{name} 期望 FAIL={expected_fail}，实际 {bool(fails)}",
                   file=sys.stderr)

@@ -162,6 +162,9 @@ python scripts/check_paper.py paper.md --contest mcm       # 美赛
 |---|---|
 | 需要确认格式/页数/提交要求/语言/赛制差异 | `references/contests.md` |
 | 需要选模型、找适用方法、查工具与陷阱 | `references/model-library.md` |
+| 需要按题目类别比较基线、改进和验证设计 | `references/model-implementations.md` |
+| 需要查 GitHub 模型库、许可证和资源边界 | `references/github-resources.md` |
+| 需要参考带注释的 Python 基线实现 | `examples/modeling_patterns.py` |
 | 要写论文、搭章节骨架、安排篇幅 | `references/paper-structure.md` |
 | 想知道评委怎么打分、哪里最容易丢分 | `references/scoring-rubric.md` |
 | 提交前逐项自查 | `references/checklists.md` |

@@ -108,12 +108,21 @@ git clone https://github.com/anticipate218/math-modeling-skill.git ~/.claude/ski
 
 | 你说 | 它会做 |
 |---|---|
-| "帮我看看这道题该怎么建模" | 拆题 → 判断问题类型 → 从模型库给 2–3 个候选方法与取舍理由 |
+| "帮我看看这道题该怎么建模" | 拆题 → 判断问题类型 → 从增强模型库给出基线、改进方案与验证设计 |
+| "这个题有没有 GitHub 代码可以参考" | 按模型类别检索已核验资源，说明 README 明确内容、许可证、版本和适用边界；不直接复制结论 |
+| "帮我比较 ARIMA、XGBoost 和 LSTM" | 先给朴素/统计基线，再按样本量、可解释性和滚动回测比较升级模型 |
 | "国赛论文该怎么写/帮我搭个框架" | 给章节骨架、篇幅配比、真实标题样例 |
 | "帮我写摘要" | 用摘要模板要求每一问都有"方法 + 数值结果 + 检验结论" |
 | "这个模型够不够" | 按官方四维标准（假设合理性/建模创造性/结果正确性/表述清晰度）逐项挑问题 |
 | "提交前帮我检查一遍" | 跑自检脚本 + 逐项过对应竞赛的合规清单（含 AI 声明、匿名、页数、查重提示） |
 | "美赛和国赛有什么区别" | 给三大赛事的规则/格式/评审差异对照 |
+
+**增强模型库**：
+- [`references/model-implementations.md`](references/model-implementations.md)：按题目类别归类模型族，逐项说明基线、改进阶梯、适用前提与验证要求。
+- [`references/github-resources.md`](references/github-resources.md)：从 GitHub 一手 README/仓库页核验的 OR-Tools、Pyomo、sktime、Darts、StatsForecast、statsmodels、scikit-learn、XGBoost、SciML、FiPy、FEniCS、NetworkX、Shapely、Mesa、Nashpy 等资源。
+- [`examples/modeling_patterns.py`](examples/modeling_patterns.py)：带详细注释的 TOPSIS、滚动均值/MAE、Dijkstra、蒙特卡洛基线；只使用示例数据，不冒充完整解题器。
+
+**GitHub 资源使用原则**：固定 commit/release，逐项检查仓库/代码/数据许可证，记录访问日期和运行环境；只借实现，不借论文结论，不报告未经核验的 stars 或性能排名。
 
 **自检脚本**（无需安装依赖，Python 3.9+ 标准库即可）：
 
@@ -157,7 +166,8 @@ math-modeling-skill/
 │   ├── paper-structure.md        # 论文结构与写作规范（中/英文两套骨架 + 篇幅配比 + 获奖论文章节实证）
 │   ├── scoring-rubric.md         # 评阅标准与失分点（官方原文 + 非官方经验明确标注）
 │   ├── checklists.md             # 提交前自检清单（通用 / AI 合规 / 三赛事各自专用）
-│   └── templates.md              # LaTeX 模板选型、编译、图表与参考文献排版规范
+│   ├── github-resources.md       # 已核验 GitHub 模型库与许可证/边界说明
+│   └── model-implementations.md  # 按题目类别的基线、改进阶梯和验证协议
 ├── scripts/
 │   ├── check_paper.py            # 论文自检工具（纯标准库，非交互，支持 --json/--self-test/--init）
 │   └── validate_skill.py         # 技能结构校验（frontmatter / 篇幅 / 文件引用）
@@ -165,6 +175,8 @@ math-modeling-skill/
 │   ├── abstract-template.md      # 摘要模板：中文（国赛/研赛）+ 英文 Summary Sheet（美赛）
 │   ├── cheatsheet.md             # 一页纸红线清单（可打印，提交前 30 分钟核对）
 │   └── paper-outline.md          # 可填空论文骨架（三赛事，含占位符提示）
+├── examples/
+│   └── modeling_patterns.py       # 带注释的透明基线示例
 ├── evals/                        # 触发评测与行为用例（含 near-miss 负例）
 ├── .github/
 │   ├── workflows/ci.yml          # 持续集成

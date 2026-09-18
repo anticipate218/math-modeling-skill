@@ -20,6 +20,7 @@
 
 - **顺序核对必须剥掉注释**：最初按整篇文本搜索 `\bibliography{`，结果命中了模板文件头第 13 行那句说明文字 `% 若你暂时不想用 .bib，可把 \bibliography{refs} 换成手写 thebibliography`，于是"AI 声明在参考文献之前"被误判成不合规（注释在第 13 行，AI 声明在第 429 行）。现在先去掉注释再匹配，并加了一条对应的自测。
 - **字体集替换只能动代码行**：`fontset=windows` 在每个中文模板里出现 3 次，其中 2 次在说明文字里。整篇替换会把"Linux/macOS 请把 `fontset=windows` 换成 `fontset=fandol`"改成同义反复，替换计数也虚高成 3。现在按行拆出注释、只替换代码部分。
+- **`lmodern` 不在任何 `texlive-*` 包里（第一次跑 CI 就是这么红的）**：新作业首次运行结果是 **2/3 通过**——国赛/研赛在 Linux 上用 `fandol` 编译通过（页数与 Windows 上完全一致），美赛模板却以 `! LaTeX Error: File `lmodern.sty' not found.` 直接中止。`lmodern.sty` 由 Debian/Ubuntu 的**顶层包 `lmodern`** 提供，装再多 `texlive-*` 也不会有。已在安装列表里补上 `lmodern`，并加了一行 `kpsewhich lmodern.sty` 做前置断言。这正是这个作业存在的意义：宏包清单的窟窿，只有在真编译时才会暴露。
 
 ### 变更
 
@@ -38,6 +39,7 @@
 | 合规顺序 | 同一脚本的源码检查 | 国赛/研赛 AI 声明在参考文献之前 ✓；美赛在其之后 ✓ |
 | 解析逻辑固件测试 | `python scripts/check_latex.py --self-test` | **26/26 通过**（无需装 TeX） |
 | 仓库未被污染 | 运行前后 `git status --porcelain` | 无输出（编译只发生在系统临时目录） |
+| CI 首次运行（Ubuntu + TeX Live） | GitHub Actions run `35358308247` 的 `latex` 作业 | **2/3**：国赛 9 页、研赛 8 页均通过（页数与 Windows 一致），美赛因缺 `lmodern.sty` 失败——**脚本准确报出了缺哪个包**，据此补齐安装列表 |
 
 ## [1.5.0] - 2026-09-18
 

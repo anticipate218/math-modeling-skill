@@ -152,6 +152,7 @@ mpm --install=ctex,geometry,setspace,indentfirst,amsmath,amssymb,booktabs,multir
 | `Overfull \hbox ... too wide` | 某行太宽（多为长英文词、长公式、过宽的表格） | 不影响编译；用 `\sloppy`、`tabularx`、缩小字号或换行处理 |
 | `Package pgfplots: compat` 相关提示 | `compat` 版本设置 | 模板已写 `\pgfplotsset{compat=1.18}`，可保留 |
 | MiKTeX 首次编译卡住/提示装包 | 宏包按需下载 | 允许联网自动安装，或用 `mpm --install=<包名>` |
+| Linux 报 `! LaTeX Error: File 'lmodern.sty' not found.` | 精简安装的 TeX Live 只装了 `texlive-*`，而 `lmodern.sty` 由发行版的**独立包**提供（本仓库 CI 第一次跑就是这么红的） | Debian/Ubuntu：`sudo apt install lmodern`；Fedora：`sudo dnf install texlive-lm`；或删掉美赛模板里的 `\usepackage{lmodern}` 改用默认 Computer Modern（不推荐，T1 编码下字形会变差） |
 | 编译输出里出现 `security risk: running with elevated privileges` | MiKTeX 检测到以管理员权限运行（**本仓库验证时也会出现**） | 属提示性警告，不影响结果；本仓库三次编译的 exit code 均为 0 |
 | 编译后目录里一堆 `.aux/.log/.out/.bbl/.pdf` | LaTeX 中间文件 | 正常；只提交最终的 `main.pdf`（美赛文件名必须是 `控制号.pdf`） |
 
@@ -187,7 +188,7 @@ python scripts/check_latex.py --self-test     # 不需要装 TeX，只测日志�
 | yjs | `xelatex` | **8 页**，A4，212 439 B | **8 页**，366 745 B |
 | mcm | `pdflatex` | **8 页**，letter（612×792 pt），284 317 B | 同左（美赛模板不含中文，与字体设置无关） |
 
-两种配置都是 **3/3 通过**：0 硬错误、0 未定义引用、编译产物均超过页数下限。两列的页数一致说明换字体只改字形与嵌入体积，不改分页。
+两种配置都是 **3/3 通过**：0 硬错误、0 未定义引用、编译产物均超过页数下限。两列的页数一致说明换字体只改字形与嵌入体积，不改分页。CI（Ubuntu + TeX Live）上跑出来的页数同样是国赛 9 页、研赛 8 页、美赛 8 页，只是 PDF 体积随字体嵌入略有差异（国赛 341 039 B、研赛 366 281 B）——**同一份源码在不同发行版上分页一致**，这才是"模板能跨机器编译"的真正含义。
 
 > **`fandol` 替换是尽力而为，不是保证**：脚本只改**临时副本**里的那一行 `fontset=windows`（且只改代码部分、不动注释），仓库里的 `.tex` 一个字节都没动。真正的判据是**编译成功 + 日志里没有 `Font "…" cannot be found`**——所以在没有 `fandol` 的机器上这一步会失败，失败信息会直接打出缺哪个字体。
 

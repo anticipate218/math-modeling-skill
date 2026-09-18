@@ -93,10 +93,15 @@ jobs:
       # 三个模板用到的宏包：ctex+fandol、geometry/fancyhdr/hyperref、
       # booktabs/multirow/tabularx/caption/subcaption、tikz/pgfplots、
       # algorithm/algpseudocode、listings、natbib/lastpage、lmodern。
+      #
+      # ⚠️ `lmodern.sty` 不在任何 texlive-* 包里，由 Debian 顶层包 `lmodern`
+      # 提供。漏了它，美赛模板会以 `! LaTeX Error: File `lmodern.sty' not found.`
+      # 直接中止（本仓库第一次跑这个作业就是这么红的，已修）。
       - name: 安装 TeX Live（xelatex / pdflatex / bibtex）
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq --no-install-recommends \
+            lmodern \
             texlive-latex-base \
             texlive-latex-recommended \
             texlive-latex-extra \
@@ -106,6 +111,7 @@ jobs:
             texlive-xetex \
             texlive-lang-chinese \
             texlive-bibtex-extra
+          kpsewhich lmodern.sty
           xelatex --version | head -n 1
           pdflatex --version | head -n 1
           bibtex --version | head -n 1

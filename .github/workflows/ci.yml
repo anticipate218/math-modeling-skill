@@ -16,11 +16,41 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: 校验技能结构（frontmatter / 篇幅 / 文件引用）
-        run: python scripts/validate_skill.py .
+      - name: 校验技能结构（frontmatter / 篇幅 / 文件引用 / 索引完整性）
+        run: python scripts/validate_skill.py . --strict
 
       - name: 自检脚本固件测试
         run: python scripts/check_paper.py --self-test
+
+      - name: 算法模块依赖检查（只应依赖 numpy + 标准库）
+        run: |
+          python - <<'PY'
+          import ast, pathlib, sys
+          banned = {"scipy", "sklearn", "pandas", "statsmodels", "torch", "tensorflow",
+                    "cvxpy", "pulp", "sympy", "matplotlib"}
+          bad = []
+          for p in sorted(pathlib.Path("examples/algorithms").glob("*.py")):
+              tree = ast.parse(p.read_text(encoding="utf-8"))
+              for node in ast.walk(tree):
+                  if isinstance(node, ast.Import):
+                      names = [a.name.split(".")[0] for a in node.names]
+                  elif isinstance(node, ast.ImportFrom):
+                      names = [(node.module or "").split(".")[0]]
+                  else:
+                      continue
+                  for n in names:
+                      if n in banned:
+                          bad.append(f"{p}: 引用了被禁止的依赖 {n}")
+          if bad:
+              print("\n".join(bad)); sys.exit(1)
+          print("依赖检查通过：examples/algorithms/ 只用 numpy + 标准库")
+          PY
+
+      - name: 安装 numpy（算法自测需要）
+        run: python -m pip install --quiet "numpy>=1.24"
+
+      - name: 算法模块自测 + 黄金值比对 + 确定性检查
+        run: python examples/run_algorithms.py
 
       - name: 校验评测用例为合法 JSON
         run: |
@@ -34,7 +64,7 @@ jobs:
 
       - name: 检查是否有 Windows 风格路径
         run: |
-          if grep -rnE '(references|scripts|assets|evals)\\' --include='*.md' .; then
+          if grep -rnE '(references|scripts|assets|evals|examples)\\' --include='*.md' .; then
             echo "发现反斜杠路径，请统一为正斜杠"; exit 1
           fi
           echo "路径风格检查通过"

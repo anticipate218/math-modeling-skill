@@ -1,0 +1,107 @@
+% =====================================================================
+%  研赛（华为杯）模板参考文献库（refs.bib）
+% ---------------------------------------------------------------------
+%  【重要】下列条目是**通用经典文献**，仅用于演示 bib 格式与编译流程。
+%  它们与你的赛题无关：正式论文中请全部替换为你自己检索、真正读过的文献。
+%  引用前请自行核对版本、卷期、页码（不同年份重印版的页码会变）。
+%
+%  【研赛格式要求】《论文格式规范（2025，第二十二届）》给定著录格式：
+%    书籍：   [编号] 作者，书名，出版地：出版社，起止页码，出版年。
+%    期刊：   [编号] 作者，论文名，杂志名，卷期号：起止页码，出版年。
+%    网上资源：[编号] 作者，资源标题，网址，访问时间（年月日）。
+%  注意：**引用书籍须指出页码**。下面书籍条目里的 pages 字段请填实或删除后
+%  改为手写参考文献列表（见 main.tex 中“参考文献”处的说明）。
+%
+%  【AI 相关】研赛规定：AI 输出且无法确认来源的“模型”“公式”若被引用，须在
+%  参考文献中列出 AI 工具名称、版本/型号、开发机构、发布日期。示例条目见文末。
+%
+%  【不许编造】不要把没读过的文献写进来，也不要编造卷期页码。
+% =====================================================================
+
+@book{saaty1980ahp,
+  author    = {Saaty, Thomas L.},
+  title     = {The Analytic Hierarchy Process: Planning, Priority Setting,
+               Resource Allocation},
+  publisher = {McGraw-Hill},
+  address   = {New York},
+  year      = {1980},
+  pages     = {【起止页码，研赛引用书籍必须给出】}
+}
+
+@book{boyd2004convex,
+  author    = {Boyd, Stephen and Vandenberghe, Lieven},
+  title     = {Convex Optimization},
+  publisher = {Cambridge University Press},
+  address   = {Cambridge},
+  year      = {2004},
+  pages     = {【起止页码】}
+}
+
+@article{nelder1965simplex,
+  author  = {Nelder, John A. and Mead, Roger},
+  title   = {A Simplex Method for Function Minimization},
+  journal = {The Computer Journal},
+  volume  = {7},
+  number  = {4},
+  pages   = {308--313},
+  year    = {1965}
+}
+
+@article{deb2002nsga2,
+  author  = {Deb, Kalyanmoy and Pratap, Amrit and Agarwal, Sameer and
+             Meyarivan, T.},
+  title   = {A Fast and Elitist Multiobjective Genetic Algorithm: {NSGA-II}},
+  journal = {IEEE Transactions on Evolutionary Computation},
+  volume  = {6},
+  number  = {2},
+  pages   = {182--197},
+  year    = {2002}
+}
+
+@book{saltelli2008global,
+  author    = {Saltelli, Andrea and Ratto, Marco and Andres, Terry and
+               Campolongo, Francesca and Cariboni, Jessica and Gatelli, Debora
+               and Saisana, Michaela and Tarantola, Stefano},
+  title     = {Global Sensitivity Analysis: The Primer},
+  publisher = {John Wiley \& Sons},
+  address   = {Chichester},
+  year      = {2008},
+  pages     = {【起止页码】}
+}
+
+@book{jiang2018model,
+  author    = {姜启源 and 谢金星 and 叶俊},
+  title     = {数学模型},
+  edition   = {5},
+  publisher = {高等教育出版社},
+  address   = {北京},
+  year      = {2018},
+  pages     = {【起止页码】}
+}
+
+@book{si2021algorithm,
+  author    = {司守奎 and 孙兆亮},
+  title     = {数学建模算法与应用},
+  edition   = {3},
+  publisher = {国防工业出版社},
+  address   = {北京},
+  year      = {2021},
+  pages     = {【起止页码】}
+}
+
+% 网上资源条目示例（研赛要求给出网址与访问时间；请填真实网址与日期）
+@misc{cpipc,
+  author       = {{中国研究生数学建模竞赛组委会}},
+  title        = {中国研究生数学建模竞赛论文格式规范},
+  howpublished = {\url{https://cpipc.acge.org.cn}},
+  note         = {访问时间：20XX 年 XX 月 XX 日；条款以当年官方发布为准}
+}
+
+% AI 工具条目示例（仅在你确实引用了无法溯源、由 AI 输出的模型/公式时才需要；
+% 这类内容存在不被评阅认可的风险，能用可查证文献就一定要用文献）
+@misc{aitool,
+  author       = {{【AI 工具名称】}},
+  title        = {【工具名称】 版本/型号【……】},
+  howpublished = {开发机构：【……】；发布日期：【……】},
+  note         = {访问时间：20XX 年 XX 月 XX 日}
+}

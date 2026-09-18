@@ -7,7 +7,7 @@ description: >-
 license: MIT
 metadata:
   author: anticipate218
-  version: "1.3.1"
+  version: "1.4.0"
   language: zh-CN
 compatibility: 可选依赖 Python 3.9+；scripts/check_paper.py 仅用标准库（读 PDF 需 pip install pypdf）
 ---
@@ -163,12 +163,18 @@ python scripts/check_paper.py paper.md --contest mcm       # 美赛
 | 需要确认格式/页数/提交要求/语言/赛制差异 | `references/contests.md` |
 | 需要选模型、找适用方法、查工具与陷阱 | `references/model-library.md` |
 | 需要按题目类别比较基线、改进和验证设计 | `references/model-implementations.md` |
+| 需要查具体算法、复杂度、本仓库实现位置与陷阱 | `references/algorithm-implementations.md` |
 | 需要查 GitHub 模型库、许可证和资源边界 | `references/github-resources.md` |
+| 需要优秀论文/官方来源链接，或想知道为什么仓库不放他人论文图 | `references/paper-examples.md` |
 | 需要参考带注释的 Python 基线实现 | `examples/modeling_patterns.py` |
+| 需要可直接运行的算法实现（仅 numpy + 标准库） | `examples/algorithms/`、`examples/run_algorithms.py`、`examples/algorithms_golden.json` |
 | 要写论文、搭章节骨架、安排篇幅 | `references/paper-structure.md` |
 | 想知道评委怎么打分、哪里最容易丢分 | `references/scoring-rubric.md` |
 | 提交前逐项自查 | `references/checklists.md` |
 | 选 LaTeX 模板、编译报错、图表与参考文献排版 | `references/templates.md` |
+| 要一份可直接编译的论文模板（国赛/研赛/美赛） | `assets/latex/`（先读 `assets/latex/README.md`） |
+| 要论文配图范本、图注写法与绘图规范 | `assets/gallery/`（先读 `assets/gallery/README.md`） |
+| 重新生成配图库或跑配图数值自检 | `scripts/make_figures.py`（`--dpi` / `--only` / `--self-test`） |
 | 写摘要 | `assets/abstract-template.md` |
 | 一页纸红线清单（可打印） | `assets/cheatsheet.md` |
 | 可填空论文骨架（含占位符提示） | `assets/paper-outline.md` |

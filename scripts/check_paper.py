@@ -134,6 +134,13 @@ AI_DECL_USED = r"使用了\s*AI\s*工具|使用了人工智能"
 # 美赛：Report on Use of AI（附于 25 页正文之后，不计页数）
 MCM_AI_REPORT = r"report\s+on\s+use\s+of\s+ai|use\s+of\s+ai"
 
+# 「参考文献」部分的标题行：允许 markdown `#`、允许「一、」「1.」这类序号，
+# 也允许 `References`（美赛）。用它把"标题"与"正文里提到参考文献"区分开。
+REF_HEADING_RE = re.compile(
+    r"^[ \t]*(?:#{1,6}[ \t]*)?(?:[一二三四五六七八九十]+\s*[、.．][ \t]*|[0-9]+\s*[、.．][ \t]*)?"
+    r"(参考文献|references)[ \t]*[:：]?[ \t]*$",
+    re.IGNORECASE | re.MULTILINE)
+
 FIGURE_RE = re.compile(r"(?:图|figure|fig\.?)\s*([0-9]+)", re.IGNORECASE)
 TABLE_RE = re.compile(r"(?:表|table)\s*([0-9]+)", re.IGNORECASE)
 CITATION_RE = re.compile(r"\[\s*\d+(?:\s*[-,，]\s*\d+)*\s*\]")
@@ -347,8 +354,10 @@ def check_ai_disclosure(text: str, contest: str) -> list[Finding]:
                     "声明使用了 AI：支撑材料中需包含「AI工具使用详情.pdf」",
                     "须含：工具名称/版本或型号、使用目的与环节、主要提示方式与使用过程、"
                     "对输出的采纳与人工核验情况（语言润色除外）。"))
-        # 位置要求：声明须在参考文献之前
-        ref = re.search(r"参考文献|references", plain, re.IGNORECASE)
+        # 位置要求：声明须在参考文献之前。
+        # 用 find_references_section 而不是 re.search：正文里提及「参考文献」
+        # 是常见写法，取第一次出现会产生假 FAIL（详见该函数 docstring）。
+        ref = find_references_section(plain)
         if decl and ref and decl.start() > ref.start():
             findings.append(Finding("FAIL", "ai-disclosure-position",
                                     "「AI工具使用声明」位于参考文献之后",
@@ -471,14 +480,34 @@ def check_figure_citation(text: str, contest: str) -> list[Finding]:
     return findings
 
 
+def find_references_section(plain: str):
+    """定位「参考文献」部分，返回匹配对象（无则 None）。
+
+    为什么不能简单地取第一次出现：正文里提到「参考文献」非常常见，例如
+    「数据来源须可追溯，网上资料要进参考文献」。若取第一次出现，AI 声明位置
+    检查会把声明误判为"位于参考文献之后"（假 FAIL），条目统计也会把正文
+    全部算进文献块（假 INFO）。因此策略是：
+
+    1. 优先匹配**独立成行的标题**（可带 markdown `#` 或「一、」这类序号）；
+    2. 若找不到标题，退化取**最后一次**出现——文献表在论文里总是靠后的。
+    """
+    last = None
+    for m in REF_HEADING_RE.finditer(plain):
+        last = m
+    if last is not None:
+        return last
+    hits = list(re.finditer(r"参考文献|references", plain, re.IGNORECASE))
+    return hits[-1] if hits else None
+
+
 def check_references(text: str, contest: str) -> list[Finding]:
     """参考文献数量与条目完整性（作者. 题名. 出处, 年）粗检。"""
     findings: list[Finding] = []
     plain = strip_code_blocks(text)
-    m = re.search(r"(参考文献|references)(.*)$", plain, re.IGNORECASE | re.DOTALL)
+    m = find_references_section(plain)
     if not m:
         return findings  # 缺少参考文献由 check_citations 负责
-    block = m.group(2)
+    block = plain[m.end():]
     entries = REF_ENTRY_RE.findall(block)
     if not entries:
         findings.append(Finding("WARN", "references", "参考文献部分未检出 [n] 形式的条目",

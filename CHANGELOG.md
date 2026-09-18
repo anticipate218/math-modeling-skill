@@ -1,3 +1,54 @@
+## [1.4.0] - 2026-09-18
+
+本版把技能从"文档 + 检查工具"扩展为**文档 + 可直接用的成品件**：能编译的论文模板、能运行的算法实现、能照抄的配图范本，并补齐对应的索引、评测与 CI 校验。
+
+### 新增
+
+- **`assets/latex/`：三套可直接编译的自包含 LaTeX 论文模板**
+  - `cumcm/main.tex`（国赛，中文）、`yjs/main.tex`（研赛，中文）、`mcm/main.tex`（美赛，英文）。
+  - 每套都是**单一自包含 `.tex` + `refs.bib`**：不 `\input` 外部文件、不依赖外部图片，图表用 TikZ/pgfplots/booktabs/listings 内联绘制——因此不会因为缺文件而编译失败。
+  - 已内置各赛事硬规则：摘要页位置、页码、**AI 工具使用声明排在参考文献之前**（国赛/研赛）、附录源程序、美赛 `Report on Use of AI` 位于参考文献之后且不计页数。
+  - `assets/latex/README.md` 给出完整编译序列（`xelatex → bibtex → xelatex ×2`）与每一步的作用。
+- **`references/algorithm-implementations.md`：模型 → 算法 → 复杂度 → 本仓库实现 → 外部库 → 陷阱 对照索引**，并集中记录跨模块通用陷阱与"什么时候该换成熟库"。
+- **`examples/algorithms/`：11 个可直接运行的算法模块**（`optimization` / `graphs` / `heuristics` / `forecasting` / `statistics` / `evaluation` / `clustering` / `differential` / `stochastic` / `geometry` / `game`）。
+  - **仅依赖 numpy 与标准库**，Python 3.9+，非交互；CI 用 AST 静态扫描强制这条依赖边界。
+  - 每个模块提供 `_self_test() -> dict`，随机算法一律走显式种子（不使用 `np.random` 全局状态），因此**结果可复现**。
+  - `examples/run_algorithms.py`：递归类型感知比对 `examples/algorithms_golden.json`（`rtol=atol=1e-9`），并做确定性复跑；支持 `--module/--rtol/--atol/--list/--update-golden`。
+- **`assets/gallery/`：16 张原创论文配图 + 逐图说明**，由 `scripts/make_figures.py` 固定种子生成（Agg 非交互后端），可**逐字节复现**。覆盖评价权重与敏感性、TOPSIS 排序、预测对比与残差诊断、SIR 机理与参数敏感性、Pareto 前沿、收敛性、排队仿真、最短路、空间插值、相关矩阵等。`assets/gallery/README.md` 另含绘图规范（字号、dpi、坐标轴单位、误差棒、图注自解释）与"禁止的画法"。
+- **`references/paper-examples.md`：优秀论文与官方来源索引**（只给链接与查阅方式，不在仓库中转载他人图表），含三大赛事官方入口、CUMCM 官方 AI 规定、COMAP 授权与材料页，以及"看什么 / 自己画什么 / 现成实现"的逐题型对照表。
+- **`evals/evals.json` 新增 e11–e14**：分别覆盖 LaTeX 模板交付、算法实现的可运行性与陷阱、**拒绝再分发他人论文图表**（合规边界）、美赛六题分类与模板差异。持续沿用"新能力 ⇒ 补用例"的规则。
+
+### 变更
+
+- **`scripts/validate_skill.py`**：新增 `--strict`（警告按错误处理）；索引目录扩展到 `references/ scripts/ assets/ evals/ examples/`，并扫描 `SKILL.md` + 各目录下的 `*.md`；新增 Windows 反斜杠路径检测；对未在索引中出现的顶层文件给出警告。
+- **`.github/workflows/ci.yml`**：改用 `validate_skill.py . --strict`；新增对 `examples/algorithms/*.py` 的 AST 禁用依赖扫描；新增 `python examples/run_algorithms.py` 算法回归；路径风格检查扩展到 `examples/`。
+- **`.gitignore`**：新增 LaTeX 构建产物（`*.aux` `*.bbl` `*.blg` `*.fls` `*.fdb_latexmk` `*.synctex.gz` `*.toc` `*.out` `*.xdv` `*.run.xml` 等），避免把编译中间件提交进仓库。
+- `SKILL.md` 版本升至 `1.4.0`，参考文件索引补齐至全部新增文件。
+- `README.md` 新增"可直接用的成品件"一节与仓库结构更新；`CITATION.cff` 同步版本与日期。
+
+### 设计原则（本版新增）
+
+- **不再分发第三方论文图表**：论文插图版权归作者/出版方，即使标注出处，未经许可下载进仓库再分发通常也不构成合规使用，并带来学术诚信风险。因此改为提供「原创可复现图库 + 官方/授权来源链接索引」。
+- **算法实现是"教学透明版"而非工业库**：目的让论文能交代清每一步（松弛变量、检验数、Ljung-Box 之外的 ADF 响应面来源等），并在文档中明确规模上限与"何时该换成熟库"。
+- **数值主张必须可复核**：所有关键实现都与独立参照（成熟库、解析解、穷举最优解）对照后才写入文档，并在 `references/algorithm-implementations.md` §6 留下验证记录。
+
+### 关键验证记录
+
+| 项目 | 方式 | 结果 |
+|---|---|---|
+| LaTeX 模板 | 依次执行 `xelatex → bibtex → xelatex ×2` | 国赛 9 页 / 研赛 8 页 / 美赛 8 页；**0 硬错误、0 未定义引用、0 overfull hbox** |
+| AI 声明位置 | `pdftotext -enc UTF-8` 核对文本偏移 | 国赛/研赛「AI 工具使用声明」均**早于**「参考文献」；美赛 0 个中文字符，`References` 早于 `Report on Use of AI` |
+| LP 正确性 | 与 `scipy.optimize.linprog(method="highs")` 随机对照 | 138 个随机 LP，**0 处不一致** |
+| DEA 正确性 | 与 `linprog` 对照（`Σλ=1` 作等式） | 随机算例最大绝对偏差 **≈ 6.4e-13** |
+| ADF 临界值 | 与 `statsmodels` 的 MacKinnon (2010) 响应面对照 | 63 组组合最大绝对偏差 **8.9e-16**，0 处不一致 |
+| 收敛阶 | 步长序列估计 | RK4 **≈ 4.0693**（理论 4）、Euler **≈ 1.0035**（理论 1） |
+| 配图库可复现性 | 重新生成后逐文件 SHA-256 比对 | **16/16 完全一致**，0 处不匹配 |
+| 全部算法模块 | `python examples/run_algorithms.py` | 11 个模块全部 PASS 并命中黄金值 |
+
+> 说明："所有的模型"按**主流竞赛模型族**作务实覆盖（11 个模块 + 索引），不是字面意义上穷尽一切模型；文档中已如实标明边界。
+
+
+
 ## [1.3.1] - 2026-09-11
 
 ### 新增

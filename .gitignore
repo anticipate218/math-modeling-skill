@@ -17,6 +17,22 @@ paper.pdf
 支撑材料*
 !assets/templates/**
 
+# LaTeX 编译中间产物（模板源码与 refs.bib 要提交，编译垃圾不要）
+*.aux
+*.bbl
+*.blg
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+*.toc
+*.out
+*.nav
+*.snm
+*.vrb
+*.xdv
+*.run.xml
+*-blx.bib
+
 # 系统与编辑器
 .DS_Store
 Thumbs.db

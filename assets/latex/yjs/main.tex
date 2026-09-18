@@ -1,0 +1,582 @@
+% !TEX program = xelatex
+% =====================================================================
+%  中国研究生数学建模竞赛（研赛 / 华为杯）论文 LaTeX 模板 —— 自包含单文件
+%  文件：main.tex（正文）+ refs.bib（参考文献）——只需要这两个文件，
+%        不需要额外的 preamble/宏文件，直接把两个文件拷进你的工作目录即可。
+% ---------------------------------------------------------------------
+%  编译（Windows，MiKTeX / TeX Live 均可）：
+%      xelatex main.tex        % 第 1 遍
+%      bibtex  main            % 只在参考文献变动时需要
+%      xelatex main.tex        % 第 2 遍：解析交叉引用
+%      xelatex main.tex        % 第 3 遍：让 \ref 与页码稳定
+%  一行版：latexmk -xelatex main.tex
+%  若你暂时不想用 .bib，可把 \bibliography{refs} 换成手写 thebibliography
+%  环境（见正文“参考文献”处的注释）。
+%
+%  中文字体：ctexart + fontset=windows 直接调用 Windows 自带的宋体/黑体/
+%  楷体，Windows 上开箱即用。Linux/macOS 请把 fontset=windows 换成
+%  fontset=fandol（随 TeX 发行版自带）。详见同目录 README.md。
+% =====================================================================
+%
+%  【匿名合规 —— 研赛硬性要求】
+%      《论文格式规范（2025，第二十二届）》：论文不能有页眉，不能有任何可能
+%      显示答题人身份的标志。本模板已移除作者/学校/队号字段（没有 \author、
+%      没有队号变量），并已清空页眉，只保留页脚居中页码；请勿自行加回页眉
+%      或任何身份信息。
+%
+%  【规则年份标注 —— 逐条以当年官方通知为准】
+%      以下条款来自 references/contests.md 记录的官方文件（研赛以《论文格式
+%      规范（2025，第二十二届）》为主）。规则逐年修订，提交前必须核对当年
+%      通知（官方平台：研创网 https://cpipc.acge.org.cn ）：
+%      (a) 论文题目、摘要和关键词写在摘要页上，摘要页下一页开始正文；摘要
+%          篇幅一般不超过两页，无需译成英文——2025 规范
+%      (b) 页码从摘要页开始，位于每页页脚中部，阿拉伯数字连续编号——同上
+%          （本模板页脚已按此设置）
+%      (c) 论文不能有页眉，不能有任何可能显示答题人身份的标志——同上
+%          （本模板已清空页眉）
+%      (d) 排版：论文题目三号黑体；一级标题四号黑体并居中；其他汉字小四号
+%          宋体；单倍行距——同上（本模板见下方 \ctexset 与 \linespread）
+%      (e) 研赛没有“承诺书 + 编号专用页”这组前置页（那是国赛独有）；现行
+%          国家级规范未设正文页数上限，只限制摘要 ≤2 页；部分省级规范另有
+%          更严要求（页数、PDF 命名等）——一律以当年通知为准
+%      (f) 引用书籍须指出页码；参考文献格式（官方给定）：书籍“作者，书名，
+%          出版地：出版社，起止页码，出版年。”；期刊“作者，论文名，杂志名，
+%          卷期号：起止页码，出版年。”；网上资源“作者，资源标题，网址，
+%          访问时间（年月日）。”——详见正文“参考文献”处的注释
+%      (g) AI 工具及输出使用规定（2025）要求“多处标注”：辅助数据分析须在
+%          结果前导或后附注释，辅助编程须在程序前加注释并标注工具名称/版本/
+%          机构/日期；AI 输出且无法确认来源的模型与公式一律不予认可——详见
+%          正文“AI 工具使用声明”一节
+%      (h) 赛题有要求时，计算结果与编程源程序需在规定时间内上传竞赛系统
+%          以备检查——同上
+% =====================================================================
+
+\documentclass[12pt,a4paper,fontset=windows]{ctexart}
+
+% ------------------------- 版面与字体 -------------------------
+\usepackage{geometry}
+% 研赛国家级规范未规定页边距（以当年通知为准）；这里用 2.5 cm 的常规版心，
+% 便于与国赛模板保持接近的视觉效果，可按本校/本赛区要求调整。
+\geometry{a4paper,left=2.5cm,right=2.5cm,top=2.5cm,bottom=2.5cm}
+\usepackage{setspace}
+\usepackage{indentfirst}          % 每节首段也缩进（中文排版习惯）
+
+% ------------------------- 数学 -------------------------
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{bm}
+
+% ------------------------- 表格与图 -------------------------
+\usepackage{booktabs}             % 三线表 \toprule \midrule \bottomrule
+\usepackage{multirow}
+\usepackage{array}
+\usepackage{tabularx}
+\usepackage{graphicx}
+\usepackage{float}                % 提供 [H] 浮动体位置
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{tikz}                 % 技术路线图（流程图）自己画，不用外部图片
+\usetikzlibrary{arrows.meta,positioning,shapes.geometric,calc}
+\usepackage{pgfplots}             % 演示用图；你自己的图建议用 matplotlib 导出 PDF
+\pgfplotsset{compat=1.18}
+
+% ------------------------- 算法伪代码 -------------------------
+\usepackage{algorithm}
+\usepackage{algpseudocode}        % algorithmicx 的 pseudocode 语言
+\floatname{algorithm}{算法}
+\renewcommand{\algorithmicrequire}{\textbf{输入：}}
+\renewcommand{\algorithmicensure}{\textbf{输出：}}
+\renewcommand{\algorithmicend}{\textbf{结束}}
+\renewcommand{\algorithmicif}{\textbf{如果}}
+\renewcommand{\algorithmicthen}{\textbf{则}}
+\renewcommand{\algorithmicelse}{\textbf{否则}}
+\renewcommand{\algorithmicfor}{\textbf{对}}
+\renewcommand{\algorithmicforall}{\textbf{对所有}}
+\renewcommand{\algorithmicdo}{\textbf{执行}}
+\renewcommand{\algorithmicwhile}{\textbf{当}}
+\renewcommand{\algorithmicloop}{\textbf{循环}}
+\renewcommand{\algorithmicrepeat}{\textbf{重复}}
+\renewcommand{\algorithmicuntil}{\textbf{直到}}
+\renewcommand{\algorithmicreturn}{\textbf{返回}}
+\renewcommand{\algorithmicprocedure}{\textbf{过程}}
+\renewcommand{\algorithmicfunction}{\textbf{函数}}
+
+% ------------------------- 代码清单（Python 高亮） -------------------------
+\usepackage{listings}
+\usepackage{xcolor}
+\definecolor{codekw}{RGB}{0,0,180}
+\definecolor{codecmt}{RGB}{0,128,0}
+\definecolor{codestr}{RGB}{160,32,32}
+\definecolor{codebg}{RGB}{248,248,248}
+\lstset{
+  language=Python,
+  basicstyle=\ttfamily\small,        % 中文注释跟着 xeCJK 走，用 \small 保证不溢出
+  keywordstyle=\color{codekw}\bfseries,
+  commentstyle=\color{codecmt},
+  stringstyle=\color{codestr},
+  numbers=left,
+  numberstyle=\tiny\color{gray},
+  numbersep=6pt,
+  frame=single,
+  rulecolor=\color{gray!50},
+  backgroundcolor=\color{codebg},
+  breaklines=true,                   % 长行自动折行，避免溢出版心
+  breakatwhitespace=false,
+  postbreak=\mbox{\textcolor{gray}{$\hookrightarrow$}\space},
+  extendedchars=true,                % 允许 UTF-8 / 中文出现在代码与注释里
+  inputencoding=utf8,
+  columns=flexible,
+  keepspaces=true,
+  showstringspaces=false,
+  tabsize=4,
+  captionpos=t,
+  xleftmargin=1.5em,
+  aboveskip=1em,belowskip=1em
+}
+
+% ------------- 页眉页脚（研赛：禁止页眉，只用页脚居中页码） -------------
+\usepackage{fancyhdr}
+\pagestyle{fancy}
+\fancyhf{}                          % 清空页眉与页脚
+\fancyhead{}                        % 研赛硬要求：论文不能有页眉
+\fancyfoot[C]{\thepage}             % 页码：页脚中部，从摘要页开始连续编号
+\renewcommand{\headrulewidth}{0pt}  % 去掉页眉横线
+\renewcommand{\footrulewidth}{0pt}
+
+% ------------------------- 标题样式与交叉引用 -------------------------
+\captionsetup{font=small,labelsep=quad}      % 图题在图下、表题在表上（LaTeX 默认）
+% 研赛排版要求（2025 规范）：一级标题四号黑体并居中；其他汉字小四号宋体。
+% 这里把一级标题设为“一、”“二、”的中文序号样式；若你所在赛区要求
+% “1 引言”式阿拉伯数字编号，把 section/number 与 aftername 两行删掉即可。
+\ctexset{
+  section/name       = {},
+  section/number     = \chinese{section},
+  section/aftername  = {、},
+  section/format     = {\centering\heiti\zihao{4}},
+  section/beforeskip = {1.5ex plus 1ex minus .2ex},
+  section/afterskip  = {1.0ex plus .2ex},
+  subsection/format  = {\heiti\zihao{-4}\raggedright},
+  subsubsection/format = {\heiti\zihao{-4}\raggedright}
+}
+\usepackage[hidelinks]{hyperref}             % 便于电子版跳转；不需要可删
+
+% =====================================================================
+\begin{document}
+
+\linespread{1.0}\selectfont   % 研赛：单倍行距（2025 规范）
+
+% =====================================================================
+% 第 1 页：摘要页（研赛没有“承诺书 + 编号专用页”，摘要页就是第 1 页）
+% 提示：摘要的权重很高——评阅时对摘要和论文都会审阅，摘要不合格会直接
+%       降档。摘要【必须含量化结果】（误差、最优值、提升比例、灵敏度结论），
+%       不能只写“建立了合理的模型”。研赛摘要一般不超过两页，需包含：
+%       建模思路、主要方法、模型、结果与结论、创新点、关键词。
+%       按正文定稿后再回来写摘要（见 assets/abstract-template.md）。
+%       本页不要出现学校/姓名/队号。
+% =====================================================================
+\begin{center}
+  {\zihao{3}\heiti 【论文题目：具体、含研究对象与方法，避免“关于某问题的研究”】}
+\end{center}
+
+\vspace{0.6em}
+\begin{center}
+  {\zihao{4}\heiti 摘\quad 要}   % 摘要标题按“一级标题四号黑体居中”处理
+\end{center}
+\vspace{0.3em}
+
+% 摘要正文：建议 600–1000 字，每一问都要“方法 + 具体数值结果 + 检验结论”。
+针对问题一，本文建立【模型类型，如多目标混合整数规划】模型。首先对【数据/条件】进行【预处理/分析】，
+得到【关键量，含单位】；其次以【目标函数】为目标、以【约束条件】为约束，构建【模型名】；
+然后采用【求解算法/工具及版本】求解，得到【具体数值结果，含单位】。最后以【检验方式】检验，
+【误差/偏差指标】为【数值】，表明模型【结论】。
+
+针对问题二，在问题一的基础上引入【新增因素/机制】，建立【模型名】。由【方法】求解得到【结果】，
+与【基线方案：现状/贪心/单目标模型】相比，【关键指标】改善【百分比】。对【关键参数】做灵敏度
+分析表明，当【参数】在【范围】内变动时，【目标量】的波动不超过【数值】，模型具有较好的稳健性。
+
+针对问题三，建立【模型名】并设计【策略/方案】，求解得到【核心结论】，据此给出【可执行建议】。
+
+本文的创新点在于：【1–3 条真创新，如新增约束、改进算法、组合建模、数据融合】。
+
+\vspace{0.5em}
+\noindent{\heiti 关键词：}\ 【关键词1】；【关键词2】；【关键词3】；【关键词4】
+
+\newpage
+% =====================================================================
+% 正文（摘要页的下一页开始正文；研赛国家级规范未设正文页数上限，
+% 只限制摘要 ≤2 页——2025 规范；部分省级规范更严，以当年通知为准）
+% =====================================================================
+
+\section{问题重述}
+用自己的语言复述背景、已知条件与待求目标，\textbf{不要直接复制题面}。
+
+\subsection{问题背景}
+【背景、数据来源、实际意义；数据来源须可追溯，网上资料要进参考文献】
+% 正文必须出现 \cite 标注，否则参考文献列表是空的（bibtex 会报
+% “I found no \citation commands”）。示例：
+% 本文的建模思路参考了文献~\cite{jiang2018model,si2021algorithm}。
+本文的建模思路与求解框架参考了文献~\cite{jiang2018model,si2021algorithm}。
+
+\subsection{待解决的问题}
+\begin{itemize}
+  \item 问题一：【用一句话说清已知什么、要求什么、输出形式是什么（数值/方案/策略）】
+  \item 问题二：【……】
+  \item 问题三：【……】
+\end{itemize}
+
+\section{问题分析}
+每问都要说清三件事：核心矛盾是什么、关键变量是哪些、为什么选这个模型而不选替代方案。
+
+\subsection{问题一的分析}
+【核心矛盾 + 关键变量 + 可行方法对比（例如“最短路模型 vs 整数规划模型”，说明取舍理由）】
+问题含离散与连续两类变量，凸优化框架下的混合整数规划可以精确刻画该结构~\cite{boyd2004convex}；
+若需要同时优化多个目标，可用多目标进化算法~\cite{deb2002nsga2} 求 Pareto 前沿。
+
+\subsection{问题二的分析}
+【在问题一结论上的增量分析；新引入的机制及其必要性】
+
+\subsection{问题三的分析}
+【……】
+
+\subsection{技术路线图}
+% 硬要求：问题分析这一节必须有一张技术路线图——评委靠它 10 秒判断你是否想清楚。
+% 下面这张图用 TikZ 直接画在 .tex 里，因此模板不依赖任何外部图片文件。
+\begin{figure}[htbp]
+  \centering
+  \begin{tikzpicture}[
+      every node/.style={font=\small},
+      box/.style={draw, rounded corners=2pt, align=center, minimum height=8mm,
+                  inner xsep=5pt, fill=blue!5},
+      ar/.style={-{Stealth[length=2mm]}, thick}
+    ]
+    \node[box] (data) {数据预处理\\与指标筛选};
+    \node[box, right=12mm of data] (q1) {问题一：\\【模型名】};
+    \node[box, right=12mm of q1]  (q2) {问题二：\\【模型名】};
+    \node[box, right=12mm of q2]  (q3) {问题三：\\【模型名】};
+    \node[box, below=10mm of data] (val) {误差分析与\\模型检验};
+    \node[box, below=10mm of q2]   (sens){灵敏度分析\\与稳健性讨论};
+    \node[box, below=10mm of q3]   (dec) {结论与\\可执行建议};
+    \draw[ar] (data) -- (q1);
+    \draw[ar] (q1) -- (q2);
+    \draw[ar] (q2) -- (q3);
+    \draw[ar] (q1) -- (val);
+    \draw[ar] (q2) -- (sens);
+    \draw[ar] (q3) -- (dec);
+  \end{tikzpicture}
+  \caption{本文总体技术路线图（请替换为与你的方案一致的流程）}
+  \label{fig:roadmap}
+\end{figure}
+
+如图~\ref{fig:roadmap} 所示，本文按“数据预处理 $\rightarrow$ 分问建模求解 $\rightarrow$ 检验与灵敏度”的主线展开。
+
+\section{模型假设}
+假设建议 3--8 条；每条都要写“内容 + 理由 + 对模型的影响”，只有内容的假设会被认为不严谨。
+\begin{enumerate}
+  \item \textbf{假设 1}：【内容】。理由：【依据，尽量给出数据或文献支撑】。对模型的影响：【影响】。
+  \item \textbf{假设 2}：【内容】。理由：【……】。对模型的影响：【……】。
+  \item \textbf{假设 3}：【内容】。理由：【……】。对模型的影响：【……】。
+\end{enumerate}
+
+\section{符号说明}
+% 经验数据（社区对 2021–2025 年 64 篇国赛获奖论文的统计，非官方；研赛无同类
+% 统计）显示：“符号说明”出现率约 94%，是中文建模论文的事实标准，默认就写。
+\begin{table}[htbp]
+  \centering
+  \caption{主要符号说明}
+  \label{tab:notation}
+  \begin{tabular}{clc}
+    \toprule
+    符号 & 含义 & 单位 \\
+    \midrule
+    $x_{ij}$   & 决策变量：【含义】 & 【单位】 \\
+    $c_{ij}$   & 【含义】           & 【单位】 \\
+    $Z$        & 目标函数值：【含义】 & 【单位】 \\
+    $\lambda$  & 【含义，如权重系数】 & 无量纲 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+表~\ref{tab:notation} 中未列出的符号在首次出现处给出定义；全文术语与符号必须保持一致。
+多指标权重可用层次分析法标定~\cite{saaty1980ahp}，权重来源与一致性检验结果应在此处说明。
+
+\section{模型的建立与求解}
+主体章节（建议占正文 10--15 页）。每一问都按“为什么选这个模型 $\rightarrow$ 模型建立（公式）
+$\rightarrow$ 求解算法 $\rightarrow$ 结果（图/表）”四段式写。
+
+\subsection{问题一：【模型名称】}
+
+\subsubsection{为什么选这个模型}
+【动机 + 与替代方案的对比。例：问题含离散选址与连续分配两类变量，线性规划无法表达
+“选址后才有流量”的逻辑，因此选混合整数规划；相比启发式，小规模下可求全局最优。】
+
+\subsubsection{模型建立}
+决策变量、目标函数与约束如下：
+\begin{align}
+  \min\ Z & = \sum_{i \in V}\sum_{j \in J} c_{ij} x_{ij}
+             + \lambda \sum_{j \in J} f_j y_j
+             \label{eq:objective} \\[2pt]
+  \text{s.t.}\quad
+  & \sum_{j \in J} x_{ij} = d_i, \qquad \forall i \in V, \label{eq:demand} \\[2pt]
+  & \sum_{i \in V} x_{ij} \le M y_j, \qquad \forall j \in J, \label{eq:capacity} \\[2pt]
+  & x_{ij} \ge 0,\quad y_j \in \{0,1\}. \label{eq:domain}
+\end{align}
+其中式~\eqref{eq:objective} 为目标函数，式~\eqref{eq:demand} 保证需求被满足，
+式~\eqref{eq:capacity} 刻画“只有建站才能服务”的逻辑（$M$ 为足够大的常数），
+式~\eqref{eq:domain} 为取值范围。模型适用条件与局限：【一句话说清前提，例：需求确定为已知】。
+
+\subsubsection{求解算法设计}
+\begin{algorithm}[H]
+  \caption{【算法名，如：拉格朗日松弛 + 局部搜索】求解问题一}
+  \label{alg:q1}
+  \begin{algorithmic}[1]
+    \Require 需求集合 $\{d_i\}$、候选站集合 $J$、距离矩阵 $(c_{ij})$、最大迭代次数 $K$
+    \Ensure 最优选址方案 $y^{*}$ 及目标函数值 $Z^{*}$
+    \State 初始化：$y^{(0)} \gets$ 【初始解构造方式】，$Z^{(0)} \gets +\infty$
+    \For{$k = 1$ \textbf{到} $K$}
+      \State 固定 $y^{(k-1)}$，解式~\eqref{eq:demand}--\eqref{eq:capacity} 得到流量分配 $x^{(k)}$
+      \State 按【邻域动作，如 1-opt 交换】生成候选解集 $\mathcal{N}(y^{(k-1)})$
+      \If{$\exists\, y' \in \mathcal{N}(y^{(k-1)})$ 使 $Z(y') < Z^{(k-1)}$}
+        \State $y^{(k)} \gets \arg\min_{y' \in \mathcal{N}} Z(y')$，更新 $Z^{(k)}$
+      \Else
+        \State $y^{(k)} \gets y^{(k-1)}$；\textbf{跳出}循环
+      \EndIf
+    \EndFor
+    \State \Return $y^{(K)},\, Z^{(K)}$
+  \end{algorithmic}
+\end{algorithm}
+
+算法~\ref{alg:q1} 的时间复杂度为【$O(\cdot)$】；参数设置为【步长/惩罚系数/迭代上限】，
+收敛判据为【判据】。局部搜索部分可参考无导数直接搜索方法~\cite{nelder1965simplex}。
+软件与版本：【Python 3.11 + numpy 1.26 / LINGO 20 / MATLAB R2023b】。
+
+\subsubsection{求解结果}
+\begin{figure}[htbp]
+  \centering
+  \begin{tikzpicture}
+    \begin{axis}[
+        width=0.72\textwidth, height=0.40\textwidth,
+        xlabel={迭代次数 $k$},
+        ylabel={目标函数值 $Z$（万元）},
+        grid=major,
+        legend pos=north east,
+        legend style={font=\small, draw=none, fill=none},
+        every axis plot/.append style={thick}
+      ]
+      % 【占位数据】下面两组数值仅用于演示排版，请替换为你自己算出的结果序列。
+      \addplot[mark=*, color=blue] coordinates
+        {(0,128.4)(5,112.7)(10,104.2)(15,101.3)(20,100.2)(30,100.0)};
+      \addlegendentry{本文算法}
+      \addplot[mark=square*, dashed, color=red] coordinates
+        {(0,128.4)(5,120.1)(10,115.6)(15,113.2)(20,112.4)(30,112.0)};
+      \addlegendentry{贪心基线}
+    \end{axis}
+  \end{tikzpicture}
+  \caption{算法收敛曲线与基线对比（横轴：迭代次数；纵轴：目标函数值，单位万元）}
+  \label{fig:convergence}
+\end{figure}
+
+\begin{table}[htbp]
+  \centering
+  \caption{问题一求解结果（【占位数据】，请替换为程序输出）}
+  \label{tab:q1result}
+  \begin{tabular}{lcc}
+    \toprule
+    方案 & 目标函数值 $Z$ / 万元 & 服务覆盖率 / \% \\
+    \midrule
+    现状方案（基线） & 128.4 & 86.5 \\
+    贪心算法       & 112.0 & 91.2 \\
+    本文模型       & 100.0 & 96.8 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+结果如图~\ref{fig:convergence} 与表~\ref{tab:q1result} 所示：本文算法在第【$k$】次迭代后收敛，
+目标函数值较基线下降【$x\%$】。所有数值均由附录程序输出，避免手抄数字造成论文与代码不符。
+
+\subsection{问题二：【模型名称】}
+【同问题一的四段式；重点写清在问题一基础上的增量，以及新增变量的物理意义】
+
+\subsection{问题三：【模型名称】}
+【同前】
+
+\section{结果分析与检验}
+% 检验与灵敏度不一定要独立成章（社区统计：约 23%/19% 的获奖论文独立成章），
+% 但内容必须存在——只给结果不做检验是明确的失分点。
+
+\subsection{误差分析}
+【误差指标定义（RMSE/MAE/MAPE）、计算方式、数值；解释“为什么误差是这个量级”
+（数据精度、模型简化、随机性），不要只报一个数】
+
+\subsection{与基准方案的对比}
+【至少与一个基线对比：现状方案 / 贪心 / 单目标模型 / 文献结果。给出表格与百分比变化，
+说明改进来自哪一步（模型结构？求解质量？数据融合？）】
+
+\subsection{灵敏度分析}
+【选 2--4 个对结论影响最大的参数；扰动范围给依据（$\pm 10\%/\pm 20\%$，或按数据精度）。
+结论句模板：“当【参数】在【范围】内变动时，【目标量】变化不超过【$Z\%$】，模型稳健”
+或“……高度敏感，实际中需精确测量该参数”。】
+全局灵敏度指标（如 Sobol 指数）的定义与使用可参考~\cite{saltelli2008global}。
+
+\subsection{模型检验}
+【用独立数据/留出法验证；或做极端情形测试（边界值、退化情形）；或与解析解/小规模
+穷举解比对。说明检验通过与否，不通过时如何修正】
+
+\section{模型的评价与推广}
+\subsection{模型优点}
+【3 条以上，每条对应一个可验证的事实（如“可求全局最优”“复杂度为 $O(n^2)$”“对缺失数据稳健”）】
+\begin{enumerate}
+  \item 【优点 1】
+  \item 【优点 2】
+  \item 【优点 3】
+\end{enumerate}
+
+\subsection{模型缺点与改进方向}
+【2 条以上，写成“局限 + 改进方向”，诚实但不自我否定】
+\begin{enumerate}
+  \item 【局限 1】$\rightarrow$ 改进方向：【……】
+  \item 【局限 2】$\rightarrow$ 改进方向：【……】
+\end{enumerate}
+
+\subsection{模型推广}
+【适用于什么条件、可迁移到哪些场景（写清楚前提，不要空喊“可广泛应用”）】
+
+% =====================================================================
+% AI 工具使用声明
+% 【规则归属，别搞混】“声明必须排在参考文献之前”是国赛《AI 工具使用规定
+%   （2026 年试行）》的要求；研赛《人工智能工具及输出使用规定（2025）》要求的
+%   是“多处标注”，并未规定必须在正文放一份统一声明。本模板仍把本节放在参考
+%   文献之前，作为统一做法便于复用；**具体以当年官方通知为准**。
+% 研赛 2025 规定照做要点（违反者视为违反竞赛规则，取消评奖资格）：
+%   1) 辅助数据分析：须在结果前导或后附注释，写明参考了 AI 输出，并标注
+%      工具名称/版本或型号/开发机构/发布日期；
+%   2) 辅助编程：须在程序前加注释“本程序及代码是在人工智能工具辅助下完成的”，
+%      并标注工具信息（附录代码处已给占位注释）；
+%   3) AI 输出且无法确认来源的“模型”“公式”可以标注，但参考文献中须列出 AI
+%      工具名称、版本/型号、开发机构、发布日期；无推导过程、无引用标识、
+%      无法确认来源的模型与公式一律不予认可；
+%   4) 最终呈现在解答中的文字必须用参赛队自己的语言表述，AI 不可替代参赛
+%      选手的独立思考和核心创新。
+% =====================================================================
+\section*{AI 工具使用声明}
+\addcontentsline{toc}{section}{AI 工具使用声明}   % 本模板无目录，此行可留可删
+
+% —— 情况一：全程未使用 AI 工具 ——
+本参赛队在竞赛过程中未使用任何AI工具。
+
+% —— 情况二：使用了 AI 工具（把上面那句注释掉，改用下面这段并逐项填实）——
+% 本参赛队在竞赛过程中使用了AI工具，使用情况如下：
+%   工具名称与版本/型号：【……】；开发机构：【……】；发布日期：【……】。
+%   使用环节与目的：【如文献检索、思路开拓、代码调试、语言润色】。
+%   主要提示方式与使用过程：【简述提问方式与迭代过程，可附典型交互示例】。
+%   对 AI 输出的采纳与人工核验：【哪些采纳、哪些人工修改、如何验证正确性】。
+% 涉及 AI 辅助的数据分析结果已在正文相应位置加注说明；涉及 AI 辅助的程序已
+% 在附录代码前加注说明；AI 输出的模型与公式均已自行推导并给出可查证文献。
+
+% =====================================================================
+% 参考文献
+% 研赛《论文格式规范（2025）》给定的著录格式（正文引用处用方括号标注编号，
+% 如 [1][3]；**引用书籍须指出页码**）：
+%   书籍：   [编号] 作者，书名，出版地：出版社，起止页码，出版年。
+%   期刊：   [编号] 作者，论文名，杂志名，卷期号：起止页码，出版年。
+%   网上资源：[编号] 作者，资源标题，网址，访问时间（年月日）。
+% 用 .bib 时 \bibliographystyle{unsrt} 生成“[1] 作者. 题名. ...”的西式条目，
+% 与上面的官方格式不完全一致；两种做法都可行，请择一并保持全文统一：
+%   (A) 用 .bib：把 refs.bib 放同目录，编译时跑一次 bibtex main（当前设置）；
+%   (B) 手写：删掉下面两行，换成
+%       \begin{thebibliography}{99}
+%         \bibitem{ref1} 作者，书名，出版地：出版社，起止页码，出版年。
+%       \end{thebibliography}
+% 无论哪种做法：引用的程序须注明来源，否则按抄袭处理；网上资料必须列出。
+% =====================================================================
+\bibliographystyle{unsrt}          % 按正文引用顺序编号 [1][2][3]
+\bibliography{refs}
+
+\newpage
+% =====================================================================
+% 附录（附在正文之后；电子版中同样不得出现身份信息）
+% 研赛相关要求（2025 规范）：如题目要求，计算结果与编程源程序需在规定时间内
+% 上传竞赛系统以备检查；引用的程序须注明来源，否则按抄袭处理；专家委员会会做
+% 相似度检测。附录建议给出：全部完整可运行源程序 + 数据/结果文件列表。
+% 确实未用程序时写明“本论文没有用到程序”。
+% =====================================================================
+\appendix
+\section{文件列表}
+% 按实际提交内容填写（哪些程序、哪些数据、哪些中间结果文件），便于评阅人复现。
+\begin{table}[htbp]
+  \centering
+  \caption{文件列表（【占位内容】，请按实际情况增删）}
+  \label{tab:files}
+  \begin{tabular}{llp{7.2cm}}
+    \toprule
+    文件 & 类型 & 说明 \\
+    \midrule
+    \texttt{code/q1\_solve.py} & Python 源码 & 问题一建模与求解，输出 \texttt{results/q1.json} \\
+    \texttt{code/q2\_solve.py} & Python 源码 & 问题二求解 \\
+    \texttt{code/plot\_fig.py} & Python 源码 & 生成论文中的全部图 \\
+    \texttt{data/raw.csv}      & 数据       & 原始数据（来源：【给出出处】） \\
+    \texttt{results/}          & 结果        & 程序输出的 JSON/CSV，论文数值均来自此处 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\section{主要源程序}
+% 推荐用 \lstinputlisting 直接引入源文件，保证论文代码与实际运行的代码完全一致：
+%   \lstinputlisting[language=Python, caption={问题一求解程序 q1_solve.py}]{code/q1_solve.py}
+% 下面的 lstlisting 只是一段可在本文件内直接编译的示例（去掉它换成你的代码）。
+
+\begin{lstlisting}[caption={问题一求解程序（示例，请替换为你的完整代码）}, label={lst:q1}]
+# -*- coding: utf-8 -*-
+# 【研赛规定占位注释】若本程序使用了 AI 辅助，必须保留并填实下面这行，
+# 否则请整段删除：
+# 本程序及代码是在人工智能工具辅助下完成的（工具名称：____；版本/型号：____；
+# 开发机构：____；发布日期：____）。
+"""问题一求解程序：最小二乘拟合并输出结果（示例）
+
+运行环境：Python 3.9+，仅依赖 numpy（与论文结果一一对应）。
+输出文件：results.json —— 论文表格/图中的数值全部来自该文件，
+          避免手抄数字导致“论文数字与附录代码不符”。
+"""
+
+import json
+
+import numpy as np
+
+
+def fit_poly(x, y, degree):
+    """最小二乘多项式拟合。
+
+    参数:
+        x: 自变量序列
+        y: 因变量序列
+        degree: 多项式阶数
+
+    返回:
+        多项式系数（按次数升序）
+    """
+    design = np.vander(np.asarray(x, dtype=float), degree + 1)
+    coef, *_ = np.linalg.lstsq(design, np.asarray(y, dtype=float), rcond=None)
+    return coef
+
+
+def main():
+    rng = np.random.default_rng(20260910)      # 固定种子，保证结果可复现
+    x = np.linspace(0.0, 10.0, 60)
+    y = 2.0 + 0.8 * x - 0.05 * x ** 2 + rng.normal(0.0, 0.1, x.size)
+    coef = fit_poly(x, y, 2)
+    y_hat = np.vander(x, 3) @ coef
+    rmse = float(np.sqrt(np.mean((y - y_hat) ** 2)))
+    with open("results.json", "w", encoding="utf-8") as fp:
+        json.dump({"coef": coef.tolist(), "rmse": rmse}, fp,
+                  ensure_ascii=False, indent=2)
+    print("RMSE = %.4f" % rmse)
+
+
+if __name__ == "__main__":
+    main()
+\end{lstlisting}
+
+程序~\ref{lst:q1} 为示例结构，请替换为与论文结果一致的完整、可直接运行的源程序
+（建议按题目要求上传竞赛系统备查）；若本论文确实没有用到程序，请在此处写明
+“本论文没有用到程序”。
+
+\end{document}

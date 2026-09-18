@@ -116,11 +116,22 @@ git clone https://github.com/anticipate218/math-modeling-skill.git ~/.claude/ski
 | "这个模型够不够" | 按官方四维标准（假设合理性/建模创造性/结果正确性/表述清晰度）逐项挑问题 |
 | "提交前帮我检查一遍" | 跑自检脚本 + 逐项过对应竞赛的合规清单（含 AI 声明、匿名、页数、查重提示） |
 | "美赛和国赛有什么区别" | 给三大赛事的规则/格式/评审差异对照 |
+| "给我一套能直接编译的 LaTeX 论文模板" | 指向对应的自包含模板，给编译序列；提醒页数/memo 等可变项以当年官方文件为准 |
+| "要 AHP/熵权/TOPSIS/灰色关联的实现" | 给自带的可运行实现 + 自检与黄金值回归，点明正向化、一致性检验等真实陷阱 |
+| "帮我找几张优秀论文的图当素材" | 说明不能再分发他人图表，改用自带原创图库当画图范本，并给官方可引用来源索引 |
 
 **增强模型库**：
 - [`references/model-implementations.md`](references/model-implementations.md)：按题目类别归类模型族，逐项说明基线、改进阶梯、适用前提与验证要求。
 - [`references/github-resources.md`](references/github-resources.md)：从 GitHub 一手 README/仓库页核验的 OR-Tools、Pyomo、sktime、Darts、StatsForecast、statsmodels、scikit-learn、XGBoost、SciML、FiPy、FEniCS、NetworkX、Shapely、Mesa、Nashpy 等资源。
+- [`references/algorithm-implementations.md`](references/algorithm-implementations.md)：模型 → 算法 → 复杂度 → 本仓库实现 → 外部库 → 陷阱的对照索引。
 - [`examples/modeling_patterns.py`](examples/modeling_patterns.py)：带详细注释的 TOPSIS、滚动均值/MAE、Dijkstra、蒙特卡洛基线；只使用示例数据，不冒充完整解题器。
+
+**可直接用的成品件**：
+- [`assets/latex/`](assets/latex/)：国赛 / 研赛 / 美赛三套**单一自包含**的 LaTeX 模板（不 `\input` 外部文件、不依赖外部图片，图表用 TikZ/pgfplots 内联），`xelatex → bibtex → xelatex ×2` 即可编译；已内置各赛事硬规则（摘要页、页码、AI 声明位置、附录源程序）。
+- [`examples/algorithms/`](examples/algorithms/)：11 个算法模块（优化/评价/聚类/微分方程/随机模拟/图论/几何/博弈/启发式/预测/统计），**仅依赖 numpy 与标准库**；每个函数都带 `_self_test()`，再用 [`examples/run_algorithms.py`](examples/run_algorithms.py) 跑黄金值回归与确定性复跑。
+- [`assets/gallery/`](assets/gallery/)：16 张**原创**论文配图（评价权重与敏感性、TOPSIS 排序、预测对比与残差诊断、SIR 机理与参数敏感性、Pareto 前沿、蒙特卡洛收敛、排队仿真、最短路、空间插值、相关矩阵等），由 [`scripts/make_figures.py`](scripts/make_figures.py) 固定种子生成——**逐字节可复现**，可当画图与图注范本。
+
+**为什么仓库里没有历年优秀论文的原图**：论文插图版权归作者/出版方，即使标注出处，未经许可把它们下载进仓库再分发通常也不构成合规使用，还会带来学术诚信风险。因此本仓库改为提供「原创可复现图库 + 官方与作者授权来源的链接索引」，见 [`references/paper-examples.md`](references/paper-examples.md)。
 
 **GitHub 资源使用原则**：固定 commit/release，逐项检查仓库/代码/数据许可证，记录访问日期和运行环境；只借实现，不借论文结论，不报告未经核验的 stars 或性能排名。
 
@@ -146,9 +157,11 @@ python scripts/check_paper.py --self-test                # 验证脚本自身可
 
 | 层 | 命令 | 检查什么 |
 |---|---|---|
-| 结构 | `python scripts/validate_skill.py .` | frontmatter 字段白名单、`name` 与目录一致、description/compatibility 长度、正文行数、**文件引用是否存在**、Windows 反斜杠路径 |
+| 结构 | `python scripts/validate_skill.py . --strict` | frontmatter 字段白名单、`name` 与目录一致、description/compatibility 长度、正文行数、**文件引用是否存在**、未索引文件、Windows 反斜杠路径 |
 | 自检工具 | `python scripts/check_paper.py --self-test` | 用「好稿/坏稿」固件验证检查逻辑本身没坏 |
-| 触发评测 | 见 `evals/` | 22 条查询（11 正例 + 11 个 near-miss 负例）测 description 触发率；10 条行为用例含**反幻觉断言**（如"不得编造官方评分权重""不得编造 star 数与性能基准"） |
+| 算法回归 | `python examples/run_algorithms.py` | 自带的 11 个算法模块、324 个断言键逐个跑数值自检，并与 `algorithms_golden.json` 黄金值比对（含确定性复跑） |
+| 依赖边界 | 见 `.github/workflows/ci.yml` | AST 扫描 `examples/algorithms/*.py`，禁止引入 scipy/sklearn/pandas 等重型依赖 |
+| 触发评测 | 见 `evals/` | 22 条查询（11 正例 + 11 个 near-miss 负例）测 description 触发率；14 条行为用例含**反幻觉断言**（如"不得编造官方评分权重""不得编造 star 数与性能基准""不得再分发他人论文图表"） |
 | 持续集成 | `.github/workflows/ci.yml` | 上述全部 + JSON 合法性 + 路径风格 |
 
 其中 `validate_skill.py` 对所有 Agent Skill 作者都有用：它专门拦"跨工具分发时会硬报错"的 frontmatter 问题（比如多写了非标准字段）。
@@ -167,16 +180,28 @@ math-modeling-skill/
 │   ├── scoring-rubric.md         # 评阅标准与失分点（官方原文 + 非官方经验明确标注）
 │   ├── checklists.md             # 提交前自检清单（通用 / AI 合规 / 三赛事各自专用）
 │   ├── github-resources.md       # 已核验 GitHub 模型库与许可证/边界说明
-│   └── model-implementations.md  # 按题目类别的基线、改进阶梯和验证协议
+│   ├── model-implementations.md  # 按题目类别的基线、改进阶梯和验证协议
+│   ├── algorithm-implementations.md # 模型→算法→复杂度→本仓库实现→外部库→陷阱 对照索引
+│   ├── paper-examples.md         # 优秀论文与官方来源索引（只给链接，不再分发他人图表）
+│   └── templates.md              # LaTeX 模板选择、编译与排版答疑
 ├── scripts/
 │   ├── check_paper.py            # 论文自检工具（纯标准库，非交互，支持 --json/--self-test/--init）
-│   └── validate_skill.py         # 技能结构校验（frontmatter / 篇幅 / 文件引用）
+│   ├── validate_skill.py         # 技能结构校验（frontmatter / 篇幅 / 文件引用，支持 --strict）
+│   └── make_figures.py           # 生成 assets/gallery/ 原创论文配图（固定种子，可完整复现）
 ├── assets/
 │   ├── abstract-template.md      # 摘要模板：中文（国赛/研赛）+ 英文 Summary Sheet（美赛）
 │   ├── cheatsheet.md             # 一页纸红线清单（可打印，提交前 30 分钟核对）
-│   └── paper-outline.md          # 可填空论文骨架（三赛事，含占位符提示）
+│   ├── paper-outline.md          # 可填空论文骨架（三赛事，含占位符提示）
+│   ├── latex/                    # 三套可直接编译的自包含 LaTeX 论文模板
+│   │   ├── cumcm/main.tex        # 国赛（中文，ctexart + bibtex）
+│   │   ├── yjs/main.tex          # 研赛（中文）
+│   │   └── mcm/main.tex          # 美赛（英文 Summary Sheet + Report on Use of AI）
+│   └── gallery/                  # 16 张原创配图 + 画法与图注说明
 ├── examples/
-│   └── modeling_patterns.py       # 带注释的透明基线示例
+│   ├── modeling_patterns.py      # 带注释的透明基线示例
+│   ├── algorithms/               # 11 个算法模块（仅依赖 numpy + 标准库）
+│   ├── run_algorithms.py         # 算法自检 + 黄金值回归（确定性复跑）
+│   └── algorithms_golden.json    # 黄金值基线（CI 比对用）
 ├── evals/                        # 触发评测与行为用例（含 near-miss 负例）
 ├── .github/
 │   ├── workflows/ci.yml          # 持续集成

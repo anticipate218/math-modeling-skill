@@ -6,8 +6,9 @@
 用法：
     python scripts/validate_skill.py            # 校验本技能目录
     python scripts/validate_skill.py <技能目录>
+    python scripts/validate_skill.py --strict   # 警告也视为失败（CI 用）
 
-退出码：0 通过；1 存在错误。
+退出码：0 通过；1 存在错误（或用 --strict 时存在警告）。
 """
 
 from __future__ import annotations
@@ -25,8 +26,15 @@ MAX_DESC = 1024
 MAX_COMPAT = 500
 MAX_BODY_LINES = 500
 
-# SKILL.md 中引用的相对路径（references/xxx.md、scripts/xxx.py 等）
-PATH_REF_RE = re.compile(r"(?:references|scripts|assets|evals)/[\w./-]+\.(?:md|py|json|ya?ml|tex|bib)")
+# SKILL.md 中引用的相对路径（references/xxx.md、scripts/xxx.py、examples/xxx.py 等）
+PATH_REF_RE = re.compile(
+    r"(?:references|scripts|assets|evals|examples)/[\w./-]+\.(?:md|py|json|ya?ml|tex|bib)")
+
+# 需要检查"是否已在 SKILL.md 中被引用"的目录（渐进式披露：这些目录里的顶层文件都应有索引）
+INDEXED_DIRS = ("references", "scripts", "assets", "evals", "examples")
+
+# 反斜杠路径检测：命中即说明作者把 Windows 路径写进了文档，跨平台会失效
+BACKSLASH_RE = re.compile(r"(?:references|scripts|assets|evals|examples)\\[\w.\\-]+")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -39,6 +47,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="validate_skill.py",
                                      description="校验 Agent Skill 的 frontmatter、篇幅与文件引用。")
     parser.add_argument("skill_dir", nargs="?", default=".", help="技能目录（含 SKILL.md），默认当前目录")
+    parser.add_argument("--strict", action="store_true",
+                        help="把警告也当作失败（CI 用；用于强制索引完整性）")
     args = parser.parse_args(argv)
 
     root = Path(args.skill_dir).resolve()
@@ -102,10 +112,12 @@ def main(argv: list[str] | None = None) -> int:
         warnings.append(f"SKILL.md 正文 {body_lines} 行，超过官方建议的 {MAX_BODY_LINES} 行；"
                         "考虑把细节移到 references/")
 
-    # 6) 反模式：技能内的 Windows 风格路径
-    for path in [skill] + sorted(root.glob("references/*.md")):
+    # 6) 反模式：技能内的 Windows 风格路径（文档一律用正斜杠，否则跨平台失效）
+    docs = [skill] + sorted(root.glob("references/*.md")) + sorted(root.glob("assets/**/*.md")) \
+        + sorted(root.glob("examples/*.md")) + sorted(root.glob("evals/*.md"))
+    for path in docs:
         for i, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-            if re.search(r"(?:references|scripts|assets|evals)\\[\w.\\-]+", line):
+            if BACKSLASH_RE.search(line):
                 errors.append(f"{path.relative_to(root)}:{i} 出现反斜杠路径（应统一正斜杠）：{line.strip()}")
 
     # 7) 文件引用是否真实存在
@@ -116,8 +128,8 @@ def main(argv: list[str] | None = None) -> int:
     if referenced:
         print(f"检查了 {len(referenced)} 个文件引用")
 
-    # 8) 目录清单提示（未在 SKILL.md 中出现的文件）
-    for sub in ("references", "scripts", "assets", "evals"):
+    # 8) 目录清单提示（未在 SKILL.md 中出现的顶层文件）
+    for sub in INDEXED_DIRS:
         d = root / sub
         if d.is_dir():
             for f in sorted(d.iterdir()):
@@ -131,8 +143,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[WARN] {w}")
     for e in errors:
         print(f"[ERROR] {e}")
-    print(f"\n结果：{len(errors)} 个错误，{len(warnings)} 个警告")
-    return 1 if errors else 0
+    failed = len(errors) > 0 or (args.strict and len(warnings) > 0)
+    if failed and not errors:
+        print("[ERROR] --strict 已开启：上面的警告按错误处理")
+    print(f"\n结果：{len(errors)} 个错误，{len(warnings)} 个警告"
+          + ("（--strict）" if args.strict else ""))
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":

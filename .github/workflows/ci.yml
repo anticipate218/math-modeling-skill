@@ -46,11 +46,17 @@ jobs:
           print("依赖检查通过：examples/algorithms/ 只用 numpy + 标准库")
           PY
 
-      - name: 安装 numpy（算法自测需要）
+      - name: 安装 numpy（算法自测 / 配图自检需要）
         run: python -m pip install --quiet "numpy>=1.24"
 
       - name: 算法模块自测 + 黄金值比对 + 确定性检查
         run: python examples/run_algorithms.py
+
+      - name: 配图配色可访问性体检（二色觉 ΔE / 灰度间隔 / 对白底对比度）
+        run: python scripts/check_palette.py --quiet
+
+      - name: 配图数值内核自检（只需 numpy，不出图）
+        run: python scripts/make_figures.py --self-test
 
       - name: 校验评测用例为合法 JSON
         run: |

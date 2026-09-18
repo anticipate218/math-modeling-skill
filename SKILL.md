@@ -7,9 +7,9 @@ description: >-
 license: MIT
 metadata:
   author: anticipate218
-  version: "1.4.0"
+  version: "1.5.0"
   language: zh-CN
-compatibility: 可选依赖 Python 3.9+；scripts/check_paper.py 仅用标准库（读 PDF 需 pip install pypdf）
+compatibility: 可选依赖 Python 3.9+；scripts/check_paper.py 仅用标准库（读 PDF 需 pip install pypdf）；scripts/make_figures.py 需 matplotlib，scripts/check_palette.py 需 numpy
 ---
 
 # 数学建模竞赛助手
@@ -175,6 +175,7 @@ python scripts/check_paper.py paper.md --contest mcm       # 美赛
 | 要一份可直接编译的论文模板（国赛/研赛/美赛） | `assets/latex/`（先读 `assets/latex/README.md`） |
 | 要论文配图范本、图注写法与绘图规范 | `assets/gallery/`（先读 `assets/gallery/README.md`） |
 | 重新生成配图库或跑配图数值自检 | `scripts/make_figures.py`（`--dpi` / `--only` / `--self-test`） |
+| 检查配图配色是否对色觉障碍友好、灰度下是否还分得开 | `scripts/check_palette.py`（`--quiet` / `--self-test`） |
 | 写摘要 | `assets/abstract-template.md` |
 | 一页纸红线清单（可打印） | `assets/cheatsheet.md` |
 | 可填空论文骨架（含占位符提示） | `assets/paper-outline.md` |

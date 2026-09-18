@@ -13,9 +13,11 @@
     python scripts/make_figures.py --self-test        # 只跑数值自检，不出图
 
 依赖:
-    仅 numpy + matplotlib。**本脚本刻意不接入 CI**——CI 只运行
-    `scripts/validate_skill.py` 与 `scripts/check_paper.py`，那台机器不装 matplotlib。
-    因此这里对缺库做了显式检测，并给出可照抄的安装命令，而不是抛一条裸 ImportError。
+    仅 numpy + matplotlib。CI 只跑 `--self-test`（纯数值内核，只需 numpy），
+    **不出图**——渲染依赖 matplotlib 与中文字体，放 CI 里既不稳也不必要，
+    因此出图放在本机执行，并在这里对缺库做显式检测、给出可照抄的安装命令，
+    而不是抛一条裸 ImportError。配套的 `scripts/check_palette.py` 会直接读本文件
+    的设计令牌做配色体检，所以即使不出图，配色也能在 CI 里被验证。
 
 退出码: 0 成功；1 有图生成失败或疑似空白；2 缺少依赖。
 """
@@ -24,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import heapq
+import re
 import sys
 import time
 from pathlib import Path
@@ -41,9 +44,37 @@ DEFAULT_OUT = REPO_ROOT / "assets" / "gallery"
 #: 中文字体候选；顺序即优先级，DejaVu Sans 仅作最后兜底（不含汉字，会出方框）
 CJK_FONT_CANDIDATES = ["Microsoft YaHei", "SimHei", "DejaVu Sans"]
 
-#: Okabe-Ito 色盲友好配色（色觉障碍者仍可区分，也适合黑白打印时靠线型区分）
+# ------------------------------------------------------------------ 设计令牌
+#: Okabe-Ito 色盲友好配色的 7 个彩色（**已剔除黑色**）。
+#: 为什么保留 Okabe-Ito 而不是换成"更好看"的 seaborn/ColorBrewer：
+#: 用 Machado(2009) 严重度 1.0 矩阵在**线性 sRGB** 下模拟三类色盲，再算 CIELAB ΔE*ab
+#: 的两两最小距离，本组是候选里最稳的（最差 16.1）。常见"论文风"调色板的实测值：
+#: seaborn deep 2.7、ColorBrewer Set2 2.5、tab10 4.6 —— 在红色盲下几乎并成一块，
+#: 属于可及性倒退。ΔE≥10 才算"能分辨"，≥20 才算"轻松分辨"。
+#: 黑色另作参考线/文字用（见 INK），不参与数据着色，否则会和坐标轴混淆。
+#: `#F0E442`（黄）与白色的对比度仅 1.32，细线在白底上几乎看不见，故只留作最后兜底。
 OKABE_ITO = ["#0072B2", "#D55E00", "#009E73", "#CC79A7",
-             "#E69F00", "#56B4E9", "#F0E442", "#000000"]
+             "#E69F00", "#56B4E9", "#F0E442"]
+
+#: 默认颜色循环：前 6 个彩色。相邻序号色相差异最大，便于"多条曲线按顺序取色"时区分。
+CYCLE = OKABE_ITO[:6]
+
+#: 语义化颜色角色。学术配图的关键不是"颜色多好看"，而是**非数据元素要退到背景里**：
+#: 坐标轴/文字用近黑而不是纯黑（纯黑在小字号下显得生硬），网格用极浅灰，
+#: 参考线用中性灰，高亮只留给"要读者看的那一个东西"。
+INK = "#262626"          # 轴线、刻度、正文文字
+INK_SOFT = "#5C5C5C"     # 次级标注、注释箭头
+INK_MUTED = "#9A9A9A"    # 参考线、被支配解等"背景数据"
+GRID = "#DCDCDC"         # 网格线
+PANEL_BG = "#F4F4F5"     # 外推期/置信带等的浅底
+EDGE = "#FFFFFF"         # 标记描边：白描边让重叠点仍能分辨（比黑描边更现代）
+CMAP_SEQ = "viridis"     # 顺序型：感知均匀 + 色盲安全（替换掉非均匀的 YlGnBu）
+CMAP_DIV = "RdBu_r"      # 发散型：以 0 为中心的相关系数
+
+#: 颜色之外的第二、第三编码通道（WCAG 2.1 1.4.1：颜色不得是唯一区分手段）。
+#: 灰度打印会抹掉颜色差异，但线型和标记点形状会保留下来。
+_LINESTYLES = ["-", "--", "-.", ":"]
+_MARKERS = ["o", "s", "^", "D", "v", "P"]
 
 # 评价类题目共用的 8 项指标（示例指标，实际论文里必须写清来源依据）
 INDICATORS = ["经济性", "安全性", "可靠性", "环保性", "运行效率", "可扩展性", "维护成本", "用户满意度"]
@@ -129,8 +160,9 @@ def configure_style() -> str:
         str: 实际生效的中文字体名。
 
     算法:
-        设置 `font.sans-serif` 候选链 + `axes.unicode_minus=False`，再把字号统一到
-        论文正文 10.5pt 下的推荐区间（图内 8-10pt）。
+        一次性写入整套 rcParams：字体与字号 → 坐标系外框 → 刻度 → 图例 → 线条与标记
+        → 网格 → 输出。原则是"**数据是唯一的深色，其余全部退到背景**"：
+        去掉上/右边框、刻度朝外、图例去边框、网格改浅灰细实线、条形图去黑描边。
 
     复杂度:
         时间 O(1)（不含字体表构建）；空间 O(1)。
@@ -139,26 +171,84 @@ def configure_style() -> str:
         - `axes.unicode_minus` 不设成 False，负号会渲染成"豆腐块"（方框）。
         - 字号设得比正文还大是很常见的新手错误，会让图显得"头重脚轻"。
         - 不要在这里 print：模块导入期不允许有输出。
+        - `axes.spines.top/right=False` 只对**之后新建**的坐标轴生效；若某图需要完整
+          边框（如热力图），要在该图内部显式打开，不能指望这里的默认值。
+        - `patch.linewidth=0` 会让条形图/直方图默认无描边；个别图若显式传了
+          `edgecolor`/`linewidth`，将覆盖这里的默认值——这正是"逐图微调"的入口。
+        - 这里**不设** `axes.grid=True`：网格是否出现由每张图自己决定（`_grid`），
+          否则热力图、雷达图、网络图会被网格线污染。
 
     参考:
-        Matplotlib 官方 `rcParams` 说明；`references/model-library.md` §11 绘图硬要求。
+        Matplotlib 官方 `rcParams` 说明；`assets/gallery/README.md` §5 通用绘图规范；
+        Machado, Oliveira & Fernandes (2009) *A physiologically-based model for
+        simulation of color vision deficiency*；Okabe & Ito (2008) 色盲友好配色。
     """
     font = resolve_cjk_font()
-    plt.rcParams["font.sans-serif"] = CJK_FONT_CANDIDATES
-    plt.rcParams["font.family"] = "sans-serif"
-    plt.rcParams["axes.unicode_minus"] = False
-    plt.rcParams["font.size"] = 9
-    plt.rcParams["axes.titlesize"] = 10
-    plt.rcParams["axes.labelsize"] = 9
-    plt.rcParams["xtick.labelsize"] = 8
-    plt.rcParams["ytick.labelsize"] = 8
-    plt.rcParams["legend.fontsize"] = 8
-    plt.rcParams["figure.titlesize"] = 11
-    plt.rcParams["axes.grid"] = False
-    plt.rcParams["axes.axisbelow"] = True
-    plt.rcParams["savefig.facecolor"] = "white"
-    plt.rcParams["figure.facecolor"] = "white"
-    plt.rcParams["axes.prop_cycle"] = plt.cycler(color=OKABE_ITO)
+    plt.rcParams.update({
+        # ---- 字体与字号：正文 10.5pt 时图内 8-10pt，绝不大于正文 ----
+        "font.sans-serif": CJK_FONT_CANDIDATES,
+        "font.family": "sans-serif",
+        "axes.unicode_minus": False,
+        "font.size": 9,
+        "axes.titlesize": 10,
+        "axes.labelsize": 9,
+        "xtick.labelsize": 8,
+        "ytick.labelsize": 8,
+        "legend.fontsize": 8,
+        "figure.titlesize": 11,
+        # ---- 坐标系外框：只留左+下，颜色用近黑而非纯黑 ----
+        "axes.spines.top": False,
+        "axes.spines.right": False,
+        "axes.edgecolor": INK,
+        "axes.linewidth": 0.8,
+        "axes.labelcolor": INK,
+        "axes.titlecolor": INK,
+        # 子图标题一律**左对齐**顶在各自坐标轴上方：这是期刊/CVPR 的分图约定，
+        # 居中式标题会被误读成"整张图的总标题"。`fig.suptitle` 仍居中，两者分工明确。
+        "axes.titlelocation": "left",
+        "axes.titlepad": 7.0,
+        "axes.labelpad": 4.0,
+        "text.color": INK,
+        # ---- 刻度：朝外、短、细 ----
+        "xtick.color": INK,
+        "ytick.color": INK,
+        "xtick.direction": "out",
+        "ytick.direction": "out",
+        "xtick.major.size": 3.0,
+        "ytick.major.size": 3.0,
+        "xtick.major.width": 0.8,
+        "ytick.major.width": 0.8,
+        "xtick.minor.size": 1.8,
+        "ytick.minor.size": 1.8,
+        # ---- 图例：无边框、紧凑 ----
+        "legend.frameon": False,
+        "legend.handlelength": 1.7,
+        "legend.handletextpad": 0.7,
+        "legend.labelspacing": 0.35,
+        "legend.borderaxespad": 0.6,
+        # ---- 线条与标记 ----
+        "lines.linewidth": 1.6,
+        "lines.markersize": 4.0,
+        "lines.solid_capstyle": "round",
+        "patch.linewidth": 0.0,
+        "patch.force_edgecolor": False,
+        "errorbar.capsize": 2.5,
+        # ---- 网格：浅灰细实线，置于数据之下（是否显示由各图决定）----
+        "axes.grid": False,
+        "axes.axisbelow": True,
+        "grid.color": GRID,
+        "grid.linewidth": 0.7,
+        "grid.linestyle": "-",
+        "grid.alpha": 0.9,
+        # ---- 输出 ----
+        "image.cmap": CMAP_SEQ,
+        "figure.facecolor": "white",
+        "savefig.facecolor": "white",
+        "savefig.bbox": "tight",
+        "savefig.pad_inches": 0.06,
+        "figure.dpi": 110,
+    })
+    plt.rcParams["axes.prop_cycle"] = plt.cycler(color=list(CYCLE))
     return font
 
 
@@ -873,6 +963,10 @@ def mm1_simulation(lam: float, mu: float, n_customers: int,
 # ---------------------------------------------------------------- 绘图工具
 
 
+# 分图号前缀，如 "(a) 残差时序图" —— 用来把标签排成粗体并左对齐。
+_PANEL_RE = re.compile(r"^\((?P<tag>[a-z])\)\s*(?P<rest>.*)$")
+
+
 def _finish(ax, title: str = "", xlabel: str = "", ylabel: str = "") -> None:
     """给单个坐标轴统一加标题与带单位的轴标签（内部小工具）。
 
@@ -885,24 +979,229 @@ def _finish(ax, title: str = "", xlabel: str = "", ylabel: str = "") -> None:
         None（原地修改 ax）。
 
     算法:
-        依次调用 set_title / set_xlabel / set_ylabel。
+        标题若以 `(a)`/`(b)` 这类分图号开头，则交给 `_panel` 排成"粗体分图号 + 左对齐标题"；
+        否则直接左对齐放置。随后依次调用 set_xlabel / set_ylabel。
 
     复杂度:
         时间 O(1)；空间 O(1)。
 
     陷阱:
-        轴标签只写符号不写单位（如只写 "t"）是评审最常见的扣分点之一；
-        单位用正体、量名用斜体（本脚本用 `$...$` 排量名，单位放在 `$...$` 外）。
+        - 轴标签只写符号不写单位（如只写 "t"）是评审最常见的扣分点之一；
+          单位用正体、量名用斜体（本脚本用 `$...$` 排量名，单位放在 `$...$` 外）。
+        - 期刊排版里子图标题一律**左对齐**顶在各自子图上方，居中式标题会被误读成整图标题。
 
     参考:
         GB/T 3102 量与单位的一般原则；`references/paper-structure.md` 四、写作技术规范。
     """
     if title:
-        ax.set_title(title)
+        m = _PANEL_RE.match(title)
+        if m:
+            _panel(ax, m.group("tag"), m.group("rest"))
+        else:
+            ax.set_title(title)
     if xlabel:
         ax.set_xlabel(xlabel)
     if ylabel:
         ax.set_ylabel(ylabel)
+
+
+def _grid(ax, axis: str = "both", which: str = "major") -> None:
+    """按统一规范打开浅灰细实线网格（只应在"网格有助于读数"的图上调用）。
+
+    参数:
+        ax: matplotlib 坐标轴对象。
+        axis: `"both"` / `"x"` / `"y"`，只对某一方向加网格。
+        which: `"major"` / `"minor"` / `"both"`。
+
+    返回:
+        None（原地修改 ax）。
+
+    算法:
+        调用 `ax.grid(True, ...)`，颜色/线宽/线型全部取自设计令牌 `GRID`。
+
+    复杂度:
+        时间 O(1)；空间 O(1)。
+
+    陷阱:
+        - 旧写法把网格设成 `linestyle=":"` + `alpha=0.45`，远看像"马赛克"，
+          黑白打印后会变成一层脏灰；改为浅灰**细实线**更接近期刊排版。
+        - 热力图、雷达图、网络图不要加网格：它们有自己的单元格/轴网，会互相打架。
+        - 网格必须在数据之下，这一点由 `axes.axisbelow=True` 统一保证，别在这里改。
+
+    参考:
+        `assets/gallery/README.md` §5.7 风格统一。
+    """
+    ax.grid(True, axis=axis, which=which, color=GRID, linewidth=0.7,
+            linestyle="-", alpha=0.9)
+
+
+def _series(i: int, **over) -> dict:
+    """第 `i` 条数据序列的"三重编码"绘图参数：颜色 + 线型 + 标记点。
+
+    参数:
+        i: 序列序号（从 0 开始）。
+        **over: 需要覆盖的额外 `plot` 关键字（如 `linewidth` / `markersize`）。
+
+    返回:
+        dict：可直接 `**` 展开进 `ax.plot(...)` 的关键字。
+
+    算法:
+        颜色取 `CYCLE[i % 6]`，标记点取 `_MARKERS[i % 6]`；线型按"轮次"取，
+        第一轮全部实线、第二轮虚线、第三轮点划线、第四轮点线。于是同一轮内
+        颜色和标记点两两不同，跨轮之间线型不同——任意两条曲线至少在三项里
+        有两项不同。
+
+    复杂度:
+        时间 O(1)；空间 O(1)。
+
+    陷阱:
+        - **颜色不能是唯一的区分通道。** 本仓库色板的灰度间隔只有约 1.1/100，
+          二色觉模拟下最差 ΔE 有 16.1——也就是说：色盲读者能靠颜色分开，
+          但黑白打印出来的稿子不行。评审老师经常打印看稿，所以每条曲线
+          必须同时有线型和标记点差异（灰度打印时这两项还在）。
+        - 线型的可见差异比标记点更可靠：`-` / `--` / `-.` / `:` 四档在缩小
+          到单栏宽度（约 8 cm）后仍能分辨，标记点则会糊成小点。因此曲线超过
+          6 条时应当考虑分面（subplot）而不是继续加色。
+        - 标记点密集时用 `markevery` 抽稀，否则 200 个点会连成一条粗带。
+
+    参考:
+        Okabe & Ito (2008) "Color Universal Design"；
+        WCAG 2.1 1.4.1 Use of Color（禁止把颜色作为唯一区分手段）。
+    """
+    turn, idx = divmod(i, len(CYCLE))
+    kw = {
+        "color": CYCLE[idx],
+        "linestyle": _LINESTYLES[turn % len(_LINESTYLES)],
+        "marker": _MARKERS[idx],
+    }
+    kw.update(over)
+    return kw
+
+
+def _legend(ax, **kwargs):
+    """统一风格的去边框图例。
+
+    参数:
+        ax: matplotlib 坐标轴对象。
+        **kwargs: 透传给 `ax.legend`；`frameon` 默认 `False`，可显式覆盖。
+
+    返回:
+        matplotlib 的 Legend 对象。
+
+    算法:
+        设置 `frameon=False` 后调用 `ax.legend`。
+
+    复杂度:
+        时间 O(1)；空间 O(1)。
+
+    陷阱:
+        - 图例带白底边框会遮住数据点，`framealpha=0.95` 只是把遮住变得"看得见"而已；
+          期刊排版普遍用无边框图例，靠摆放位置避让数据。
+        - 图例遮挡数据是审稿意见里的高频问题：优先 `loc` 选空白角，其次才考虑加边框。
+
+    参考:
+        `assets/gallery/README.md` §5.7 风格统一。
+    """
+    kwargs.setdefault("frameon", False)
+    return ax.legend(**kwargs)
+
+
+def _panel(ax, tag: str, title: str = "") -> None:
+    """给多子图打左上角粗体分图号（CVPR/期刊常见的 (a)(b)(c) 约定）。
+
+    参数:
+        ax: matplotlib 坐标轴对象。
+        tag: 分图号，如 `"(a)"`。
+        title: 该子图的标题文字；为空则只显示分图号。
+
+    返回:
+        None（原地修改 ax）。
+
+    算法:
+        用 mathtext 把分图号排成粗体，与后面的标题文字拼接后左对齐放置。
+
+    复杂度:
+        时间 O(1)；空间 O(1)。
+
+    陷阱:
+        - 分图号必须**左对齐**且位于子图上方；居中会让人误以为是整图的标题。
+        - 分图号不要写进图注之外的地方重复编号；正文引用时统一用"(a)"这种形式。
+
+    参考:
+        `assets/gallery/README.md` §5.6 图注要自解释。
+    """
+    text = r"$\mathbf{(%s)}$" % tag.strip("()")
+    if title:
+        text += "  " + title
+    ax.set_title(text, loc="left", fontsize=9.0, color=INK, pad=6.0)
+
+
+def _note(ax, x: float, y: float, text: str, **kwargs) -> None:
+    """在图内放一个"说明性文本框"，统一样式（半透明白底 + 浅灰细边）。
+
+    参数:
+        ax: matplotlib 坐标轴对象。
+        x, y: 轴分数坐标（`transform=ax.transAxes`）。
+        text: 说明文字，可用 `\\n` 换行。
+        **kwargs: 透传给 `ax.text`（如 `ha` / `va` / `fontsize`）。
+
+    返回:
+        None。
+
+    算法:
+        以白色半透明圆角框为底，避免文字压住数据后读不清。
+
+    复杂度:
+        时间 O(1)；空间 O(1)。
+
+    陷阱:
+        - 用 `ax.transAxes`（轴分数）而不是数据坐标，图缩放时位置才稳定。
+        - 底色透明度别低于 0.8，否则下面的网格会透上来干扰阅读。
+
+    参考:
+        `assets/gallery/README.md` §5.6 图注要自解释。
+    """
+    kwargs.setdefault("ha", "right")
+    kwargs.setdefault("va", "bottom")
+    kwargs.setdefault("fontsize", 7.2)
+    kwargs.setdefault("color", INK_SOFT)
+    kwargs.setdefault("transform", ax.transAxes)
+    kwargs.setdefault("zorder", 6)
+    ax.text(x, y, text,
+            bbox=dict(boxstyle="round,pad=0.35", facecolor="white",
+                      edgecolor=GRID, linewidth=0.7, alpha=0.92),
+            **kwargs)
+
+
+def _save(fig, out_dir: Path, name: str) -> None:
+    """统一出口：按当前 dpi 保存并关闭图形。
+
+    参数:
+        fig: matplotlib Figure 对象。
+        out_dir: 输出目录。
+        name: 文件名（含 `.png`）。
+
+    返回:
+        None。
+
+    算法:
+        `fig.savefig(...)` 后立即 `plt.close(fig)`。
+
+    复杂度:
+        时间 O(像素数)；空间 O(像素数)。
+
+    陷阱:
+        - 不 `close` 会持续累积图形对象，跑完 16 张后内存和字体缓存都会膨胀。
+        - `bbox_inches="tight"` 会裁掉多余白边，**最终像素尺寸以回读结果为准**，
+          不要用 `figsize × dpi` 去推算尺寸。
+        - 白色背景必须显式写：某些环境默认透明，插进 Word/LaTeX 会变成黑底。
+
+    参考:
+        Matplotlib `Figure.savefig` 文档。
+    """
+    fig.savefig(out_dir / name, dpi=_DPI, bbox_inches="tight",
+                pad_inches=0.06, facecolor="white")
+    plt.close(fig)
 
 
 # ---------------------------------------------------------------- 各题型配图
@@ -924,9 +1223,9 @@ def evaluation_weights(out_dir: Path) -> None:
     x = np.arange(n_ind)
     width = 0.38
     b1 = ax.bar(x - width / 2, w_ent * 100, width, label="熵权法（数据驱动）",
-                color=OKABE_ITO[0], edgecolor="black", linewidth=0.5)
+                color=OKABE_ITO[0], edgecolor=EDGE, linewidth=0.8)
     b2 = ax.bar(x + width / 2, w_ahp * 100, width, label="AHP（专家判断，CR=%.3f）" % cr,
-                color=OKABE_ITO[1], edgecolor="black", linewidth=0.5)
+                color=OKABE_ITO[1], edgecolor=EDGE, linewidth=0.8)
     for bars in (b1, b2):
         for rect in bars:
             h = rect.get_height()
@@ -935,17 +1234,14 @@ def evaluation_weights(out_dir: Path) -> None:
     ax.set_xticks(x)
     ax.set_xticklabels(INDICATORS, rotation=18, ha="right")
     ax.set_ylim(0, max(w_ent.max(), w_ahp.max()) * 100 * 1.22)
-    ax.legend(loc="upper right", framealpha=0.95)
-    ax.grid(axis="y", linestyle=":", alpha=0.45)
+    _legend(ax, loc="upper right")
+    _grid(ax, axis="y")
     _finish(ax, "8 项指标的两套赋权结果对比",
             "评价指标（无量纲）", "指标权重 $w_j$ / %")
-    ax.text(0.01, 0.965, "$\\lambda_{max}$=%.3f，CI=%.4f，CR=%.3f < 0.1" % (lmax, ci, cr),
-            transform=ax.transAxes, va="top", fontsize=7.5,
-            bbox=dict(boxstyle="round,pad=0.3", fc="#f2f2f2", ec="gray", lw=0.6))
+    _note(ax, 0.01, 0.965, "$\\lambda_{max}$=%.3f，CI=%.4f，CR=%.3f < 0.1" % (lmax, ci, cr),
+          ha="left", va="top", fontsize=7.5)
     fig.tight_layout()
-    fig.savefig(out_dir / "evaluation_weights.png", dpi=_DPI, bbox_inches="tight",
-                pad_inches=0.06, facecolor="white")
-    plt.close(fig)
+    _save(fig, out_dir, "evaluation_weights.png")
 
 
 def evaluation_topsis_rank(out_dir: Path) -> None:
@@ -963,22 +1259,20 @@ def evaluation_topsis_rank(out_dir: Path) -> None:
     fig, ax = plt.subplots(figsize=(6.6, 4.4))
     colors = [OKABE_ITO[1] if r == 0 else OKABE_ITO[0] for r in range(n_obj)]
     y = np.arange(n_obj)
-    ax.barh(y, sorted_c, color=colors, edgecolor="black", linewidth=0.5, height=0.68)
+    ax.barh(y, sorted_c, color=colors, edgecolor=EDGE, linewidth=0.8, height=0.68)
     for i, v in enumerate(sorted_c):
         ax.text(v + 0.006, i, "%.4f（第 %d 名）" % (v, i + 1), va="center", fontsize=7.5)
     ax.set_yticks(y)
     ax.set_yticklabels(sorted_labels)
     ax.invert_yaxis()
     ax.set_xlim(0, max(sorted_c) * 1.32)
-    ax.grid(axis="x", linestyle=":", alpha=0.45)
+    _grid(ax, axis="x")
     _finish(ax, "熵权-TOPSIS 综合评价结果（按贴近度降序）",
             "相对贴近度 $C_i$ / 无量纲（越大越优）", "评价对象")
     ax.text(0.985, 0.06, "橙色 = 最优方案", transform=ax.transAxes, ha="right",
             fontsize=7.5, color=OKABE_ITO[1])
     fig.tight_layout()
-    fig.savefig(out_dir / "evaluation_topsis_rank.png", dpi=_DPI, bbox_inches="tight",
-                pad_inches=0.06, facecolor="white")
-    plt.close(fig)
+    _save(fig, out_dir, "evaluation_topsis_rank.png")
 
 
 def evaluation_weights_sensitivity(out_dir: Path) -> None:
@@ -1001,7 +1295,7 @@ def evaluation_weights_sensitivity(out_dir: Path) -> None:
     labels = ["方案 %s" % chr(ord("A") + i) for i in range(n_obj)]
 
     fig, ax = plt.subplots(figsize=(11.2, 4.6))
-    im = ax.imshow(rank_mat, cmap="YlGnBu", aspect="auto", vmin=1, vmax=n_obj)
+    im = ax.imshow(rank_mat, cmap=CMAP_SEQ, aspect="auto", vmin=1, vmax=n_obj)
     ax.set_xticks(np.arange(rank_mat.shape[1]))
     ax.set_xticklabels([name for name, _ in scenarios], fontsize=6.2)
     ax.set_yticks(np.arange(n_obj))
@@ -1010,19 +1304,17 @@ def evaluation_weights_sensitivity(out_dir: Path) -> None:
         for j in range(rank_mat.shape[1]):
             ax.text(j, i, "%d" % rank_mat[i, j], ha="center", va="center", fontsize=6.0,
                     color="white" if rank_mat[i, j] > n_obj * 0.62 else "black")
-    ax.axvline(0.5, color="red", linewidth=1.4, linestyle="--")
+    ax.axvline(0.5, color=OKABE_ITO[1], linewidth=1.3, linestyle="--")
     ax.set_xticks(np.arange(-0.5, rank_mat.shape[1], 1), minor=True)
     ax.set_yticks(np.arange(-0.5, n_obj, 1), minor=True)
     ax.grid(which="minor", color="white", linewidth=0.7)
     ax.tick_params(which="minor", length=0)
     cbar = fig.colorbar(im, ax=ax, ticks=range(1, n_obj + 1), pad=0.012)
-    cbar.set_label("综合排序名次 / 位（1 = 最优）", fontsize=8)
+    cbar.set_label("综合排序名次 / 位（1 = 最优）")
     _finish(ax, "单指标权重 ±20% 扰动下的方案排序变化（红虚线左侧为基准权重）",
             "扰动情景（指标 + 扰动幅度） / 无量纲", "评价对象")
     fig.tight_layout()
-    fig.savefig(out_dir / "evaluation_weights_sensitivity.png", dpi=_DPI,
-                bbox_inches="tight", pad_inches=0.06, facecolor="white")
-    plt.close(fig)
+    _save(fig, out_dir, "evaluation_weights_sensitivity.png")
 
 
 def forecast_models_compare(out_dir: Path) -> None:
@@ -1049,8 +1341,8 @@ def forecast_models_compare(out_dir: Path) -> None:
     t_fc = t_all[n_hist:]
 
     fig, ax = plt.subplots(figsize=(7.6, 4.4))
-    ax.axvspan(n_hist + 0.5, n_hist + horizon + 0.5, color="#f4f4f4", zorder=0)
-    ax.plot(t, y, "o-", color="black", markersize=3.4, linewidth=1.3, label="历史观测值")
+    ax.axvspan(n_hist + 0.5, n_hist + horizon + 0.5, color=PANEL_BG, zorder=0)
+    ax.plot(t, y, "o-", color=INK, markersize=3.4, linewidth=1.3, label="历史观测值")
     ax.plot(t_fc, gm_fit[n_hist:], "s--", color=OKABE_ITO[2], markersize=3.4,
             linewidth=1.2, label="GM(1,1) 灰色预测（MAE=%.2f）" % mae_gm)
     ax.plot(t_fc, holt_fc, "^--", color=OKABE_ITO[1], markersize=3.6,
@@ -1060,17 +1352,15 @@ def forecast_models_compare(out_dir: Path) -> None:
     ax.fill_between(t_fc, holt_fc - half, holt_fc + half, color=OKABE_ITO[1],
                     alpha=0.18, label="Holt 模型 95% 预测区间")
     ax.plot(t, holt_fit, color=OKABE_ITO[1], linewidth=0.9, alpha=0.75)
-    ax.axvline(n_hist + 0.5, color="gray", linestyle=":", linewidth=1.2)
+    ax.axvline(n_hist + 0.5, color=INK_MUTED, linestyle=":", linewidth=1.2)
     ax.text(n_hist + 0.7, ax.get_ylim()[1] * 0.985, "← 拟合期 | 外推期 →",
-            ha="left", va="top", fontsize=7.5, color="#444444")
-    ax.legend(loc="upper left", ncol=2, framealpha=0.95)
-    ax.grid(linestyle=":", alpha=0.45)
+            ha="left", va="top", fontsize=7.5, color=INK_SOFT)
+    _legend(ax, loc="upper left", ncol=2)
+    _grid(ax)
     _finish(ax, "三种预测模型的外推结果与 95% 预测区间",
             "期数 $t$ / 季度", "需求量 $y$ / 千件")
     fig.tight_layout()
-    fig.savefig(out_dir / "forecast_models_compare.png", dpi=_DPI, bbox_inches="tight",
-                pad_inches=0.06, facecolor="white")
-    plt.close(fig)
+    _save(fig, out_dir, "forecast_models_compare.png")
 
 
 def forecast_residual_diagnostics(out_dir: Path) -> None:
@@ -1089,10 +1379,10 @@ def forecast_residual_diagnostics(out_dir: Path) -> None:
     fig, axes = plt.subplots(2, 2, figsize=(8.0, 6.4))
 
     ax = axes[0, 0]
-    ax.axhline(0.0, color="black", linewidth=0.9)
+    ax.axhline(0.0, color=INK, linewidth=0.9)
     ax.plot(t, resid, "-", color=OKABE_ITO[0], linewidth=1.1)
     ax.plot(t, resid, "o", color=OKABE_ITO[0], markersize=2.6)
-    ax.grid(linestyle=":", alpha=0.45)
+    _grid(ax)
     _finish(ax, "(a) 残差时序图", "期数 $t$ / 月", "残差 $e_t$ / 千件")
 
     ax = axes[0, 1]
@@ -1104,37 +1394,35 @@ def forecast_residual_diagnostics(out_dir: Path) -> None:
     ax.plot(lim, lim, "--", color=OKABE_ITO[1], linewidth=1.2, label="正态参考线 $y=x$")
     ax.set_xlim(lim)
     ax.set_ylim(lim)
-    ax.legend(loc="upper left")
-    ax.grid(linestyle=":", alpha=0.45)
+    _legend(ax, loc="upper left")
+    _grid(ax)
     _finish(ax, "(b) 标准化残差正态 Q-Q 图",
             "理论分位数 $z_p$ / 无量纲", "样本分位数 / 无量纲")
 
     ax = axes[1, 0]
-    ax.hist(resid, bins=12, color=OKABE_ITO[5], edgecolor="black", linewidth=0.5,
+    ax.hist(resid, bins=12, color=OKABE_ITO[5], edgecolor=EDGE, linewidth=0.8,
             density=True, label="残差直方图")
     grid = np.linspace(resid.min() - 0.5, resid.max() + 0.5, 200)
     pdf = np.exp(-0.5 * ((grid - resid.mean()) / resid.std(ddof=1)) ** 2) / \
         (resid.std(ddof=1) * np.sqrt(2 * np.pi))
     ax.plot(grid, pdf, "-", color=OKABE_ITO[1], linewidth=1.6, label="拟合正态密度")
-    ax.legend(loc="upper right")
-    ax.grid(linestyle=":", alpha=0.45)
+    _legend(ax, loc="upper right")
+    _grid(ax)
     _finish(ax, "(c) 残差分布直方图", "残差 $e_t$ / 千件", "概率密度 / 千件$^{-1}$")
 
     ax = axes[1, 1]
-    ax.axhline(0.0, color="black", linewidth=0.9)
+    ax.axhline(0.0, color=INK, linewidth=0.9)
     s = resid.std(ddof=1)
     ax.axhline(2 * s, color=OKABE_ITO[1], linestyle="--", linewidth=1.0, label="$\\pm 2\\sigma$ 界限")
     ax.axhline(-2 * s, color=OKABE_ITO[1], linestyle="--", linewidth=1.0)
     ax.plot(fitted, resid, "o", color=OKABE_ITO[3], markersize=3.2)
-    ax.legend(loc="upper right")
-    ax.grid(linestyle=":", alpha=0.45)
+    _legend(ax, loc="upper right")
+    _grid(ax)
     _finish(ax, "(d) 残差 vs 拟合值", "拟合值 $\\hat{y}_t$ / 千件", "残差 $e_t$ / 千件")
 
     fig.suptitle("预测模型残差诊断（理想情形：无趋势、近似正态、方差齐性、无自相关）")
     fig.tight_layout(rect=(0, 0, 1, 0.965))
-    fig.savefig(out_dir / "forecast_residual_diagnostics.png", dpi=_DPI,
-                bbox_inches="tight", pad_inches=0.06, facecolor="white")
-    plt.close(fig)
+    _save(fig, out_dir, "forecast_residual_diagnostics.png")
 
 
 def optimization_pareto(out_dir: Path) -> None:
@@ -1148,11 +1436,11 @@ def optimization_pareto(out_dir: Path) -> None:
     front = pts[mask][np.argsort(pts[mask][:, 0])]
 
     fig, ax = plt.subplots(figsize=(7.0, 5.0))
-    ax.scatter(pts[~mask, 0], pts[~mask, 1], s=22, c="#bdbdbd",
-               edgecolors="black", linewidths=0.4, label="被支配解（%d 个）" % int((~mask).sum()))
+    ax.scatter(pts[~mask, 0], pts[~mask, 1], s=22, c=INK_MUTED,
+               edgecolors=EDGE, linewidths=0.5, label="被支配解（%d 个）" % int((~mask).sum()))
     ax.plot(front[:, 0], front[:, 1], "-", color=OKABE_ITO[1], linewidth=1.4, zorder=3)
     ax.scatter(front[:, 0], front[:, 1], s=46, marker="D", c=OKABE_ITO[1],
-               edgecolors="black", linewidths=0.5, zorder=4,
+               edgecolors=EDGE, linewidths=0.7, zorder=4,
                label="帕累托前沿非支配解（%d 个）" % int(mask.sum()))
 
     # 标注一条具体的支配关系链，让"支配"这件事在图上可见
@@ -1170,21 +1458,19 @@ def optimization_pareto(out_dir: Path) -> None:
         ax.text(dom_point[0] - 26.0, dom_point[1] - 20.0,
                 "解 B 在两个目标上都不劣于 A，\n且至少一个严格更优，故 B 支配 A",
                 fontsize=7.5, color=OKABE_ITO[2],
-                bbox=dict(boxstyle="round,pad=0.3", fc="#f7f7f7", ec=OKABE_ITO[2], lw=0.7))
+                bbox=dict(boxstyle="round,pad=0.35", fc="white", ec=OKABE_ITO[2], lw=0.7))
 
     # 用淡色标出"理想方向"
     ax.annotate("目标改进方向", xy=(48, 30), xytext=(88, 95),
-                arrowprops=dict(arrowstyle="->", color="#555555", lw=1.2,
+                arrowprops=dict(arrowstyle="->", color=INK_SOFT, lw=1.2,
                                 connectionstyle="arc3,rad=-0.25"),
-                fontsize=8, color="#555555")
-    ax.legend(loc="upper right", framealpha=0.95)
-    ax.grid(linestyle=":", alpha=0.45)
+                fontsize=8, color=INK_SOFT)
+    _legend(ax, loc="upper right")
+    _grid(ax)
     _finish(ax, "双目标优化的帕累托前沿与支配关系（两目标均为最小化）",
             "目标 1：总成本 $f_1$ / 万元", "目标 2：碳排放量 $f_2$ / 吨")
     fig.tight_layout()
-    fig.savefig(out_dir / "optimization_pareto.png", dpi=_DPI, bbox_inches="tight",
-                pad_inches=0.06, facecolor="white")
-    plt.close(fig)
+    _save(fig, out_dir, "optimization_pareto.png")
 
 
 def optimization_convergence(out_dir: Path) -> None:
@@ -1218,21 +1504,19 @@ def optimization_convergence(out_dir: Path) -> None:
     ax.annotate("第 %d→%d 代均值累计变化 %.1f%%，\n末 100 代单代最大变化 %.2f%%，判定收敛"
                 % (n_gen // 2, n_gen, rel_total, rel_step),
                 xy=(120, mean[119]), xytext=(72, mean[119] + 330),
-                arrowprops=dict(arrowstyle="->", color="#444444", lw=1.0),
-                fontsize=8, color="#333333",
-                bbox=dict(boxstyle="round,pad=0.3", fc="#f7f7f7", ec="gray", lw=0.6))
-    ax.text(0.985, 0.93,
-            "末代：均值 %.1f，标准差 %.1f 万元" % (mean[-1], curves[:, -1].std(ddof=1)),
-            transform=ax.transAxes, ha="right", fontsize=7.8)
+                arrowprops=dict(arrowstyle="->", color=INK_SOFT, lw=1.0),
+                fontsize=8, color=INK_SOFT,
+                bbox=dict(boxstyle="round,pad=0.35", fc="white", ec=GRID, lw=0.6))
+    _note(ax, 0.985, 0.93,
+          "末代：均值 %.1f，标准差 %.1f 万元" % (mean[-1], curves[:, -1].std(ddof=1)),
+          ha="right", fontsize=7.8)
     ax.set_xlim(1, n_gen)
-    ax.legend(loc="upper right", framealpha=0.95)
-    ax.grid(linestyle=":", alpha=0.45)
+    _legend(ax, loc="upper right")
+    _grid(ax)
     _finish(ax, "启发式算法收敛性：30 次独立运行的均值与范围",
             "迭代代数 $g$ / 代", "历史最优目标值 / 万元")
     fig.tight_layout()
-    fig.savefig(out_dir / "optimization_convergence.png", dpi=_DPI, bbox_inches="tight",
-                pad_inches=0.06, facecolor="white")
-    plt.close(fig)
+    _save(fig, out_dir, "optimization_convergence.png")
 
 
 def mechanism_sir(out_dir: Path) -> None:
@@ -1249,38 +1533,36 @@ def mechanism_sir(out_dir: Path) -> None:
     ax.plot(t, s, "-", color=OKABE_ITO[0], linewidth=1.7, label="易感者 $S(t)$")
     ax.plot(t, i, "-", color=OKABE_ITO[1], linewidth=1.7, label="感染者 $I(t)$")
     ax.plot(t, r, "-", color=OKABE_ITO[2], linewidth=1.7, label="移除者 $R(t)$")
-    ax.axvline(t[peak_idx], color="gray", linestyle=":", linewidth=1.1)
+    ax.axvline(t[peak_idx], color=INK_MUTED, linestyle=":", linewidth=1.1)
     ax.plot([t[peak_idx]], [i[peak_idx]], "o", color=OKABE_ITO[1], markersize=5)
     ax.annotate("峰值 $I_{max}$=%.3f\n出现于第 %.0f 天" % (i[peak_idx], t[peak_idx]),
                 xy=(t[peak_idx], i[peak_idx]), xytext=(t[peak_idx] + 8, i[peak_idx] + 0.12),
-                arrowprops=dict(arrowstyle="->", color="#444444", lw=1.0), fontsize=8)
-    ax.legend(loc="center right", framealpha=0.95)
-    ax.grid(linestyle=":", alpha=0.45)
+                arrowprops=dict(arrowstyle="->", color=INK_SOFT, lw=1.0), fontsize=8)
+    _legend(ax, loc="center right")
+    _grid(ax)
     _finish(ax, "(a) SIR 模型状态变量时间演化",
             "时间 $t$ / 天", "人口比例 / 无量纲")
 
     ax = axes[1]
     ax.plot(s, i, "-", color=OKABE_ITO[3], linewidth=1.8)
-    ax.scatter([s[0]], [i[0]], s=40, color="black", zorder=4)
+    ax.scatter([s[0]], [i[0]], s=40, color=INK, zorder=4)
     ax.text(s[0] - 0.02, i[0] + 0.012, "起点 $(S_0, I_0)$", fontsize=8, ha="right")
     ax.scatter([s[peak_idx]], [i[peak_idx]], s=45, color=OKABE_ITO[1], zorder=4)
     ax.text(s[peak_idx] + 0.02, i[peak_idx] + 0.01, "峰值点", fontsize=8)
     mid = int(0.45 * peak_idx) if peak_idx > 4 else 1
     ax.annotate("", xy=(s[mid + 1], i[mid + 1]), xytext=(s[mid], i[mid]),
-                arrowprops=dict(arrowstyle="->", color="#444444", lw=1.4))
+                arrowprops=dict(arrowstyle="->", color=INK_SOFT, lw=1.4))
     ax.axvline(1.0 / r0, color=OKABE_ITO[2], linestyle="--", linewidth=1.1,
                label="阈值 $S=1/R_0$")
-    ax.legend(loc="upper right", framealpha=0.95)
-    ax.grid(linestyle=":", alpha=0.45)
+    _legend(ax, loc="upper right")
+    _grid(ax)
     _finish(ax, "(b) $S$-$I$ 相图（箭头为时间推进方向）",
             "易感者比例 $S$ / 无量纲", "感染者比例 $I$ / 无量纲")
 
     fig.suptitle("SIR 传染病模型：$\\beta$=%.2f 天$^{-1}$，$\\gamma$=%.2f 天$^{-1}$，"
                  "$R_0=\\beta/\\gamma$=%.2f" % (beta, gamma, r0))
     fig.tight_layout(rect=(0, 0, 1, 0.94))
-    fig.savefig(out_dir / "mechanism_sir.png", dpi=_DPI, bbox_inches="tight",
-                pad_inches=0.06, facecolor="white")
-    plt.close(fig)
+    _save(fig, out_dir, "mechanism_sir.png")
 
 
 def mechanism_param_sensitivity(out_dir: Path) -> None:
@@ -1297,10 +1579,11 @@ def mechanism_param_sensitivity(out_dir: Path) -> None:
     betas = [0.30, 0.36, 0.42, 0.48, 0.54]
     for k, b in enumerate(betas):
         tk, _, ik, _ = sir_rk4(b, gamma0, s00, i00, days, dt=0.05)
-        ax1.plot(tk, ik, "-", color=OKABE_ITO[k], linewidth=1.6,
-                 label="$\\beta$=%.2f 天$^{-1}$（$R_0$=%.2f）" % (b, b / gamma0))
-    ax1.legend(loc="upper right", framealpha=0.95)
-    ax1.grid(linestyle=":", alpha=0.45)
+        ax1.plot(tk, ik, markersize=4.2, markevery=40, linewidth=1.6,
+                 label="$\\beta$=%.2f 天$^{-1}$（$R_0$=%.2f）" % (b, b / gamma0),
+                 **_series(k))
+    _legend(ax1, loc="upper right")
+    _grid(ax1)
     _finish(ax1, "(a) 感染率 $\\beta$ 取值对 $I(t)$ 的影响",
             "时间 $t$ / 天", "感染者比例 $I(t)$ / 无量纲")
 
@@ -1311,7 +1594,7 @@ def mechanism_param_sensitivity(out_dir: Path) -> None:
                 ("$S_0$ −20%", 1.0, 1.0, 0.8)]
     angles = np.linspace(0, 2 * np.pi, len(categories), endpoint=False).tolist()
     angles += angles[:1]
-    ax2.plot(angles, [1.0] * (len(categories) + 1), "-", color="black", linewidth=1.4,
+    ax2.plot(angles, [1.0] * (len(categories) + 1), "-", color=INK, linewidth=1.4,
              label="基准情形（=1.0）")
     for k, (name, fb, fg, fs) in enumerate(perturbs):
         tk, _, ik, rk = sir_rk4(beta0 * fb, gamma0 * fg, s00 * fs, i00, days, dt=0.05)
@@ -1319,20 +1602,17 @@ def mechanism_param_sensitivity(out_dir: Path) -> None:
                 float(tk[int(np.argmax(ik))]) / base_peak_t,
                 float(tk[np.argmax(rk > 0.99 * rk[-1])]) / base_dur]
         vals += vals[:1]
-        ax2.plot(angles, vals, "o-", color=OKABE_ITO[k], linewidth=1.5, markersize=4,
-                 label=name)
+        ax2.plot(angles, vals, linewidth=1.5, markersize=4.2, label=name, **_series(k))
     ax2.set_xticks(angles[:-1])
     ax2.set_xticklabels(categories, fontsize=8)
     ax2.set_ylim(0.0, 2.0)
     ax2.set_yticks([0.5, 1.0, 1.5, 2.0])
     ax2.set_yticklabels(["0.5", "1.0", "1.5", "2.0"], fontsize=6.5)
-    ax2.legend(loc="upper right", bbox_to_anchor=(1.28, 1.10), framealpha=0.95)
-    ax2.set_title("(b) 参数扰动的归一化蜘蛛图（基准 = 1.0）")
+    _legend(ax2, loc="upper right", bbox_to_anchor=(1.28, 1.10))
+    _panel(ax2, "b", "参数扰动的归一化蜘蛛图（基准 = 1.0）")
 
     fig.tight_layout()
-    fig.savefig(out_dir / "mechanism_param_sensitivity.png", dpi=_DPI,
-                bbox_inches="tight", pad_inches=0.06, facecolor="white")
-    plt.close(fig)
+    _save(fig, out_dir, "mechanism_param_sensitivity.png")
 
 
 def simulation_mc_convergence(out_dir: Path) -> None:
@@ -1355,25 +1635,23 @@ def simulation_mc_convergence(out_dir: Path) -> None:
                     label="95% 置信区间")
     ax.plot(ns, p_hat, "-", color=OKABE_ITO[0], linewidth=1.5, label="估计值 $\\hat{p}_N$")
     ax.set_xscale("log")
-    ax.legend(loc="upper right", framealpha=0.95)
-    ax.grid(linestyle=":", alpha=0.45)
+    _legend(ax, loc="upper right")
+    _grid(ax)
     _finish(ax, "(a) 估计值与 95% 置信区间随样本量收敛",
             "样本量 $N$ / 次（对数坐标）", "事件概率估计 $\\hat{p}_N$ / 无量纲")
 
     ax = axes[1]
     ax.loglog(ns, half, "-", color=OKABE_ITO[3], linewidth=1.6, label="置信区间半宽")
     ref = half[0] * np.sqrt(ns[0] / ns)
-    ax.loglog(ns, ref, "--", color="black", linewidth=1.1, label="理论斜率 $O(N^{-1/2})$")
-    ax.legend(loc="lower left", framealpha=0.95)
-    ax.grid(which="both", linestyle=":", alpha=0.45)
+    ax.loglog(ns, ref, "--", color=INK, linewidth=1.1, label="理论斜率 $O(N^{-1/2})$")
+    _legend(ax, loc="lower left")
+    _grid(ax, which="both")
     _finish(ax, "(b) 置信区间半宽随样本量的衰减",
             "样本量 $N$ / 次（对数坐标）", "95% 区间半宽 / 无量纲")
 
     fig.suptitle("蒙特卡洛仿真收敛性（固定随机种子，逐样本累积估计）")
     fig.tight_layout(rect=(0, 0, 1, 0.94))
-    fig.savefig(out_dir / "simulation_mc_convergence.png", dpi=_DPI,
-                bbox_inches="tight", pad_inches=0.06, facecolor="white")
-    plt.close(fig)
+    _save(fig, out_dir, "simulation_mc_convergence.png")
 
 
 def simulation_queueing(out_dir: Path) -> None:
@@ -1408,8 +1686,8 @@ def simulation_queueing(out_dir: Path) -> None:
     ax.errorbar(rhos, sim_l, yerr=1.96 * sim_l_err, fmt="o", color=OKABE_ITO[1],
                 markersize=4, capsize=2.5, linewidth=1.1, elinewidth=0.9,
                 label="仿真均值 ± 95% 置信区间")
-    ax.legend(loc="upper left", framealpha=0.95)
-    ax.grid(linestyle=":", alpha=0.45)
+    _legend(ax, loc="upper left")
+    _grid(ax)
     _finish(ax, "(a) 平均系统队长随利用率变化",
             "利用率 $\\rho=\\lambda/\\mu$ / 无量纲", "平均队长 $L$ / 辆")
 
@@ -1419,17 +1697,15 @@ def simulation_queueing(out_dir: Path) -> None:
     ax.errorbar(rhos, sim_wq, yerr=1.96 * sim_wq_err, fmt="s", color=OKABE_ITO[3],
                 markersize=4, capsize=2.5, linewidth=1.1, elinewidth=0.9,
                 label="仿真均值 ± 95% 置信区间")
-    ax.legend(loc="upper left", framealpha=0.95)
-    ax.grid(linestyle=":", alpha=0.45)
+    _legend(ax, loc="upper left")
+    _grid(ax)
     _finish(ax, "(b) 平均排队等待时间随利用率变化",
             "利用率 $\\rho=\\lambda/\\mu$ / 无量纲", "平均等待时间 $W_q$ / min")
 
     fig.suptitle("M/M/1 排队系统：服务率 $\\mu$=%.1f 辆/h，每个利用率点 12 次独立仿真×500 位顾客"
                  % mu)
     fig.tight_layout(rect=(0, 0, 1, 0.93))
-    fig.savefig(out_dir / "simulation_queueing.png", dpi=_DPI, bbox_inches="tight",
-                pad_inches=0.06, facecolor="white")
-    plt.close(fig)
+    _save(fig, out_dir, "simulation_queueing.png")
 
 
 def statistics_correlation(out_dir: Path) -> None:
@@ -1468,13 +1744,11 @@ def statistics_correlation(out_dir: Path) -> None:
     ax.grid(which="minor", color="white", linewidth=0.8)
     ax.tick_params(which="minor", length=0)
     cbar = fig.colorbar(im, ax=ax, pad=0.02, ticks=[-1, -0.5, 0, 0.5, 1])
-    cbar.set_label("Pearson 相关系数 $r$ / 无量纲", fontsize=8)
+    cbar.set_label("Pearson 相关系数 $r$ / 无量纲")
     _finish(ax, "8 项指标的相关系数矩阵（仅显示下三角，n=%d）" % n_obs,
             "指标（含单位）", "指标（含单位）")
     fig.tight_layout()
-    fig.savefig(out_dir / "statistics_correlation.png", dpi=_DPI, bbox_inches="tight",
-                pad_inches=0.06, facecolor="white")
-    plt.close(fig)
+    _save(fig, out_dir, "statistics_correlation.png")
 
 
 def clustering_result(out_dir: Path) -> None:
@@ -1501,12 +1775,13 @@ def clustering_result(out_dir: Path) -> None:
     ax = axes[0]
     for c in range(4):
         m = labels == c
-        ax.scatter(x[m, 0], x[m, 1], s=16, color=OKABE_ITO[c], alpha=0.75,
-                   edgecolors="none", label="簇 %d（n=%d）" % (c + 1, int(m.sum())))
-    ax.scatter(cent[:, 0], cent[:, 1], marker="*", s=210, color="black", zorder=5,
+        ax.scatter(x[m, 0], x[m, 1], s=18, alpha=0.8,
+                   linewidths=0.4, label="簇 %d（n=%d）" % (c + 1, int(m.sum())),
+                   **_series(c, edgecolors=EDGE))
+    ax.scatter(cent[:, 0], cent[:, 1], marker="*", s=210, color=INK, zorder=5,
                edgecolors="white", linewidths=0.8, label="簇质心")
-    ax.legend(loc="upper left", fontsize=7.2, framealpha=0.95, ncol=1)
-    ax.grid(linestyle=":", alpha=0.45)
+    _legend(ax, loc="upper left", fontsize=7.2, ncol=1)
+    _grid(ax)
     _finish(ax, "(a) K-means 聚类结果（k=4，SSE=%.1f）" % inertia,
             "标准化特征 1 $z_1$ / 无量纲", "标准化特征 2 $z_2$ / 无量纲")
 
@@ -1516,9 +1791,9 @@ def clustering_result(out_dir: Path) -> None:
     for c in range(4):
         vals = sil_sorted[lab_sorted == c]
         ax.barh(np.arange(y_pos, y_pos + vals.size), vals, height=1.0,
-                color=OKABE_ITO[c], edgecolor="none")
+                color=CYCLE[c], edgecolor=EDGE, linewidth=0.5)
         ax.text(-0.055, y_pos + vals.size / 2.0, "簇 %d" % (c + 1), fontsize=7,
-                va="center", ha="right", color=OKABE_ITO[c])
+                va="center", ha="right", color=CYCLE[c])
         ticks.append(y_pos + vals.size / 2.0)
         tick_labels.append("$\\bar{s}$=%.3f" % cluster_sil[c])
         y_pos += vals.size + 6
@@ -1528,16 +1803,14 @@ def clustering_result(out_dir: Path) -> None:
     ax.set_yticklabels(tick_labels, fontsize=6.8)
     ax.set_xlim(-0.7, 1.0)
     ax.invert_yaxis()
-    ax.legend(loc="lower left", framealpha=0.95)
-    ax.grid(axis="x", linestyle=":", alpha=0.45)
+    _legend(ax, loc="lower left")
+    _grid(ax, axis="x")
     _finish(ax, "(b) 各簇轮廓系数（按簇分组、簇内降序）",
             "轮廓系数 $s_i$ / 无量纲", "样本序号 / 个")
 
     fig.suptitle("K-means 聚类结果与轮廓系数诊断（k=4 为示例取值，实际须给出选 k 依据）")
     fig.tight_layout(rect=(0, 0, 1, 0.93))
-    fig.savefig(out_dir / "clustering_result.png", dpi=_DPI, bbox_inches="tight",
-                pad_inches=0.06, facecolor="white")
-    plt.close(fig)
+    _save(fig, out_dir, "clustering_result.png")
 
 
 def graph_shortest_path(out_dir: Path) -> None:
@@ -1595,9 +1868,9 @@ def graph_shortest_path(out_dir: Path) -> None:
         if key in path_edges:
             continue
         ax.plot([pos[a][0], pos[b][0]], [pos[a][1], pos[b][1]], "-",
-                color="#c8c8c8", linewidth=1.0, zorder=1)
+                color=GRID, linewidth=1.0, zorder=1)
         ax.text((pos[a][0] + pos[b][0]) / 2, (pos[a][1] + pos[b][1]) / 2, "%.1f" % w,
-                fontsize=6.0, color="#8a8a8a", ha="center", va="center", zorder=2)
+                fontsize=6.0, color=INK_MUTED, ha="center", va="center", zorder=2)
     for k in range(len(path) - 1):
         a, b = path[k], path[k + 1]
         w = dist[b] - dist[a]
@@ -1608,26 +1881,23 @@ def graph_shortest_path(out_dir: Path) -> None:
     for k in keys:
         color = OKABE_ITO[1] if k in path else OKABE_ITO[0]
         ax.scatter([pos[k][0]], [pos[k][1]], s=170, color=color, zorder=5,
-                   edgecolors="black", linewidths=0.7)
+                   edgecolors=EDGE, linewidths=0.8)
         ax.text(pos[k][0], pos[k][1], k, fontsize=7.2, color="white", ha="center",
                 va="center", zorder=6)
         ax.text(pos[k][0] + 0.45, pos[k][1] - 0.75, names[keys.index(k)], fontsize=6.4,
-                color="#333333", zorder=6)
+                color=INK_SOFT, zorder=6)
 
     ax.set_xlim(0, 23)
     ax.set_ylim(0, 12)
     ax.set_aspect("equal")
-    ax.grid(linestyle=":", alpha=0.35)
+    _grid(ax)
     _finish(ax, "配送网络拓扑与 $A\\to L$ 最短路径（橙色，总里程 %.1f km）" % dist[target],
             "节点平面坐标 $x$ / km（示意图，非真实地理坐标）",
             "节点平面坐标 $y$ / km（示意图，非真实地理坐标）")
-    ax.text(0.99, 0.02, "路径：%s\n边权为里程 / km；灰色为未选中的可选边"
-            % " → ".join(path), transform=ax.transAxes, ha="right", va="bottom",
-            fontsize=7.0, bbox=dict(boxstyle="round,pad=0.3", fc="#f7f7f7", ec="gray", lw=0.6))
+    _note(ax, 0.99, 0.02, "路径：%s\n边权为里程 / km；灰色为未选中的可选边" % " → ".join(path),
+          ha="right", va="bottom", fontsize=7.0)
     fig.tight_layout()
-    fig.savefig(out_dir / "graph_shortest_path.png", dpi=_DPI, bbox_inches="tight",
-                pad_inches=0.06, facecolor="white")
-    plt.close(fig)
+    _save(fig, out_dir, "graph_shortest_path.png")
 
 
 def spatial_interpolation(out_dir: Path) -> None:
@@ -1649,26 +1919,23 @@ def spatial_interpolation(out_dir: Path) -> None:
 
     fig, ax = plt.subplots(figsize=(7.8, 5.2))
     levels = np.linspace(np.floor(GZ.min() / 25) * 25, np.ceil(GZ.max() / 25) * 25, 13)
-    cf = ax.contourf(GX, GY, GZ, levels=levels, cmap="YlGnBu", alpha=0.92)
+    cf = ax.contourf(GX, GY, GZ, levels=levels, cmap=CMAP_SEQ, alpha=0.92)
     cs = ax.contour(GX, GY, GZ, levels=levels[1:-1:2], colors="black", linewidths=0.6)
     ax.clabel(cs, inline=True, fontsize=6.4, fmt="%.0f")
-    sc = ax.scatter(sx, sy, c=sz, cmap="YlGnBu", s=26, edgecolors="black",
-                    linewidths=0.5, zorder=5, vmin=levels[0], vmax=levels[-1])
+    sc = ax.scatter(sx, sy, c=sz, cmap=CMAP_SEQ, s=26, edgecolors=EDGE,
+                    linewidths=0.6, zorder=5, vmin=levels[0], vmax=levels[-1])
     ax.set_xlim(0, 100)
     ax.set_ylim(0, 80)
     cbar = fig.colorbar(cf, ax=ax, pad=0.02)
-    cbar.set_label("年降水量 / mm", fontsize=8)
+    cbar.set_label("年降水量 / mm")
     cb2 = fig.colorbar(sc, ax=ax, pad=0.09, fraction=0.032)
     cb2.set_label("实测点降水 / mm", fontsize=8)
     _finish(ax, "IDW（p=2）插值降水量等值线图（黑点为 %d 个虚拟雨量站）" % n_sample,
             "东向坐标 $x$ / km", "北向坐标 $y$ / km")
-    ax.text(0.985, 0.03, "等值线为插值结果；插值不产生新的极值，\n峰值会被系统性平滑",
-            transform=ax.transAxes, ha="right", va="bottom", fontsize=7.0,
-            bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="gray", lw=0.6, alpha=0.85))
+    _note(ax, 0.985, 0.03, "等值线为插值结果；插值不产生新的极值，\n峰值会被系统性平滑",
+          ha="right", va="bottom", fontsize=7.0)
     fig.tight_layout()
-    fig.savefig(out_dir / "spatial_interpolation.png", dpi=_DPI, bbox_inches="tight",
-                pad_inches=0.06, facecolor="white")
-    plt.close(fig)
+    _save(fig, out_dir, "spatial_interpolation.png")
 
 
 def decision_radar(out_dir: Path) -> None:
@@ -1694,8 +1961,9 @@ def decision_radar(out_dir: Path) -> None:
         vals = values[k].tolist() + [values[k][0]]
         lw = 2.2 if k == best else 1.3
         alpha = 0.16 if k == best else 0.05
-        ax.plot(angles, vals, "o-", color=OKABE_ITO[k], linewidth=lw, markersize=4,
-                label="%s（加权得分 %.3f）" % (schemes[k], scores[k]))
+        ax.plot(angles, vals, linewidth=lw, markersize=4.2, alpha=0.95,
+                label="%s（加权得分 %.3f）" % (schemes[k], scores[k]),
+                **_series(k))
         ax.fill(angles, vals, color=OKABE_ITO[k], alpha=alpha)
     ax.set_xticks(angles[:-1])
     ax.set_xticklabels(indicators, fontsize=8)
@@ -1703,14 +1971,13 @@ def decision_radar(out_dir: Path) -> None:
     ax.set_yticks([0.2, 0.4, 0.6, 0.8, 1.0])
     ax.set_yticklabels(["0.2", "0.4", "0.6", "0.8", "1.0"], fontsize=6.5)
     ax.set_rlabel_position(96)
-    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.08), ncol=2, framealpha=0.95)
-    ax.set_title("四种方案在 6 项指标上的雷达图（指标已正向化并归一化）", pad=16)
+    _legend(ax, loc="upper center", bbox_to_anchor=(0.5, -0.08), ncol=2)
+    ax.set_title("四种方案在 6 项指标上的雷达图（指标已正向化并归一化）",
+                 loc="left", pad=16)
     ax.text(0.5, -0.20, "评分为相对值，仅用于同一指标体系内的方案间比较",
-            transform=ax.transAxes, ha="center", fontsize=7.2, color="#444444")
+            transform=ax.transAxes, ha="center", fontsize=7.2, color=INK_SOFT)
     fig.tight_layout()
-    fig.savefig(out_dir / "decision_radar.png", dpi=_DPI, bbox_inches="tight",
-                pad_inches=0.08, facecolor="white")
-    plt.close(fig)
+    _save(fig, out_dir, "decision_radar.png")
 
 
 # ---------------------------------------------------------------- 调度入口
@@ -1951,8 +2218,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if plt is None:
         print("[错误] 未检测到 matplotlib，无法生成配图。", file=sys.stderr)
-        print("       本脚本依赖 numpy + matplotlib；CI 刻意不装 matplotlib，", file=sys.stderr)
-        print("       因此请在本机执行：", file=sys.stderr)
+        print("       本脚本出图依赖 numpy + matplotlib（`--self-test` 只需 numpy）；", file=sys.stderr)
+        print("       请在本机执行：", file=sys.stderr)
         print("           python -m pip install matplotlib numpy", file=sys.stderr)
         print("       当前解释器：%s" % sys.executable, file=sys.stderr)
         print("       原始错误：%r" % (_MPL_ERROR,), file=sys.stderr)

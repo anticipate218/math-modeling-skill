@@ -129,7 +129,7 @@ git clone https://github.com/anticipate218/math-modeling-skill.git ~/.claude/ski
 **可直接用的成品件**：
 - [`assets/latex/`](assets/latex/)：国赛 / 研赛 / 美赛三套**单一自包含**的 LaTeX 模板（不 `\input` 外部文件、不依赖外部图片，图表用 TikZ/pgfplots 内联），`xelatex → bibtex → xelatex ×2` 即可编译；已内置各赛事硬规则（摘要页、页码、AI 声明位置、附录源程序）。
 - [`examples/algorithms/`](examples/algorithms/)：11 个算法模块（优化/评价/聚类/微分方程/随机模拟/图论/几何/博弈/启发式/预测/统计），**仅依赖 numpy 与标准库**；每个函数都带 `_self_test()`，再用 [`examples/run_algorithms.py`](examples/run_algorithms.py) 跑黄金值回归与确定性复跑。
-- [`assets/gallery/`](assets/gallery/)：16 张**原创**论文配图（评价权重与敏感性、TOPSIS 排序、预测对比与残差诊断、SIR 机理与参数敏感性、Pareto 前沿、蒙特卡洛收敛、排队仿真、最短路、空间插值、相关矩阵等），由 [`scripts/make_figures.py`](scripts/make_figures.py) 固定种子生成——**逐字节可复现**，可当画图与图注范本。
+- [`assets/gallery/`](assets/gallery/)：16 张**原创**论文配图（评价权重与敏感性、TOPSIS 排序、预测对比与残差诊断、SIR 机理与参数敏感性、Pareto 前沿、蒙特卡洛收敛、排队仿真、最短路、空间插值、相关矩阵等），由 [`scripts/make_figures.py`](scripts/make_figures.py) 固定种子生成——**逐字节可复现**，可当画图与图注范本。配色与排版经 [`scripts/check_palette.py`](scripts/check_palette.py) 做**可访问性体检**：Okabe-Ito 色相在该项体检里二色觉最差 ΔE 达 16.1，而常见的"论文风"配色 seaborn deep / ColorBrewer Set2 / tab10 分别只有 2.7 / 2.5 / 4.6；另有线型与标记点两条冗余通道兜住黑白打印，见 [`assets/gallery/README.md`](assets/gallery/README.md) §5.7–5.8。
 
 **为什么仓库里没有历年优秀论文的原图**：论文插图版权归作者/出版方，即使标注出处，未经许可把它们下载进仓库再分发通常也不构成合规使用，还会带来学术诚信风险。因此本仓库改为提供「原创可复现图库 + 官方与作者授权来源的链接索引」，见 [`references/paper-examples.md`](references/paper-examples.md)。
 
@@ -153,13 +153,14 @@ python scripts/check_paper.py --self-test                # 验证脚本自身可
 
 ## 质量保障
 
-这个仓库不只有文档，还带四层可自动运行的检查（CI 每次提交都会跑）：
+这个仓库不只有文档，还带多层可自动运行的检查（CI 每次提交都会跑）：
 
 | 层 | 命令 | 检查什么 |
 |---|---|---|
 | 结构 | `python scripts/validate_skill.py . --strict` | frontmatter 字段白名单、`name` 与目录一致、description/compatibility 长度、正文行数、**文件引用是否存在**、未索引文件、Windows 反斜杠路径 |
 | 自检工具 | `python scripts/check_paper.py --self-test` | 用「好稿/坏稿」固件验证检查逻辑本身没坏 |
 | 算法回归 | `python examples/run_algorithms.py` | 自带的 11 个算法模块、324 个断言键逐个跑数值自检，并与 `algorithms_golden.json` 黄金值比对（含确定性复跑） |
+| 配图配色 | `python scripts/check_palette.py --quiet` | 直接读 `make_figures.py` 里的设计令牌，算二色觉仿真 CIELAB ΔE、灰度间隔与 WCAG 对比度；并断言「颜色之外还有线型/标记」这条冗余编码确实存在 |
 | 依赖边界 | 见 `.github/workflows/ci.yml` | AST 扫描 `examples/algorithms/*.py`，禁止引入 scipy/sklearn/pandas 等重型依赖 |
 | 触发评测 | 见 `evals/` | 22 条查询（11 正例 + 11 个 near-miss 负例）测 description 触发率；14 条行为用例含**反幻觉断言**（如"不得编造官方评分权重""不得编造 star 数与性能基准""不得再分发他人论文图表"） |
 | 持续集成 | `.github/workflows/ci.yml` | 上述全部 + JSON 合法性 + 路径风格 |
@@ -187,6 +188,7 @@ math-modeling-skill/
 ├── scripts/
 │   ├── check_paper.py            # 论文自检工具（纯标准库，非交互，支持 --json/--self-test/--init）
 │   ├── validate_skill.py         # 技能结构校验（frontmatter / 篇幅 / 文件引用，支持 --strict）
+│   ├── check_palette.py          # 配图配色可访问性体检（二色觉 ΔE / 灰度间隔 / 对比度）
 │   └── make_figures.py           # 生成 assets/gallery/ 原创论文配图（固定种子，可完整复现）
 ├── assets/
 │   ├── abstract-template.md      # 摘要模板：中文（国赛/研赛）+ 英文 Summary Sheet（美赛）
@@ -196,7 +198,7 @@ math-modeling-skill/
 │   │   ├── cumcm/main.tex        # 国赛（中文，ctexart + bibtex）
 │   │   ├── yjs/main.tex          # 研赛（中文）
 │   │   └── mcm/main.tex          # 美赛（英文 Summary Sheet + Report on Use of AI）
-│   └── gallery/                  # 16 张原创配图 + 画法与图注说明
+│   └── gallery/                  # 16 张原创配图 + 画法、配色与图注说明
 ├── examples/
 │   ├── modeling_patterns.py      # 带注释的透明基线示例
 │   ├── algorithms/               # 11 个算法模块（仅依赖 numpy + 标准库）

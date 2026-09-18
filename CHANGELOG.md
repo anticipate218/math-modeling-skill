@@ -1,3 +1,44 @@
+## [1.6.0] - 2026-09-18
+
+本版补上一个**一直在漏的覆盖缺口**：`assets/latex/` 下的三套论文模板此前**从未在 CI 里被编译过**——CI 只校验仓库结构、算法模块和配图，不碰 LaTeX。也就是说模板可以一直悄悄地坏下去（宏包改名、`\cite` 打错、字体装不上），仓库照样全绿，而学生拿到手第一遍编译就报错。本版把"这三个模板真的能编译"变成 CI 上的硬门禁。
+
+### 关键结论（先说结果）
+
+- **中文字体是唯一不能照搬的一环，已经写进脚本说明**：国赛/研赛模板用 `fontset=windows`（调用 Windows 自带的宋体/黑体，学生开箱即用），但 Windows 字体在 Linux 上并不存在。CI 因此在**临时副本**里把它换成随发行版自带的 `fandol` 再编译；**仓库里的模板一个字都不改**。想验证仓库原件本身，在有 Windows 字体的机器上跑 `--keep-fontset` 即可——两种配置本机都实测通过。
+- **判断成败不能依赖日志里的字节数**：TeX Live 写 `Output written on main.pdf (9 pages, 341464 bytes).`，而 MiKTeX 只写 `Output written on main.pdf (9 pages).`。把字节数当必填，会在 MiKTeX 上把明明编译成功的模板判成"没产出 PDF"。页数取自日志，体积一律以磁盘上真实文件为准。
+
+### 新增
+
+- **`scripts/check_latex.py`：三个模板的真编译体检脚本（只依赖标准库）**
+  - 把每个模板的 `main.tex` + `refs.bib` 复制到系统临时目录，按模板文件头写明的顺序编译（`xelatex`/`pdflatex` → `bibtex` → 再两遍），**不在仓库里留下任何 .aux/.log/.pdf**。
+  - 解析 `main.log` / `main.blg` 判定：硬错误（`!` 开头）、未解析的 `\cite` 与 `\ref`、字体缺失（`The font "..." cannot be found`）、`Emergency stop`、交叉引用未收敛（`Rerun to get cross-references right`）、是否真的产出 PDF、页数是否低于下限。
+  - **顺带核对两条合规顺序**（查 .tex 源码）：国赛/研赛「AI 工具使用声明」必须在参考文献**之前**，美赛「Report on Use of AI」必须在参考文献**之后**（即 25 页正文之外）。
+  - `--self-test` 用合成日志跑 **26 项**固件测试，**不需要装 TeX**；`--require` 让"找不到引擎"判为失败而不是跳过（CI 用）；另有 `--only` / `--keep` / `--keep-fontset` / `--tex-dir` 便于本地排查。
+- **`.github/workflows/ci.yml` 新增 `latex` 作业**：装 TeX Live 后跑 `check_latex.py --require`。该作业**先跑不依赖 TeX 的 `--self-test`**，这样一旦 CI 红了能立刻分清是"脚本逻辑坏"还是"发行版缺宏包"。
+
+### 实现说明（两个真踩到的坑，已修并写进自测）
+
+- **顺序核对必须剥掉注释**：最初按整篇文本搜索 `\bibliography{`，结果命中了模板文件头第 13 行那句说明文字 `% 若你暂时不想用 .bib，可把 \bibliography{refs} 换成手写 thebibliography`，于是"AI 声明在参考文献之前"被误判成不合规（注释在第 13 行，AI 声明在第 429 行）。现在先去掉注释再匹配，并加了一条对应的自测。
+- **字体集替换只能动代码行**：`fontset=windows` 在每个中文模板里出现 3 次，其中 2 次在说明文字里。整篇替换会把"Linux/macOS 请把 `fontset=windows` 换成 `fontset=fandol`"改成同义反复，替换计数也虚高成 3。现在按行拆出注释、只替换代码部分。
+
+### 变更
+
+- `SKILL.md` 版本升至 `1.6.0`；`compatibility` 补上 `check_latex.py` 的依赖（本机需有 TeX 发行版提供 `xelatex`/`pdflatex`/`bibtex`）；参考文件索引新增一行。
+- `assets/latex/README.md` §6「验证记录」改为**由 `check_latex.py` 一条命令复现**，并把实测数据按 `fontset=windows` 与 `fontset=fandol` 两种配置分开列出（此前只记了前者，且没有说明用的是哪个字体集）。
+- `README.md`「质量保障」表与仓库结构树补 `scripts/check_latex.py`。
+- `references/templates.md` 补"模板改完后怎么验"。
+- `CITATION.cff` 同步版本与日期。
+
+### 关键验证记录
+
+| 项目 | 方式 | 结果 |
+|---|---|---|
+| 模板编译（CI 等价配置，临时副本用 fandol） | `python scripts/check_latex.py` | **3/3 通过**：cumcm 9 页 / 341,465 B；yjs 8 页 / 366,745 B；mcm 8 页 / 284,317 B。硬错误 0，未解析 `\cite`/`\ref` 各 0 |
+| 模板编译（仓库原件，`fontset=windows`） | `python scripts/check_latex.py --keep-fontset` | **3/3 通过**：cumcm 9 页 / 202,842 B；yjs 8 页 / 212,439 B；mcm 8 页 / 284,317 B |
+| 合规顺序 | 同一脚本的源码检查 | 国赛/研赛 AI 声明在参考文献之前 ✓；美赛在其之后 ✓ |
+| 解析逻辑固件测试 | `python scripts/check_latex.py --self-test` | **26/26 通过**（无需装 TeX） |
+| 仓库未被污染 | 运行前后 `git status --porcelain` | 无输出（编译只发生在系统临时目录） |
+
 ## [1.5.0] - 2026-09-18
 
 本版**只动配图的画法与配色，不动数据**。目标是把"看起来像论文插图"这件事从审美口号变成可测的工程约束：先量化各候选配色的二色觉可区分度，再决定色板，最后把"学术感"拆成一组设计令牌写进代码。

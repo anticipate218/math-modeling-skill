@@ -7,9 +7,9 @@ description: >-
 license: MIT
 metadata:
   author: anticipate218
-  version: "1.5.0"
+  version: "1.6.0"
   language: zh-CN
-compatibility: 可选依赖 Python 3.9+；scripts/check_paper.py 仅用标准库（读 PDF 需 pip install pypdf）；scripts/make_figures.py 需 matplotlib，scripts/check_palette.py 需 numpy
+compatibility: 可选依赖 Python 3.9+；scripts/check_paper.py 与 scripts/check_latex.py 仅用标准库（前者读 PDF 需 pip install pypdf，后者需本机 TeX 发行版提供 xelatex/pdflatex/bibtex）；scripts/make_figures.py 需 matplotlib，scripts/check_palette.py 需 numpy
 ---
 
 # 数学建模竞赛助手
@@ -173,6 +173,7 @@ python scripts/check_paper.py paper.md --contest mcm       # 美赛
 | 提交前逐项自查 | `references/checklists.md` |
 | 选 LaTeX 模板、编译报错、图表与参考文献排版 | `references/templates.md` |
 | 要一份可直接编译的论文模板（国赛/研赛/美赛） | `assets/latex/`（先读 `assets/latex/README.md`） |
+| 模板改完后想确认还能不能编过、引用是否解析、AI 声明位置对不对 | `scripts/check_latex.py`（`--require` / `--self-test`） |
 | 要论文配图范本、图注写法与绘图规范 | `assets/gallery/`（先读 `assets/gallery/README.md`） |
 | 重新生成配图库或跑配图数值自检 | `scripts/make_figures.py`（`--dpi` / `--only` / `--self-test`） |
 | 检查配图配色是否对色觉障碍友好、灰度下是否还分得开 | `scripts/check_palette.py`（`--quiet` / `--self-test`） |

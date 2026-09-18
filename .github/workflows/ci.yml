@@ -74,3 +74,44 @@ jobs:
             echo "发现反斜杠路径，请统一为正斜杠"; exit 1
           fi
           echo "路径风格检查通过"
+
+  latex:
+    name: LaTeX 模板真编译
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # 先跑不依赖 TeX 的解析逻辑固件测试：这样即使 TeX 安装出问题，
+      # 也能立刻分清是"脚本坏"还是"发行版缺宏包"。
+      - name: 日志解析/字体替换/顺序核对 固件测试（不需要 TeX）
+        run: python scripts/check_latex.py --self-test
+
+      # 三个模板用到的宏包：ctex+fandol、geometry/fancyhdr/hyperref、
+      # booktabs/multirow/tabularx/caption/subcaption、tikz/pgfplots、
+      # algorithm/algpseudocode、listings、natbib/lastpage、lmodern。
+      - name: 安装 TeX Live（xelatex / pdflatex / bibtex）
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            texlive-latex-base \
+            texlive-latex-recommended \
+            texlive-latex-extra \
+            texlive-fonts-recommended \
+            texlive-pictures \
+            texlive-science \
+            texlive-xetex \
+            texlive-lang-chinese \
+            texlive-bibtex-extra
+          xelatex --version | head -n 1
+          pdflatex --version | head -n 1
+          bibtex --version | head -n 1
+
+      # 真正把模板编译一遍：xelatex/pdflatex → bibtex → 再两遍，
+      # 然后核对硬错误、未解析引用、字体缺失、交叉引用是否收敛、
+      # 以及"AI 声明 vs 参考文献"的合规顺序。
+      - name: 编译三个模板并体检
+        run: python scripts/check_latex.py --require

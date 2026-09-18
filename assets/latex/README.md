@@ -165,13 +165,39 @@ mpm --install=ctex,geometry,setspace,indentfirst,amsmath,amssymb,booktabs,multir
 
 ## 六、验证记录（本仓库的实际编译结果）
 
-编译均在 `%TEMP%\mmlatex_final\<模板名>\` 的**副本**里进行（**不在仓库内编译**，仓库里不会出现 aux/pdf 等产物）。环境：Windows + MiKTeX 25.12（XeTeX / pdfTeX）。
+**你不用信这段文字——自己跑一条命令就能复现**：
 
-| 模板 | 实际命令序列 | exit code | 结果 |
+```bash
+# 仓库根目录下执行；本机需有 xelatex / pdflatex / bibtex
+python scripts/check_latex.py                 # 自动把 fontset=windows 换成 fandol（CI 同款路径）
+python scripts/check_latex.py --keep-fontset  # 不改字体，逐字验证仓库里这一份（需要 Windows 字体）
+python scripts/check_latex.py --only cumcm    # 只编一个模板
+python scripts/check_latex.py --self-test     # 不需要装 TeX，只测日志解析/字体替换/顺序核对
+```
+
+`check_latex.py` 会在系统临时目录里**另建一份副本**编译（**不在仓库内编译**，所以仓库里永远不出现 `.aux/.log/.pdf`），然后逐项核对：硬错误（`^!`）、未解析的 `\cite`/`\ref`、缺字体的 `Font "…" cannot be found`、BibTeX 致命错误、页数下限，以及**AI 声明与参考文献的先后顺序**（直接在 `.tex` 源码上核对，注释会被剥掉，避免把注释里提到的 `\bibliography` 误当成正文顺序）。
+
+### 6.1 两种 `fontset` 下都编得过
+
+页数/体积是**实际测得**的（Windows + MiKTeX 25.12，XeTeX / pdfTeX）：
+
+| 模板 | 引擎 | `fontset=windows`（`--keep-fontset`） | `fontset=fandol`（默认 / CI） |
 |---|---|---|---|
-| cumcm | `xelatex -interaction=nonstopmode -halt-on-error main.tex` → `bibtex main` → `xelatex …` → `xelatex …` | 0 / 0 / 0 / 0 | **9 页**，A4（595×842 pt），202 842 字节 |
-| yjs | 同上（引擎为 `xelatex`） | 0 / 0 / 0 / 0 | **8 页**，A4，212 439 字节 |
-| mcm | `pdflatex -interaction=nonstopmode -halt-on-error main.tex` → `bibtex main` → `pdflatex …` → `pdflatex …` | 0 / 0 / 0 / 0 | **8 页**，letter（612×792 pt），284 317 字节 |
+| cumcm | `xelatex` | **9 页**，A4（595×842 pt），202 842 B | **9 页**，341 465 B |
+| yjs | `xelatex` | **8 页**，A4，212 439 B | **8 页**，366 745 B |
+| mcm | `pdflatex` | **8 页**，letter（612×792 pt），284 317 B | 同左（美赛模板不含中文，与字体设置无关） |
+
+两种配置都是 **3/3 通过**：0 硬错误、0 未定义引用、编译产物均超过页数下限。两列的页数一致说明换字体只改字形与嵌入体积，不改分页。
+
+> **`fandol` 替换是尽力而为，不是保证**：脚本只改**临时副本**里的那一行 `fontset=windows`（且只改代码部分、不动注释），仓库里的 `.tex` 一个字节都没动。真正的判据是**编译成功 + 日志里没有 `Font "…" cannot be found`**——所以在没有 `fandol` 的机器上这一步会失败，失败信息会直接打出缺哪个字体。
+
+编译命令序列（三套一致，脚本内部就是这一串）：
+
+```
+引擎 → bibtex main → 引擎 → 引擎          # 4 遍，解析引用与交叉引用
+```
+
+`.github/workflows/ci.yml` 的 `latex` job 装 TeX Live 后跑 `python scripts/check_latex.py --require`：**`--require` 表示"没装 TeX 就报错退出"，绝不允许因为环境缺引擎就静默跳过**。这个 job 的意义在于：模板以前从来没在 CI 里被真正编译过，文档说"能编译"而模板悄悄烂掉，CI 仍然是绿的。
 
 内容抽查（用 `pdftotext` / `pdffonts` / `pdfinfo` 核对，非人工目测截图）：
 

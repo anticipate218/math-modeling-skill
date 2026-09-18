@@ -32,6 +32,15 @@ latexmk -pdf main.tex
 - **不要手写字体名**（Windows/macOS/Linux 字体名不同）；交给 ctex 的 `fontset` 机制自动选择，跨机器协作才不炸。
 - 图放 `figures/`，一律**相对路径 + 正斜杠**引用（`figures/flow.pdf`），不要出现 `figures\flow.pdf`。
 - 编译产物不要进版本库：`.aux .log .out .toc .synctex.gz .bbl .blg`。
+- **改完模板后先自检再提交**（仓库自带，纯标准库；`--require` 表示"没有 TeX 就报错"而不是静默跳过）：
+
+```bash
+python scripts/check_latex.py --self-test       # 不装 TeX 也能跑：测日志解析/字体替换/顺序核对
+python scripts/check_latex.py --require         # 真编三套模板，核对引用/字体/页数/AI 声明顺序
+python scripts/check_latex.py --keep-fontset    # 逐字验证仓库里这一份（本机有 Windows 字体时）
+```
+
+  它会在**系统临时目录的副本**里编译，仓库内不留任何产物；`fontset=windows` 只在临时副本里被换成 `fandol`（CI 在 Linux 上跑），日志里出现 `Font "…" cannot be found` 即判失败。三套模板的这一检查已接入 CI。
 
 ---
 

@@ -40,6 +40,7 @@
 | 解析逻辑固件测试 | `python scripts/check_latex.py --self-test` | **26/26 通过**（无需装 TeX） |
 | 仓库未被污染 | 运行前后 `git status --porcelain` | 无输出（编译只发生在系统临时目录） |
 | CI 首次运行（Ubuntu + TeX Live） | GitHub Actions run `35358308247` 的 `latex` 作业 | **2/3**：国赛 9 页、研赛 8 页均通过（页数与 Windows 一致），美赛因缺 `lmodern.sty` 失败——**脚本准确报出了缺哪个包**，据此补齐安装列表 |
+| CI 修复后（Ubuntu + TeX Live） | GitHub Actions run `35358882584`：`check` 与 `latex` 两个作业 | **全绿**；`latex` 作业 **3/3 通过**：国赛 9 页 / 341 040 B、研赛 8 页 / 366 285 B、美赛 8 页 / 268 965 B |
 
 ## [1.5.0] - 2026-09-18
 

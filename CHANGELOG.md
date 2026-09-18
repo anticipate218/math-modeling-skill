@@ -27,7 +27,7 @@
 - **配色取舍**：从数据色循环中移除纯黑与黄色 `#F0E442`（对白底对比度仅 **1.32**，细线不可用）。`OKABE_ITO` 保留 7 色，`CYCLE = OKABE_ITO[:6]`。移除这两色**不改变**二色觉最差 ΔE（仍为 16.1）。
 - **`assets/gallery/README.md` §7 表格按真实 PNG 重新生成**（尺寸/字节/体积逐张核实，合计 2,051,061 字节 = 2003.0 KB）；§5.1 补充字号与左对齐规则；§5.2 补充 300 dpi 下的预估体积；§8 补充体检脚本用法与改动后的标准流程。
 - `README.md` 「质量保障」表新增"配图配色"一行；仓库结构树补 `scripts/check_palette.py`；`assets/gallery/` 说明改为"16 张原创配图 + 画法、配色与图注说明"。
-- `.github/workflows/ci.yml` 新增配图配色体检步骤。
+- `.github/workflows/ci.yml` 新增两步：`scripts/check_palette.py --quiet` 与 `scripts/make_figures.py --self-test`。两者都**只需 numpy、不出图**，所以 CI 仍然不装 matplotlib；相应地 `make_figures.py` 里"本脚本刻意不接入 CI"的说明也改为"CI 只跑数值自检、出图在本机"。
 - `SKILL.md` 版本升至 `1.5.0`，脚本清单补 `check_palette.py`；`CITATION.cff` 同步版本与日期。
 
 ### 设计原则（本版新增）

@@ -7,7 +7,7 @@ description: >-
 license: MIT
 metadata:
   author: anticipate218
-  version: "1.0.0"
+  version: "1.3.1"
   language: zh-CN
 compatibility: 可选依赖 Python 3.9+；scripts/check_paper.py 仅用标准库（读 PDF 需 pip install pypdf）
 ---

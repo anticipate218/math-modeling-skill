@@ -18,5 +18,7 @@
   {"id": "t17", "query": "帮我查一下明天北京的天气", "should_trigger": false, "note": "明显无关"},
   {"id": "t18", "query": "Excel 里怎么用数据透视表统计销量", "should_trigger": false, "note": "near-miss：数据处理工具操作"},
   {"id": "t19", "query": "帮我写一篇关于气候变化的科普文章", "should_trigger": false, "note": "near-miss：写作任务，非建模论文"},
-  {"id": "t20", "query": "怎么把 matplotlib 的图导出成高分辨率 PDF", "should_trigger": false, "note": "near-miss：绘图技巧，属通用编程"}
+  {"id": "t20", "query": "怎么把 matplotlib 的图导出成高分辨率 PDF", "should_trigger": false, "note": "near-miss：绘图技巧，属通用编程"},
+  {"id": "t21", "query": "这道优化题想找开源求解器，GitHub 上哪个合适？论文里怎么写引用", "should_trigger": true, "note": "资源检索+引用规范诉求"},
+  {"id": "t22", "query": "推荐一个 Python 里好用的操作图结构的库", "should_trigger": false, "note": "near-miss：通用库推荐，非竞赛论文任务"}
 ]

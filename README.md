@@ -148,7 +148,7 @@ python scripts/check_paper.py --self-test                # 验证脚本自身可
 |---|---|---|
 | 结构 | `python scripts/validate_skill.py .` | frontmatter 字段白名单、`name` 与目录一致、description/compatibility 长度、正文行数、**文件引用是否存在**、Windows 反斜杠路径 |
 | 自检工具 | `python scripts/check_paper.py --self-test` | 用「好稿/坏稿」固件验证检查逻辑本身没坏 |
-| 触发评测 | 见 `evals/` | 20 条查询（10 正例 + 10 个 near-miss 负例）测 description 触发率；6 条行为用例含**反幻觉断言**（如"不得编造官方评分权重"） |
+| 触发评测 | 见 `evals/` | 22 条查询（11 正例 + 11 个 near-miss 负例）测 description 触发率；10 条行为用例含**反幻觉断言**（如"不得编造官方评分权重""不得编造 star 数与性能基准"） |
 | 持续集成 | `.github/workflows/ci.yml` | 上述全部 + JSON 合法性 + 路径风格 |
 
 其中 `validate_skill.py` 对所有 Agent Skill 作者都有用：它专门拦"跨工具分发时会硬报错"的 frontmatter 问题（比如多写了非标准字段）。

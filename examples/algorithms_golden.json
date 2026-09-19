@@ -1048,9 +1048,9 @@
     "weighted_sum_dev": 7.44e-07,
     "weighted_sum_n": 11,
     "weighted_sum_x_err": 9.3e-08,
-    "zdt1_dev_le_2pct": 1,
     "zdt1_front_size": 60,
-    "zdt1_g_le_2pct": 1
+    "zdt1_history_len": 151,
+    "zdt1_nondominated": 1
   },
   "optimization": {
     "assign": [

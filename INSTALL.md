@@ -125,10 +125,10 @@ python scripts/install_skill.py --into "<技能根>"
 # 在技能仓库根目录执行；默认不覆盖、不联网
 python scripts/install_skill.py --target auto
 
-# 从 Release ZIP 装（用户给的就是 zip 时）
-python scripts/install_skill.py --from-zip /path/to/math-modeling-skill-v1.8.0.zip --target auto
+# 从 Release ZIP 装（用户给的就是 zip 时；X.Y.Z 换成实际版本号）
+python scripts/install_skill.py --from-zip /path/to/math-modeling-skill-vX.Y.Z.zip --target auto
 
-# 想拉最新 Release 的 ZIP 再装（唯一联网的动作）
+# 想拉最新 Release 的 ZIP 再装（唯一联网的动作；偶发断线会自动重试 4 次）
 python scripts/install_skill.py --download --target auto
 
 # 先看看会做什么，不动磁盘
@@ -238,6 +238,18 @@ ls "<技能根>/math-modeling-skill"
 
 这是故意的安全闸门：目标目录里没有 `name: math-modeling-skill` 的 `SKILL.md`，
 脚本不肯删它。换个位置装，或让用户自己确认后手工处理。
+
+### `--download` 报 SSL / 连接被重置 / `UNEXPECTED_EOF_WHILE_READING`
+
+**这不是用户的操作错误**，是 GitHub 到本机之间的偶发断流（家宽、校园网、代理下很常见）。
+脚本已经把"查询 Release"和"下载 ZIP"各重试 **4 次**（退避 1.5s / 3s / 6s），
+并且**中断后整个下载重来**，不会留下半个 ZIP。所以：
+
+1. 先**原样重跑一次**那条命令；
+2. 还是不行就换 `--from-zip`：让用户到
+   <https://github.com/anticipate218/math-modeling-skill/releases> 手工下载 ZIP，
+   你再用 `--from-zip <路径>` 装；
+3. 连续 4 次都失败时脚本会直接把上面两条出路打印出来，照着念给用户即可。
 
 ### 想装到多个宿主
 

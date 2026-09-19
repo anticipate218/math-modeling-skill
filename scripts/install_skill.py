@@ -35,8 +35,8 @@
     python scripts/install_skill.py --target dsh-project --dry-run  # 只看要做什么，不动磁盘
     python scripts/install_skill.py --into D:/my/skills/math-modeling-skill   # 精确指定目标目录
     python scripts/install_skill.py --source D:/path/to/checkout    # 从本地另一个副本装
-    python scripts/install_skill.py --from-zip math-modeling-skill-v1.8.0.zip  # 从 Release ZIP 装
-    python scripts/install_skill.py --download                      # 拉最新 Release 的 ZIP 再装
+    python scripts/install_skill.py --from-zip math-modeling-skill-vX.Y.Z.zip  # 从 Release ZIP 装（换成实际版本号）
+    python scripts/install_skill.py --download                      # 拉最新 Release 的 ZIP 再装（断线自动重试）
     python scripts/install_skill.py --self-test                     # 不联网、不动真实技能目录的固件测试
 
 退出码:
@@ -54,6 +54,7 @@ from __future__ import annotations
 
 import argparse
 import fnmatch
+import http.client
 import os
 import pathlib
 import re
@@ -61,6 +62,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.request
 import zipfile
@@ -72,6 +74,13 @@ SKILL_NAME = "math-modeling-skill"
 #: 上游仓库；`--download` 用它找最新 Release 的 ZIP（公开仓库，不需要 token）。
 REPO = "anticipate218/math-modeling-skill"
 RELEASE_API = "https://api.github.com/repos/" + REPO + "/releases/latest"
+
+#: 联网重试次数（含首次）。GitHub 在部分家宽/代理/校园网下会偶发 TLS 中断
+#: （`SSL: UNEXPECTED_EOF_WHILE_READING`）或连接重置，**这不是用户的操作错误**，
+#: 让整条命令直接失败会逼用户手工重跑，体验很差。
+RETRY_ATTEMPTS = 4
+#: 退避基数（秒）：第 n 次重试前等 `RETRY_BASE_DELAY * 2**(n-1)`，即 1.5s / 3s / 6s。
+RETRY_BASE_DELAY = 1.5
 
 #: 复制时丢弃的目录：`.git` 是 clone 残留，其余是缓存/虚拟环境，与技能无关。
 IGNORE_DIRS = frozenset({
@@ -430,6 +439,58 @@ def extract_zip(zip_path: pathlib.Path, workdir: pathlib.Path) -> pathlib.Path:
         return out
 
 
+def _retry_network(what: str, action, *, attempts: int = RETRY_ATTEMPTS,
+                   sleeper=None, reporter=None):
+    """按指数退避重试一个**联网动作**；全部失败时抛 `InstallError`。
+
+    参数:
+        what: 出错信息里的人话主语，例如 `"查询最新 Release"`、`"下载 xxx.zip"`。
+        action: 无参可调用对象，每次调用都完整重做一遍联网动作并返回结果。
+            **整个动作**（连接 + 读响应体 + 写文件）都在重试范围内，这样
+            "连上了但传到一半断掉"也能重来，而不是留下半个文件。
+        attempts: 总尝试次数（含首次），必须 >= 1。
+        sleeper: 睡眠函数，默认 `time.sleep`；固件测试注入假实现以免真的等待。
+        reporter: 提示输出函数，默认 `print`；每次重试前说明原因。
+
+    返回:
+        `action()` 的返回值（首次成功那次）。
+
+    算法:
+        循环 `attempts` 次：第 i 次（i>0）先按 `RETRY_BASE_DELAY * 2**(i-1)` 退避，
+        再执行 `action()`；捕获连接层异常（`URLError` / `OSError` /
+        `http.client.HTTPException`）继续下一次。全部失败则抛 `InstallError`，
+        错误信息里给两条**可执行**的出路（直接重跑 / 手工下 ZIP + `--from-zip`）。
+
+    复杂度:
+        时间 O(attempts × 单次网络往返)，失败时额外等待 O(2**attempts) 秒 / 空间 O(1)。
+
+    陷阱:
+        只重试**偶发的连接层**失败，不做内容判断：HTTP 404 也会被重试，靠次数
+        有限兜底。`attempts < 1` 会静默什么都不做，所以显式报 `ValueError`。
+        `action` 必须自身幂等（例如写文件用 `"wb"` 覆盖），否则重试会叠加副作用。
+    """
+    if attempts < 1:
+        raise ValueError("attempts 必须 >= 1")
+    sleeper = sleeper or time.sleep
+    reporter = reporter or print
+    last: object = None
+    for i in range(attempts):
+        if i:
+            delay = RETRY_BASE_DELAY * (2 ** (i - 1))
+            reporter(f"  …{what}第 {i + 1}/{attempts} 次尝试（{delay:g}s 后重试，上次失败：{last}）")
+            sleeper(delay)
+        try:
+            return action()
+        except (urllib.error.URLError, OSError, http.client.HTTPException) as exc:
+            last = exc
+    raise InstallError(
+        f"{what}连续 {attempts} 次都没成功，最后一次的报错是：{last}\n"
+        "  · 这一步只是网络问题，**直接重跑一次同样的命令**通常就好了；\n"
+        f"  · 网络一直不稳就打开 https://github.com/{REPO}/releases ，"
+        "手工下载 math-modeling-skill-vX.Y.Z.zip，再用 --from-zip 指过去。"
+    )
+
+
 def download_latest_zip(workdir: pathlib.Path) -> pathlib.Path:
     """从 GitHub 拉最新 Release 里的 ZIP 资产到临时目录。
 
@@ -440,7 +501,8 @@ def download_latest_zip(workdir: pathlib.Path) -> pathlib.Path:
         下载好的 ZIP 路径。
 
     算法:
-        查 `releases/latest` 接口，取第一个 `.zip` 资产，按 `browser_download_url` 下载。
+        查 `releases/latest` 接口，取第一个 `.zip` 资产，按 `browser_download_url`
+        下载。**两步都带指数退避重试**（见 `_retry_network`）。
 
     复杂度:
         时间 O(包大小) 受网速限制 / 空间 同。
@@ -449,17 +511,25 @@ def download_latest_zip(workdir: pathlib.Path) -> pathlib.Path:
         这是本脚本**唯一联网**的动作，且未加 `--download` 时完全不会走这里。
         公开仓库无需 token；但无 token 时 GitHub 接口有每小时 60 次的限额，
         连续被限流就改用 `--from-zip` 下载好的包。
+        GitHub 偶发 TLS 中断（`UNEXPECTED_EOF_WHILE_READING`）在实测中很常见，
+        所以**读响应体、写盘**也在重试范围内：中断后重来一遍，而不是留个半截
+        ZIP 让后面的解包报"不是合法 ZIP"。
     """
     import json  # 只在联网分支里用，保持顶层依赖最小
 
-    req = urllib.request.Request(RELEASE_API, headers={
-        "Accept": "application/vnd.github+json",
-        "User-Agent": "math-modeling-skill-installer",
-    })
-    try:
+    def fetch_meta():
+        req = urllib.request.Request(RELEASE_API, headers={
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "math-modeling-skill-installer",
+        })
         with urllib.request.urlopen(req, timeout=30) as resp:
-            meta = json.loads(resp.read().decode("utf-8"))
-    except (urllib.error.URLError, OSError, ValueError) as exc:
+            return json.loads(resp.read().decode("utf-8"))
+
+    try:
+        meta = _retry_network("查询最新 Release", fetch_meta)
+    except InstallError:
+        raise
+    except (OSError, ValueError) as exc:  # 响应不是合法 JSON 等
         raise InstallError(f"查询最新 Release 失败（{exc}）；可以改用 --from-zip 指定本地 ZIP") from exc
 
     assets = [a for a in meta.get("assets", []) if str(a.get("name", "")).endswith(".zip")]
@@ -467,14 +537,24 @@ def download_latest_zip(workdir: pathlib.Path) -> pathlib.Path:
         raise InstallError("最新 Release 里没有 .zip 资产；请到仓库 Releases 页面手工下载后用 --from-zip")
     asset = assets[0]
     target = workdir / str(asset["name"])
-    req = urllib.request.Request(str(asset["browser_download_url"]),
-                                headers={"User-Agent": "math-modeling-skill-installer"})
-    try:
+
+    def fetch_zip():
+        req = urllib.request.Request(str(asset["browser_download_url"]),
+                                     headers={"User-Agent": "math-modeling-skill-installer"})
+        # "wb" 覆盖写：重试时不会把两次的部分内容拼在一起。
         with urllib.request.urlopen(req, timeout=120) as resp, open(target, "wb") as fh:
             shutil.copyfileobj(resp, fh)
-    except (urllib.error.URLError, OSError) as exc:
+        return target.stat().st_size
+
+    try:
+        size = _retry_network(f"下载 {asset['name']}", fetch_zip)
+    except InstallError:
+        raise
+    except (OSError, ValueError) as exc:
         raise InstallError(f"下载 {asset['name']} 失败：{exc}") from exc
-    print(f"已下载 {asset['name']}（{target.stat().st_size} 字节）")
+    if not size:
+        raise InstallError(f"下载 {asset['name']} 拿到的是 0 字节；请重试，或改用 --from-zip")
+    print(f"已下载 {asset['name']}（{size} 字节）")
     return target
 
 
@@ -859,6 +939,50 @@ def self_test() -> int:
             assert read_frontmatter(p).get("name") == SKILL_NAME, "带 BOM 的 SKILL.md 读不出 name"
             assert is_our_skill(src), "带 BOM 时 is_our_skill 必须仍为真"
 
+        def t_retry_succeeds_after_transient_failure() -> None:
+            calls: list = []
+            slept: list = []
+
+            def flaky():
+                calls.append(1)
+                if len(calls) < 3:
+                    raise urllib.error.URLError("SSL: UNEXPECTED_EOF_WHILE_READING")
+                return "ok"
+
+            got = _retry_network("测试动作", flaky, attempts=4,
+                                 sleeper=slept.append, reporter=lambda *_: None)
+            assert got == "ok", f"重试后应返回成功结果，实际 {got!r}"
+            assert len(calls) == 3, f"应当在第 3 次尝试成功，实际调用 {len(calls)} 次"
+            assert slept == [RETRY_BASE_DELAY, RETRY_BASE_DELAY * 2], f"退避时长不对：{slept}"
+
+        def t_retry_gives_up_with_actionable_error() -> None:
+            calls: list = []
+
+            def always_broken():
+                calls.append(1)
+                raise urllib.error.URLError("连接被重置")
+
+            try:
+                _retry_network("测试动作", always_broken, attempts=3,
+                               sleeper=lambda _s: None, reporter=lambda *_: None)
+            except InstallError as exc:
+                msg = str(exc)
+                assert "3 次" in msg, f"错误信息没说清重试了几次：{msg}"
+                assert "--from-zip" in msg, f"错误信息没给出兜底出路：{msg}"
+            else:
+                raise AssertionError("一直失败时必须抛 InstallError")
+            assert len(calls) == 3, f"应当尝试 3 次，实际 {len(calls)} 次"
+
+        def t_retry_attempts_must_be_positive() -> None:
+            # attempts < 1 会让循环一次都不跑、静默返回 None，必须显式拦下。
+            try:
+                _retry_network("测试动作", lambda: "never", attempts=0,
+                               sleeper=lambda _s: None, reporter=lambda *_: None)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("attempts=0 应当报 ValueError")
+
         def t_list_targets_runs() -> None:
             rc = cmd_list_targets(pathlib.Path.cwd(), pathlib.Path.home(), dsh_home())
             assert rc == 0, f"cmd_list_targets 返回 {rc}"
@@ -881,6 +1005,9 @@ def self_test() -> int:
             ("技能根里有别人的技能也能装", t_into_nests_empty_root_only),
             ("--into 指向别人的技能目录时拒绝", t_into_rejects_foreign_skill_dir),
             ("带 UTF-8 BOM 的 SKILL.md 仍可识别", t_frontmatter_bom),
+            ("联网动作会重试并最终成功", t_retry_succeeds_after_transient_failure),
+            ("联网一直失败时报可执行的错", t_retry_gives_up_with_actionable_error),
+            ("重试次数必须为正", t_retry_attempts_must_be_positive),
             ("--list-targets 可运行", t_list_targets_runs),
         ]:
             check(label, fn)

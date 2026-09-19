@@ -1,3 +1,38 @@
+## [1.8.3] - 2026-09-19
+
+本版修一个**只有真机才能撞见的可用性 bug**：`--download`（脚本里唯一联网的动作）没有重试，遇到 GitHub 的偶发 TLS 断流就整条命令失败，而报错给的出路是"改用 `--from-zip`"——可用户选 `--download` 恰恰是因为手上没有包。
+
+### 关键结论（先说结果）
+
+- **`--download` 现在会重试。** "查询最新 Release"与"下载 ZIP"两步都带**指数退避重试（4 次，退避 1.5s / 3s / 6s）**；重试时打印"第 n/4 次尝试（Xs 后重试，上次失败：…）"，让用户看见它在自救，而不是卡住或直接死掉。
+- **重试的是"整个下载动作"，不只是建立连接。** 连接 + 读响应体 + 写文件都在重试范围内——因为实测里最常见的是 `SSL: UNEXPECTED_EOF_WHILE_READING`，即**连上了但传到一半断掉**。只重试 `urlopen()` 的话，这一半失败照样漏网。写盘用 `"wb"` 覆盖，重试不会把两次的部分内容拼成一个坏 ZIP。
+- **失败信息从"没办法"变成"两条出路"。** 4 次全败时会打印：① 这是网络问题，**原样重跑一次**通常就好；② 到 Releases 页手工下载 ZIP 再用 `--from-zip`。另有 0 字节兜底检查。
+- **实测复现 + 实测修好。** 不是推测：发布 v1.8.2 后我用同一个命令做端到端复验，现场撞到 `urlopen error [SSL: UNEXPECTED_EOF_WHILE_READING]`，装出一个空目录；补上重试后同一条命令在真机上**下载 2,915,975 字节、装完校验通过、`metadata.version` 读出来是 1.8.2**。
+
+### 变更
+
+- `scripts/install_skill.py`（962 → 1,089 行）：
+  - 新增 `_retry_network(what, action, *, attempts, sleeper, reporter)`（含完整 docstring），捕获 `URLError`/`OSError`/`http.client.HTTPException` 并按 `RETRY_BASE_DELAY * 2**(i-1)` 退避；`attempts < 1` 显式抛 `ValueError`（否则循环一次都不跑、静默返回 `None`）；
+  - 新增常量 `RETRY_ATTEMPTS = 4`、`RETRY_BASE_DELAY = 1.5`（注释写明为什么值得重试）；新引入 `http.client`、`time`（都是标准库，依赖清单不变）；
+  - `download_latest_zip()` 改为把"取元数据"和"下载 ZIP"分别包进 `_retry_network`，下载动作含写盘；新增 0 字节检查；docstring 的「陷阱」补上这条真机经验；
+  - `--self-test` 由 **18 项扩到 21 项**：新增「联网动作会重试并最终成功」（注入假 opener 与假 sleeper，断言第 3 次成功且退避时长正是 1.5s / 3s）、「联网一直失败时报可执行的错」（断言信息含次数与 `--from-zip`，且恰好尝试 3 次）、「重试次数必须为正」。
+- `INSTALL.md`（292 → 304 行）：第 3 节的联网命令注明"偶发断线会自动重试 4 次"；新增常见问题「`--download` 报 SSL / 连接被重置 / `UNEXPECTED_EOF_WHILE_READING`」，给出重跑与改走 `--from-zip` 两条路。
+- `README.md`：第 7 节自检期望值 `18/18` → `21/21`；「质量保障」表的「安装器」一行补上重试这项。
+- **示例里的版本号不再写死。** `--from-zip` 的例子原先是 `math-modeling-skill-v1.8.0.zip`（每次发版都会变成旧版本，容易让人以为要下那个版本），现在统一写成 `math-modeling-skill-vX.Y.Z.zip` 并注明"换成 Release 页上的版本号"（改到 `README.md` / `INSTALL.md` / `install_skill.py` 三处）。
+- `SKILL.md` / `CITATION.cff`：版本升至 `1.8.3`。
+
+### 关键验证记录
+
+| 项目 | 方式 | 结果 |
+|---|---|---|
+| 修复前（真机） | `install_skill.py --download --into <临时目录>` | **失败**：`[SSL: UNEXPECTED_EOF_WHILE_READING]`，目标目录为空 |
+| 修复后（真机） | 同一条命令 | **成功**：下载 2,915,975 字节（与 v1.8.2 资产字节数一致），装完 `validate_skill.py --strict` 通过，`metadata.version` = 1.8.2 |
+| 重试逻辑 | `install_skill.py --self-test` | **21/21 通过**；不联网（注入假 opener / 假 sleeper / 假 reporter）、不碰真实技能目录 |
+| 结构与自检 | `validate_skill.py --strict` / `check_paper.py --self-test` / `download_templates.py --list` / `check_latex.py --self-test` | 0 错误 0 警告 / 全过 / 26 项全过 / 26 项全过 |
+| 算法与配图 | `run_algorithms.py` / `check_palette.py --quiet` / `make_figures.py --self-test` | 17 模块 875 键 0 失败 / 全部达标 / 退出码 0 |
+| 发布包 | `git archive` 从本版提交打包，比对 ZIP 条目集合与 git 跟踪文件集合 | 84 文件 0 缺 0 多 |
+| CI（`check` + `latex`） | 推送后看 Actions | 两个任务全绿 |
+
 ## [1.8.2] - 2026-09-19
 
 本版**没有任何运行时代码变化**：`scripts/`、`references/`、`examples/`、`templates/` 与 v1.8.1 逐字节相同（`scripts/install_skill.py` 的 SHA-256 两版一致）。它存在的唯一理由是——v1.8.1 的 Release 资产是在一个 **CI 变红的提交**上打的（原因见 1.8.1 末尾「一条自曝」：文档逐字引用了 CI 的检查判据，把自己举报了）。本版把 `main`、标签、Release 资产重新对齐到**CI 两个任务全绿**的树上。

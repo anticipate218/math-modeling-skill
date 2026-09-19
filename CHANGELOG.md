@@ -32,11 +32,17 @@
 | 技能结构 | `python scripts/validate_skill.py . --strict` | **0 个错误，0 个警告**；检查了 30 个文件引用 |
 | 全量算法回归 | `python examples/run_algorithms.py` | 17 个模块 / 875 个断言键，失败 0 个模块（本版未改算法代码） |
 | 其余随包自检 | `check_paper.py` / `download_templates.py` / `check_latex.py` `--self-test`；`check_palette.py --quiet`；`make_figures.py --self-test` | 全部通过（26/26、26/26、配色断言全满足） |
-| 文档路径风格 | 扫全部 23 个 `*.md` 找 `(references\|scripts\|assets\|evals\|examples)\` | 命中 **0** |
+| 文档路径风格 | 扫全部 23 个 `*.md`，找"目录名紧跟反斜杠"的 Windows 风格路径（同 CI 里那条 grep 的判据） | 命中 **0** |
 
 ### 与 1.8.0 的关系
 
 v1.8.0 的 Release 资产里装的是**没修这个坑**的 860 行安装器（该版本已发布，不追改）。请用 **v1.8.1** 的包或 `main` 分支；用 1.8.0 的安装器时请务必把 `--into` 写成 `<技能根>/math-modeling-skill`。
+
+### 一条自曝：本版的 CI 曾经红过一次
+
+推送 v1.8.1 后 CI 的「检查是否有 Windows 风格路径」这步失败了，原因不是代码，而是**我给本文件写验证记录时把那条 grep 的判据原样抄了进来**——判据文本里"目录名 + 一个反斜杠"的组合，正好等于那条 grep 要找的东西，于是文档把自己举报了。
+
+修法是改掉措辞（不再逐字引用判据），并在 `ci.yml` 里加一行注释说明"不要在文档里逐字引用这条判据"。**没有放宽这条检查**：它照样扫全部 `*.md`。我也把同一条判据搬进了本地的收尾自检脚本，免得再出现"本地全绿、CI 变红"。
 
 ## [1.8.0] - 2026-09-19
 
@@ -73,7 +79,7 @@ v1.8.0 的 Release 资产里装的是**没修这个坑**的 860 行安装器（�
 | 技能结构 | `python scripts/validate_skill.py . --strict` | **0 个错误，0 个警告**；检查了 30 个文件引用 |
 | 全量算法回归 | `python examples/run_algorithms.py` | 17 个模块 / 875 个断言键，失败 0 个模块（本版未改算法代码） |
 | 其余随包自检 | `check_paper.py --self-test` / `download_templates.py --self-test` / `check_latex.py --self-test` / `check_palette.py --quiet` / `make_figures.py --self-test` | 全部通过（26/26、26/26、配色断言全满足） |
-| 文档路径风格 | 扫全部 23 个 `*.md` 找 `(references|scripts|assets|evals|examples)\` | 命中 **0**（新增的 `INSTALL.md` 与 README 全用正斜杠） |
+| 文档路径风格 | 扫全部 23 个 `*.md`，找"目录名紧跟反斜杠"的 Windows 风格路径（同 CI 里那条 grep 的判据） | 命中 **0**（新增的 `INSTALL.md` 与 README 全用正斜杠） |
 
 ---
 

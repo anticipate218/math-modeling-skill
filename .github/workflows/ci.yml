@@ -83,6 +83,10 @@ jobs:
               print(f, "OK")
           PY
 
+      # 这一步的判据是"某个受管目录名紧跟一个反斜杠"。
+      # 注意：写文档时不要在 *.md 里逐字引用下面这条正则（连"目录名 + 反斜杠"的
+      # 片段也不要抄），否则文档会把自己举报成违规——v1.8.1 的 CHANGELOG 就踩过。
+      # 描述这条检查时请用文字转述，例如"目录名紧跟反斜杠的 Windows 风格路径"。
       - name: 检查是否有 Windows 风格路径
         run: |
           if grep -rnE '(references|scripts|assets|evals|examples)\\' --include='*.md' .; then

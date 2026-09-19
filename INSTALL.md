@@ -102,11 +102,20 @@ python scripts/install_skill.py --target agents-user # 或显式指定
 
 ### 2C. 用 `--into` 精确指定
 
-不管你的宿主是什么，只要确定了技能根，就可以直接指定安装后的目录：
+不管你的宿主是什么，只要确定了技能根，就可以直接指定安装位置：
 
 ```bash
-python scripts/install_skill.py --into "<技能根>/math-modeling-skill"
+python scripts/install_skill.py --into "<技能根>"
 ```
+
+`--into` 两种写法都可以，脚本会自己判断：
+
+- 给**技能根**（例如 `~/.agents/skills`）→ 自动补一层 `math-modeling-skill`；
+- 给**技能目录本身**（例如 `~/.agents/skills/math-modeling-skill`）→ 原样使用。
+
+动手前它会把**真实的安装路径**打印出来，照着核对一眼即可。
+如果那个目录里已经躺着**别人的技能**（`SKILL.md` 的 `name` 不是 `math-modeling-skill`），
+它会直接拒绝——别绕过这一点。
 
 ---
 
@@ -213,6 +222,12 @@ ls "<技能根>/math-modeling-skill"
 
 用 `--list-targets` 看完整列表，然后 `--target <名字>` 或 `--into <目录>` 显式指定。
 `auto` 只是个方便，不是权威判断。
+
+### 校验报 `name（math-modeling-skill）必须与技能目录名（xxx）一致`
+
+说明技能被装进了一个名字不对的目录。`--into` 现在会自动处理这件事：给它技能根
+（`~/.agents/skills`）它会补一层 `math-modeling-skill`。如果已经装错了，把目录改名
+（或直接删掉重装）即可——**不要**改 `SKILL.md` 里的 `name` 去迁就目录名。
 
 ### Windows 上装到哪了
 

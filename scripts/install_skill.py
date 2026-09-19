@@ -236,8 +236,11 @@ def read_frontmatter(skill_md: pathlib.Path) -> dict:
     陷阱:
         这里**只做识别，不做规范校验**。字段白名单、篇幅、引用完整性由
         `scripts/validate_skill.py --strict` 负责，两件事不要混在一起。
+        读进来先剥掉 UTF-8 BOM：Windows 上的编辑器（记事本、部分 IDE）会给
+        文件加 BOM，带着 BOM 时 `---` 不在开头，frontmatter 会整块读不出来，
+        于是 `is_our_skill` 误判为"不是本技能"，`--force` 更新就会莫名被拒。
     """
-    text = skill_md.read_text(encoding="utf-8")
+    text = skill_md.read_text(encoding="utf-8").lstrip("\ufeff")
     m = _FRONTMATTER_RE.match(text)
     if not m:
         return {}
@@ -331,6 +334,52 @@ def copy_skill(src: pathlib.Path, dst: pathlib.Path, force: bool, dry_run: bool)
         shutil.rmtree(dst)
     shutil.copytree(src, dst, ignore=_ignore, symlinks=False)
     return action
+
+
+def resolve_into(raw: str) -> tuple:
+    """把 `--into` 的取值规整成"技能目录本身"，并给出备注。
+
+    参数:
+        raw: 用户在 `--into` 后面给的原样字符串（可含 `~`）。
+
+    返回:
+        `(技能目录, 备注)`；备注为空串表示原样使用，否则是给人看的一句说明。
+
+    算法:
+        目录名已经等于 `SKILL_NAME` → 原样使用。否则看该路径下有没有 `SKILL.md`：
+        没有（路径不存在，或那儿只是技能根）→ 视为技能根，追加一层 `SKILL_NAME`；
+        有且 `name` 也是本技能 → 就是本技能的安装目录，原样使用；有但不是本技能
+        → 报错，绝不把本技能塞进别人的技能目录。
+
+    复杂度:
+        时间 O(1)（最多读一个 SKILL.md）/ 空间 同。
+
+    陷阱:
+        技能标准要求"目录名 == frontmatter 的 name"。用户很自然会把**技能根**
+        （例如 `~/.agents/skills`）喂给 `--into`；若照抄不误，技能文件会被平铺进
+        技能根，宿主扫不到、还会污染目录。这里自动补一层，并把真实目标打印出来。
+    """
+    dst = pathlib.Path(raw).expanduser()
+    try:
+        dst = dst.resolve()
+    except OSError:  # pragma: no cover - 盘符不存在等极端情况，退回未规整路径
+        pass
+    if dst.name == SKILL_NAME:
+        return dst, ""
+    skill_md = dst / "SKILL.md"
+    if skill_md.is_file():
+        try:
+            other = read_frontmatter(skill_md).get("name")
+        except (OSError, UnicodeDecodeError):
+            other = None
+        if other == SKILL_NAME:
+            return dst, ""
+        shown = other if other else "读不出（frontmatter 里没有 name）"
+        raise InstallError(
+            f"--into 指的 {dst} 已经是一个别的技能（SKILL.md 里 name: {shown}）。\n"
+            f"不要把本技能塞进别人的技能目录；请改成 {dst / SKILL_NAME} 或换一个位置。")
+    nested = dst / SKILL_NAME
+    return nested, f"--into 给的是技能根，按标准补上技能目录名：{nested}"
 
 
 # --------------------------------------------------------------------------
@@ -533,7 +582,8 @@ def cmd_list_targets(project_root: pathlib.Path, home: pathlib.Path,
     print(f"  理由：{'、'.join(AUTO_ORDER)} 里第一个已存在的技能根；都不存在则用 {AUTO_FALLBACK}")
     print()
     print("以上是已知的通用位置。若你的宿主不在这张表里，请读宿主自己的文档确认技能根，")
-    print("然后用：--into <技能根>/math-modeling-skill")
+    print("然后用：--into <技能根>            （会自动补一层 math-modeling-skill）")
+    print("或：    --into <技能根>/math-modeling-skill")
     return 0
 
 
@@ -544,9 +594,10 @@ def cmd_install(args: argparse.Namespace) -> int:
     dsh = dsh_home()
 
     if args.into:
-        dst = pathlib.Path(args.into).expanduser().resolve()
+        dst, into_note = resolve_into(args.into)
         target_label = "into"
     else:
+        into_note = ""
         name = args.target
         if name == "auto":
             name = resolve_auto(project_root, home, dsh)
@@ -574,6 +625,8 @@ def cmd_install(args: argparse.Namespace) -> int:
 
         print(f"来源：{src}（v{version}）")
         print(f"目标：{dst}   [{target_label}]")
+        if into_note:
+            print(f"      注意：{into_note}")
         if args.dry_run:
             action = copy_skill(src, dst, args.force, dry_run=True)
             print(f"[dry-run] 会执行：{action}；未改动磁盘。")
@@ -585,7 +638,9 @@ def cmd_install(args: argparse.Namespace) -> int:
     status, detail = validate_installed(dst)
     print(f"校验：{detail}")
     if status == "fail":
-        raise InstallError(f"安装后校验未通过，技能可能不完整：{dst}")
+        raise InstallError(
+            f"安装后校验未通过，技能可能不完整：{dst}\n"
+            f"（最常见的原因是技能目录名不是 {SKILL_NAME}——宿主按 name 找技能，改名会静默失效）")
 
     print()
     print("下一步：")
@@ -764,6 +819,46 @@ def self_test() -> int:
             (repo / ".git").mkdir()
             assert find_project_root(deep) == repo.resolve(), "应向上找到含 .git 的目录"
 
+        def t_into_nests_skills_root() -> None:
+            root = tmpdir / "t12" / "skills"
+            root.mkdir(parents=True)
+            dst, note = resolve_into(str(root))
+            assert dst == (root / SKILL_NAME).resolve(), f"--into 没补技能目录名：{dst}"
+            assert note, "补了一层目录却没给出备注"
+
+        def t_into_keeps_explicit_dir() -> None:
+            exact = tmpdir / "t13" / "skills" / SKILL_NAME
+            dst, note = resolve_into(str(exact))
+            assert dst == exact.resolve(), f"技能目录名已正确却被改动：{dst}"
+            assert note == "", "原样使用时不应有备注"
+
+        def t_into_nests_empty_root_only() -> None:
+            # 技能根里已经躺着别人的技能时，仍然把本技能装成它的兄弟目录。
+            root = tmpdir / "t14" / "skills"
+            other = root / "someone-elses-skill"
+            other.mkdir(parents=True)
+            (other / "SKILL.md").write_text("---\nname: other-skill\n---\n", encoding="utf-8")
+            dst, _ = resolve_into(str(root))
+            assert dst == (root / SKILL_NAME).resolve(), f"技能根解析错：{dst}"
+
+        def t_into_rejects_foreign_skill_dir() -> None:
+            foreign = tmpdir / "t15" / "someone-elses-skill"
+            foreign.mkdir(parents=True)
+            (foreign / "SKILL.md").write_text("---\nname: other-skill\n---\n", encoding="utf-8")
+            try:
+                resolve_into(str(foreign))
+            except InstallError:
+                pass
+            else:
+                raise AssertionError("不该把本技能塞进别人的技能目录")
+
+        def t_frontmatter_bom() -> None:
+            src = _make_fake_skill(tmpdir / "t16")
+            p = src / "SKILL.md"
+            p.write_text("\ufeff" + p.read_text(encoding="utf-8"), encoding="utf-8")
+            assert read_frontmatter(p).get("name") == SKILL_NAME, "带 BOM 的 SKILL.md 读不出 name"
+            assert is_our_skill(src), "带 BOM 时 is_our_skill 必须仍为真"
+
         def t_list_targets_runs() -> None:
             rc = cmd_list_targets(pathlib.Path.cwd(), pathlib.Path.home(), dsh_home())
             assert rc == 0, f"cmd_list_targets 返回 {rc}"
@@ -781,6 +876,11 @@ def self_test() -> int:
             ("auto 挑选顺序", t_auto_prefers_existing),
             ("目标路径展开", t_target_paths),
             ("项目根向上查找", t_project_root_walk),
+            ("--into 给技能根时自动补一层", t_into_nests_skills_root),
+            ("--into 给技能目录时原样使用", t_into_keeps_explicit_dir),
+            ("技能根里有别人的技能也能装", t_into_nests_empty_root_only),
+            ("--into 指向别人的技能目录时拒绝", t_into_rejects_foreign_skill_dir),
+            ("带 UTF-8 BOM 的 SKILL.md 仍可识别", t_frontmatter_bom),
             ("--list-targets 可运行", t_list_targets_runs),
         ]:
             check(label, fn)
@@ -806,6 +906,7 @@ def build_parser() -> argparse.ArgumentParser:
         epilog="示例:\n"
                "  python scripts/install_skill.py --list-targets\n"
                "  python scripts/install_skill.py --target auto\n"
+               "  python scripts/install_skill.py --into ~/.agents/skills\n"
                "  python scripts/install_skill.py --into ~/.agents/skills/math-modeling-skill\n")
     parser.add_argument("--list-targets", action="store_true",
                         help="列出已知技能根目录、是否已存在、那里装的是哪个版本，然后退出")
@@ -813,7 +914,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="安装目标：auto（默认）或 TARGETS 里的键，"
                              "或 custom:<技能根目录>；用 --list-targets 查看可选值")
     parser.add_argument("--into", default="",
-                        help="直接指定安装后的技能目录本身（不自动追加技能名；最高优先级）")
+                        help="直接指定安装位置（最高优先级）。给技能根会自动补一层 "
+                             "math-modeling-skill；给技能目录本身则原样使用")
     parser.add_argument("--source", default="",
                         help="本地技能仓库目录（默认：本脚本所在仓库的根目录）")
     parser.add_argument("--from-zip", default="",

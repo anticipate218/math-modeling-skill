@@ -156,7 +156,8 @@ python scripts/install_skill.py --list-targets            # 先看有哪些位�
 python scripts/install_skill.py --target auto             # 装到自动挑出的位置
 python scripts/install_skill.py --target auto --dry-run   # 只看会做什么，不动磁盘
 python scripts/install_skill.py --target dsh-user         # 显式指定（--target agents-user / claude-user / ...）
-python scripts/install_skill.py --into "~/.agents/skills/math-modeling-skill"   # 精确指定目标目录本身
+python scripts/install_skill.py --into "~/.agents/skills"                        # 给技能根：自动补一层 math-modeling-skill
+python scripts/install_skill.py --into "~/.agents/skills/math-modeling-skill"    # 精确指定目标目录本身（给技能根也一样对）
 python scripts/install_skill.py --from-zip math-modeling-skill-v1.8.0.zip       # 从发布包装
 python scripts/install_skill.py --download                # 拉最新 Release 的 ZIP 再装（唯一联网的动作）
 python scripts/install_skill.py --self-test               # 固件测试：不联网、不碰真实技能目录
@@ -169,6 +170,8 @@ python scripts/install_skill.py --self-test               # 固件测试：不�
 - **默认拒绝覆盖**已存在的技能目录（想覆盖得显式 `--force`）；
 - `--force` **只肯删"确实是本技能"的目录**——目标里必须有 `name: math-modeling-skill` 的 `SKILL.md`，这道闸门是防 `--into` 手滑指到家目录的；
 - 装完自动用包内的 `scripts/validate_skill.py --strict` 校验一遍，不通过就报错退出。
+
+`--into` 有个贴心之处：你给**技能根**（例如 `~/.agents/skills`）它会自动补一层 `math-modeling-skill`，你给**技能目录本身**它就原样使用——两种写法都对，实际装到哪儿会在动手前打印出来。反过来，如果那个目录里躺着**别人的技能**（`SKILL.md` 的 `name` 不是本技能），它会拒绝，绝不把文件塞进别人的技能目录。
 
 ### 4. 手工安装（`git clone` / Release ZIP）
 
@@ -296,7 +299,7 @@ cd math-modeling-skill
 python scripts/validate_skill.py . --strict    # 期望：0 个错误，0 个警告
 python scripts/check_paper.py --self-test      # 期望：全部 PASS
 python scripts/download_templates.py --list    # 期望：列出三套模板
-python scripts/install_skill.py --self-test    # 期望：13/13 通过
+python scripts/install_skill.py --self-test    # 期望：18/18 通过
 ```
 
 `validate_skill.py` 报错通常意味着**目录名被改过**（必须叫 `math-modeling-skill`）或者文件没下全（Release ZIP 比单下几个文件可靠）。
@@ -446,7 +449,7 @@ python examples/run_algorithms.py --module graphs --verbose   # 只跑一个模�
 |---|---|---|
 | 结构 | `python scripts/validate_skill.py . --strict` | frontmatter 字段白名单、`name` 与目录一致、description/compatibility 长度、正文行数、**文件引用是否存在**、未索引文件、Windows 反斜杠路径 |
 | 自检工具 | `python scripts/check_paper.py --self-test` | 用「好稿/坏稿」固件验证检查逻辑本身没坏 |
-| 安装器 | `python scripts/install_skill.py --self-test` | 13 项固件测试：复制时确实丢掉 `.git`/`__pycache__`、已存在时先拒绝再 `--force`、**非本技能的目录一律不删**、`--dry-run` 不写盘、带/不带顶层前缀的 ZIP 都能解、`auto` 挑选顺序、项目根向上查找——全程不联网、不碰真实技能目录 |
+| 安装器 | `python scripts/install_skill.py --self-test` | 18 项固件测试：复制时确实丢掉 `.git`/`__pycache__`、已存在时先拒绝再 `--force`、**非本技能的目录一律不删**、`--dry-run` 不写盘、带/不带顶层前缀的 ZIP 都能解、`auto` 挑选顺序、项目根向上查找、**`--into` 给技能根会自动补一层 / 给技能目录则原样使用 / 指向别人的技能目录时拒绝**、**带 UTF-8 BOM 的 `SKILL.md` 仍可识别**——全程不联网、不碰真实技能目录 |
 | 算法回归 | `python examples/run_algorithms.py` | 自带的 **17 个算法模块、875 个断言键**逐个跑数值自检，并与 `algorithms_golden.json` 黄金值比对（含确定性复跑：每个模块跑两遍，结果必须逐位一致） |
 | 配图配色 | `python scripts/check_palette.py --quiet` | 直接读 `make_figures.py` 里的设计令牌，算二色觉仿真 CIELAB ΔE、灰度间隔与 WCAG 对比度；并断言「颜色之外还有线型/标记」这条冗余编码确实存在 |
 | 模板真编译 | `python scripts/check_latex.py --require`（CI）／`--self-test`（本机无需 TeX） | 在临时目录里真的编译 `assets/latex/` 三套模板（引擎 → bibtex → 引擎 ×2），核对硬错误、未解析引用、缺字体、页数下限，以及 **AI 声明与参考文献的先后顺序** |

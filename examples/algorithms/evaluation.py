@@ -1,5 +1,12 @@
 """评价与决策模型：AHP、熵权、CRITIC、TOPSIS、VIKOR、灰关联、DEA、模糊综合。
 
+本模块共 11 个公开函数，按用途分成四组：
+- 定权：``ahp_weights``（层次分析法）/ ``entropy_weights``（熵权）/ ``critic_weights``（CRITIC）
+  / ``combine_weights``（主客观组合赋权）；
+- 综合评价与排序：``topsis`` / ``vikor`` / ``grey_relational_grade`` / ``fuzzy_comprehensive_eval``；
+- 效率评价：``dea_ccr`` / ``dea_bcc``；
+- 稳健性诊断：``topsis_rank_sensitivity``（权重扰动下的排名稳定性）。
+
 评价类题目是国赛/研赛出现频率最高的一类，也是"看起来简单、写起来容易失分"的一类。
 这个模块的共同约定：
 
@@ -170,7 +177,8 @@ def entropy_weights(X, benefit=None) -> Dict[str, object]:
 
     返回:
         dict，键为 ``weights``、``entropy``（各指标信息熵 e_j）、``divergence``（1 - e_j）、
-        ``p``（比重矩阵）、``normalized``（正向化并归一化后的矩阵）。
+        ``p``（比重矩阵，``pos / pos.sum(axis=0)``）、``normalized``（**只做了正向化**的矩阵，
+        成本型列被 ``max - x`` 反转，没有再做任何归一化）。
 
     算法:
         1. 成本型指标正向化：``x' = max - x``。
@@ -189,6 +197,9 @@ def entropy_weights(X, benefit=None) -> Dict[str, object]:
         - 某指标所有方案取值相同时 ``d_j = 0``，该指标权重为 0。这通常说明指标选得不好，
           要在论文里讨论而不是假装没看见。
         - 熵权是"谁差异大谁重要"，**不等于"谁业务上重要"**，不要用它替代专家判断。
+        - 返回键 ``normalized`` 名字有历史遗留问题：它装的是**正向化后**的矩阵，
+          **不是归一化矩阵**。真正归一化过的只有比重矩阵 ``p``。要"归一化后的决策矩阵"
+          请自己按列做 min-max 或向量归一化。
 
     参考:
         Shannon (1948) 信息熵；多属性决策中的熵权法（客观赋权通例）。
@@ -275,16 +286,18 @@ def critic_weights(X, benefit=None) -> Dict[str, object]:
 
 def combine_weights(weight_sets, method: str = "multiplicative",
                     alphas=None) -> Dict[str, object]:
-    """主客观权重组合（博弈论组合赋权 / 乘法合成 / 线性加权）。
+    """主客观权重组合（乘法合成 / 几何平均 / 线性加权）。
 
     参数:
         weight_sets: 若干组权重，形如 ``[[w1...], [w1...]]``，每组长度相同。
         method: ``"multiplicative"``（乘法合成，默认）、``"linear"``（线性加权）、
             ``"geometric"``（几何平均）。
-        alphas: 仅 ``"linear"`` 使用；各权重组的系数，None 表示等权。
+        alphas: 仅 ``"linear"`` 使用；各权重组的系数，None 表示等权。传入的系数若不满足
+            和为 1（容差 1e-9）会被就地归一化，不会报错。
 
     返回:
-        dict，键为 ``weights``（组合权重）、``method``、``note``。
+        dict，键为 ``weights``（组合权重，已归一化到和为 1）、``method``、
+        ``note``（当前实现**恒为 None**，是给调用方预留的备注位，不要依赖它携带信息）。
 
     算法:
         - multiplicative: ``w_j ∝ prod_k w_kj``
@@ -299,9 +312,14 @@ def combine_weights(weight_sets, method: str = "multiplicative",
           如果你的指标体系里有"小而重要"的指标，乘法合成会毁掉它。
         - 组合权重没有唯一的"正确"方法。论文里必须写清楚组合方式和理由，
           并且**做一次灵敏度分析**证明排序不因组合方式而翻盘。
+        - **博弈论组合赋权没有实现**。真正的博弈论组合赋权要解一个以"组合权重与各单一
+          权重的偏差最小化"为目标的小型 LP/QP；本函数只提供 multiplicative / geometric /
+          linear 三种**纯代数**合成。论文里如果写"采用博弈论组合赋权"，必须自己补上那一步，
+          不能引用这个函数。
 
     参考:
-        主客观组合赋权的常见做法（乘法合成、线性加权、博弈论组合赋权）。
+        主客观组合赋权的常见做法（乘法合成、几何平均、线性加权）。博弈论组合赋权的目标
+        函数与求解见相关多属性决策教材（本函数未实现）。
     """
     sets = [as_vector(w, "weights") for w in weight_sets]
     if not sets:
@@ -431,7 +449,7 @@ def vikor(X, weights, benefit=None, v: float = 0.5) -> Dict[str, object]:
     参考:
         Opricovic & Tzeng (2004) VIKOR 折衷排序法。
     """
-    M = as_matrix(X, "M")
+    M = as_matrix(X, "X")
     m, n = M.shape
     ben = _resolve_benefit(benefit, n)
     w, note = _normalize_weights(weights, n)
@@ -738,9 +756,10 @@ def fuzzy_comprehensive_eval(weights, membership, operator: str = "weighted",
             为 ``sum_j Bn_j * level_scores_j``，可用于把等级换算成连续得分。
 
     返回:
-        dict，键为 ``score``（综合隶属度向量）、``level``（按最大隶属度原则给出的等级下标）、
+        dict，键为 ``score``（综合隶属度向量 B）、``level``（按最大隶属度原则给出的等级下标）、
         ``level_value``（若提供 ``level_scores`` 则给出加权得分，否则为 ``None``）、
-        ``normalized``（归一化后的综合隶属度）。
+        ``normalized``（``B / B.sum()``；``B`` 全为 0 时原样返回）、``note``（提示字符串或
+        ``None``：权重被自动归一化、或 ``R`` 行和偏离 1 时会给出说明）。
 
     算法:
         - weighted: 矩阵乘法 ``B = W R``，再归一化。
@@ -754,7 +773,11 @@ def fuzzy_comprehensive_eval(weights, membership, operator: str = "weighted",
           本实现同时给出归一化向量，论文里应当把完整向量列出来，不要只报等级。
         - ``max_min`` 算子只让最大的那个因素说话，**权重小的因素完全不起作用**，
           容易得出极端结论；多数场景应当用 ``weighted``。
-        - 权重与隶属度都必须落在 [0, 1]；隶属度每行理论上应和为 1（本实现会校验并提示）。
+        - 权重与隶属度的校验口径**不一样**：``weights`` 只校验**非负**，不要求 ≤ 1，和不为 1 时
+          自动归一化并把提示写进 ``note``；``membership`` 才强制落在 ``[0, 1]``（越界即
+          ``raise ValueError``）。
+        - ``membership`` 每行的和理论上应为 1，但本实现**不做强制归一化**，只在行和偏离 1 超过
+          1e-6 时把提示写进 ``note``。也就是说，漏写一个评语等级不会被拦下，只会得到一句提示。
 
     参考:
         汪培庄（1983）模糊综合评判；Zadeh (1965) 模糊集合。

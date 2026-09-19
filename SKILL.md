@@ -7,9 +7,9 @@ description: >-
 license: MIT
 metadata:
   author: anticipate218
-  version: "1.6.0"
+  version: "1.7.0"
   language: zh-CN
-compatibility: 可选依赖 Python 3.9+；scripts/check_paper.py 与 scripts/check_latex.py 仅用标准库（前者读 PDF 需 pip install pypdf，后者需本机 TeX 发行版提供 xelatex/pdflatex/bibtex）；scripts/make_figures.py 需 matplotlib，scripts/check_palette.py 需 numpy
+compatibility: 可选依赖 Python 3.9+；scripts/check_paper.py、scripts/check_latex.py 与 scripts/download_templates.py 仅用标准库（check_paper 读 PDF 需 pip install pypdf，check_latex 需本机 TeX 发行版提供 xelatex/pdflatex/bibtex）；scripts/make_figures.py 需 matplotlib，scripts/check_palette.py 与 examples/algorithms/ 需 numpy
 ---
 
 # 数学建模竞赛助手
@@ -164,6 +164,8 @@ python scripts/check_paper.py paper.md --contest mcm       # 美赛
 | 需要选模型、找适用方法、查工具与陷阱 | `references/model-library.md` |
 | 需要按题目类别比较基线、改进和验证设计 | `references/model-implementations.md` |
 | 需要查具体算法、复杂度、本仓库实现位置与陷阱 | `references/algorithm-implementations.md` |
+| 需要某个算法的数学形式、步骤、参数表、复杂度与检验方法 | `references/algorithm-details.md` |
+| 需要想创新点、判断哪些参数能改、怎么证明创新有效 | `references/innovation-playbook.md` |
 | 需要查 GitHub 模型库、许可证和资源边界 | `references/github-resources.md` |
 | 需要优秀论文/官方来源链接，或想知道为什么仓库不放他人论文图 | `references/paper-examples.md` |
 | 需要参考带注释的 Python 基线实现 | `examples/modeling_patterns.py` |
@@ -173,6 +175,7 @@ python scripts/check_paper.py paper.md --contest mcm       # 美赛
 | 提交前逐项自查 | `references/checklists.md` |
 | 选 LaTeX 模板、编译报错、图表与参考文献排版 | `references/templates.md` |
 | 要一份可直接编译的论文模板（国赛/研赛/美赛） | `assets/latex/`（先读 `assets/latex/README.md`） |
+| 要把模板按竞赛一键拷到工作目录、或打包成 zip 分发 | `scripts/download_templates.py`（`--contest` / `--out` / `--zip` / `--list` / `--fontset`） |
 | 模板改完后想确认还能不能编过、引用是否解析、AI 声明位置对不对 | `scripts/check_latex.py`（`--require` / `--self-test`） |
 | 要论文配图范本、图注写法与绘图规范 | `assets/gallery/`（先读 `assets/gallery/README.md`） |
 | 重新生成配图库或跑配图数值自检 | `scripts/make_figures.py`（`--dpi` / `--only` / `--self-test`） |

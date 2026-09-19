@@ -1,4 +1,13 @@
-"""统计推断与回归：相关系数、t 检验、卡方、正态性检验、OLS/岭回归/logistic、Bootstrap 与置换检验。
+"""统计推断与回归：相关系数、t 检验、卡方、正态性检验、OLS/岭回归/Lasso/logistic/泊松回归、
+Bootstrap 与置换检验、PCA 与因子分析、共线性与回归诊断、逐步回归。
+
+本模块共 23 个公开函数，按用途分组：相关 ``pearson_corr`` / ``spearman_corr`` /
+``kendall_tau``，假设检验 ``t_test_one_sample`` / ``t_test_two_sample`` / ``chi_square_test`` /
+``shapiro_wilk`` / ``jarque_bera`` / ``anderson_darling`` / ``ks_test_normal``，
+回归与诊断 ``ols`` / ``vif`` / ``ridge_regression`` / ``lasso_regression`` /
+``logistic_regression`` / ``poisson_regression`` / ``stepwise_selection`` /
+``durbin_watson`` / ``breusch_pagan``，降维 ``pca`` / ``factor_analysis``，
+重抽样 ``bootstrap_ci`` / ``permutation_test``。
 
 本模块的共同约定
 ----------------
@@ -9,7 +18,7 @@
   ``p_value``；论文中引用时请注明是双侧。
 - **近似的地方都会写明近似**：小样本、并列值、参数由样本估计等情形下的 p 值都只是近似，
   正式论文请用 scipy / statsmodels 复核（见 ``references/github-resources.md``）。
-- 随机过程显式接收 ``seed``，默认 ``DEFAULT_SEED``（``_common.rng``），不使用全局随机状态。
+- 随机过程显式接收 ``seed``，默认 ``_common.DEFAULT_SEED``（``_common.rng``），不使用全局随机状态。
 """
 
 from __future__ import annotations
@@ -38,6 +47,13 @@ __all__ = [
     "logistic_regression",
     "bootstrap_ci",
     "permutation_test",
+    "pca",
+    "factor_analysis",
+    "lasso_regression",
+    "poisson_regression",
+    "durbin_watson",
+    "breusch_pagan",
+    "stepwise_selection",
 ]
 
 # --------------------------------------------------------------------------
@@ -1275,7 +1291,9 @@ def logistic_regression(
     陷阱:
         - **完全分离（complete separation）**：某一组自变量能完美区分 0/1 时，系数的最小二乘/
           极大似然解不存在，系数会发散到无穷、对数似然趋近 0、标准误爆炸。本实现的做法是
-          当系数范数超过 1e6 或对数似然不再改善时停止并返回 ``converged=False``，
+          在每一轮 IRLS 后检查两个截断条件——**任一系数的绝对值超过 1e6**（判据是
+          ``max|beta_j| > 1e6`` 这种"最大绝对系数"，不是二范数 ``||beta||_2``）**或**对数似然
+          变为非有限值时，立即停止并返回 ``converged=False``，
           **不返回 NaN，也不假装收敛**。遇到这种情况应当：加 L2 惩罚（等价于 ridge logistic）、
           减少变量、或改用 Firth 惩罚似然。
         - 返回的 ``converged=False`` 时系数**不可解释**，不要写进论文；先解决分离问题。
@@ -1523,6 +1541,816 @@ def permutation_test(
 
 
 # --------------------------------------------------------------------------
+# 主成分分析 / 因子分析
+# --------------------------------------------------------------------------
+
+def _fix_component_signs(components: np.ndarray) -> np.ndarray:
+    """把每个主成分/因子方向的符号固定下来，保证多次调用结果一致。
+
+    参数:
+        无。
+
+    返回:
+        逐行（每个分量）做过符号翻转的新数组。
+
+    算法:
+        令每行绝对值最大的那个元素为正；若该元素本身为负则整行取反。
+        这是 sklearn 风格的可复现符号约定，避免特征向量因数值库实现细节整体反号。
+
+    复杂度:
+        时间 O(k p) / 空间 O(k p)。
+
+    陷阱:
+        当一行里绝对值最大的元素**恰好接近 0**（该方向几乎不承载方差）时，
+        该约定在浮点噪声下不稳定；此时行本身没有意义，应先检查特征值是否可忽略。
+
+    参考:
+        sklearn.decomposition.PCA 的 ``svd_flip`` 符号约定。
+    """
+    out = np.array(components, dtype=float, copy=True)
+    for i in range(out.shape[0]):
+        row = out[i]
+        j = int(np.argmax(np.abs(row)))
+        if row[j] < 0.0:
+            out[i] = -row
+    return out
+
+
+def _varimax(loadings: np.ndarray, max_iter: int = 100, tol: float = 1e-8) -> np.ndarray:
+    """Kaiser 方差极大（varimax）正交旋转。
+
+    参数:
+        loadings: 因子载荷矩阵，形状 (p, k)。
+        max_iter: 最大迭代次数。
+        tol: 旋转准则的收敛阈值。
+
+    返回:
+        旋转后的载荷矩阵，形状 (p, k)（正交旋转不改变共性方差）。
+
+    算法:
+        最大化准则 ``V = sum_j (sum_i l_ij^4) - (1/p) sum_j (sum_i l_ij^2)^2``；
+        每步用 SVD 求最优正交旋转 ``L <- L U V'``，其中
+        ``U S V' = L' (L^3 - (1/p) L diag(colsum))``（Kaiser 1958 的经典迭代）。
+
+    复杂度:
+        时间 O(max_iter * (k^2 p + k^3)) / 空间 O(kp)。
+
+    陷阱:
+        旋转只改变载荷的**分配**，不改变共性方差与总解释量；把旋转前后
+        ``variance_explained`` 的差异解释成"模型变好了"是常见误读。
+        k=1 时旋转无意义，本实现直接原样返回。
+
+    参考:
+        Kaiser, H.F. (1958) "The varimax criterion for analytic rotation in factor
+        analysis", Psychometrika 23(3): 187-200。
+    """
+    p, k = loadings.shape
+    if k < 2:
+        return np.array(loadings, dtype=float, copy=True)
+    rot = np.array(loadings, dtype=float, copy=True)
+    prev = -np.inf
+    for _ in range(int(max_iter)):
+        sq = rot ** 2
+        colsum = sq.sum(axis=0)
+        crit = float(np.sum(sq ** 2) - np.sum(colsum ** 2) / p)
+        if abs(crit - prev) < tol:
+            break
+        prev = crit
+        target = rot ** 3 - rot * (colsum / p)
+        u, _, vh = np.linalg.svd(rot.T @ target)
+        rot = rot @ (u @ vh)
+    return rot
+
+
+def pca(
+    X: Sequence[Sequence[float]],
+    n_components: Optional[int] = None,
+    standardize: bool = True,
+) -> Dict[str, object]:
+    """主成分分析（协方差/相关阵特征分解），返回载荷、得分与解释率。
+
+    参数:
+        X: 样本矩阵，形状 (n_samples, n_features)。
+        n_components: 保留的主成分个数，合法范围 1..n_features；None 表示全部保留。
+        standardize: True 时对每列做 z-score 标准化（减均值、除以总体标准差 ddof=0），
+            即在**相关阵**上做主成分；False 时只中心化（在**协方差阵**上做主成分）。
+
+    返回:
+        dict，键为：
+        ``components``  形状 (k, p) 的主成分方向，每行是一个单位向量；
+        ``eigenvalues``  形状 (k,) 的特征值（降序，已把浮点负值截为 0）；
+        ``explained_variance_ratio``  形状 (k,) 的解释方差比例，之和为 1（k=p 时）；
+        ``scores``  形状 (n, k) 的主成分得分，``scores = Z @ components.T``；
+        ``cumulative_ratio``  形状 (k,) 的累计解释率。
+
+    算法:
+        1. 中心化（必要时再除以列标准差，标准差为 0 的列置 1）得到 Z；
+        2. 协方差阵 ``C = Z'Z / (n-1)``，用 ``np.linalg.eigh``（对称阵专用）分解；
+        3. 特征值降序重排，截取前 k 个，负特征值（数值噪声）截为 0；
+        4. 符号约定：让每个主成分里绝对值最大的分量为正（见 ``_fix_component_signs``）；
+        5. 解释率 ``lambda_i / sum(lambda)``，得分 ``Z @ V_k``。
+
+    复杂度:
+        时间 O(n p^2 + p^3) / 空间 O(np + p^2)。
+
+    陷阱:
+        - ``standardize`` 决定你在相关阵还是协方差阵上工作，两者结果**不可比**：
+          量纲差异大的指标不做标准化时，方差最大的那个指标会独占第一主成分。
+        - 特征向量的符号本身没有定义（``v`` 与 ``-v`` 同样合法），但**得分矩阵会跟着反号**；
+          不固定符号的话，两次运行或换一个 numpy 版本就可能得到反号的得分。
+        - 常数自变量列（标准差 0）在标准化下被置为尺度 1，会变成一个"全 0"的无信息方向，
+          它只能贡献 0 方差却占掉一个成分位，应当在建模前删掉。
+        - 变量个数 p 大于样本数 n 时协方差阵秩亏，最多只有 n-1 个非零特征值，
+          报告解释率时不要按 p 个成分去解释。
+
+    参考:
+        Jolliffe, I.T. (2002) "Principal Component Analysis", 2nd ed., Springer, Ch. 2-3；
+        Pearson, K. (1901) "On lines and planes of closest fit to systems of points in
+        space", Philosophical Magazine 2(11): 559-572。
+    """
+    Xm = as_matrix(X, "X")
+    n, p = Xm.shape
+    if n < 2:
+        raise ValueError(f"pca 至少需要 2 个样本，得到 n={n}")
+    if n_components is None:
+        k = p
+    else:
+        k = int(n_components)
+        if k < 1 or k > p:
+            raise ValueError(f"n_components 必须落在 1..{p}，得到 {n_components!r}")
+    mu = Xm.mean(axis=0)
+    Z = Xm - mu
+    if standardize:
+        sd = Z.std(axis=0, ddof=0)
+        sd_safe = np.where(sd > 0.0, sd, 1.0)
+        Z = Z / sd_safe
+    cov = Z.T @ Z / float(n - 1)
+    eigvals, eigvecs = np.linalg.eigh(cov)
+    order = np.argsort(eigvals)[::-1]
+    eigvals = np.maximum(eigvals[order], 0.0)
+    comps_all = _fix_component_signs(eigvecs[:, order].T)
+    total = float(eigvals.sum())
+    if total <= 0.0:
+        raise ValueError("数据方差为 0（所有样本完全相同），无法做主成分分析")
+    ratio_all = eigvals / total
+    components = comps_all[:k]
+    eigvals_k = eigvals[:k]
+    ratio_k = ratio_all[:k]
+    scores = Z @ components.T
+    return {
+        "components": components,
+        "eigenvalues": eigvals_k,
+        "explained_variance_ratio": ratio_k,
+        "scores": scores,
+        "cumulative_ratio": np.cumsum(ratio_k),
+    }
+
+
+def factor_analysis(
+    X: Sequence[Sequence[float]],
+    n_factors: int = 2,
+    max_iter: int = 200,
+    tol: float = 1e-8,
+    rotate: bool = True,
+) -> Dict[str, object]:
+    """探索性因子分析：主因子法（principal factor）估计载荷 + 可选 varimax 旋转。
+
+    参数:
+        X: 样本矩阵，形状 (n_samples, n_features)，先在内部做 z-score 标准化。
+        n_factors: 因子个数，合法范围 1..p-1。
+        max_iter: 迭代重估共性方差的最大轮数。
+        tol: 共性方差的最大变化量小于 tol 即认为收敛。
+        rotate: 是否做 varimax 正交旋转（默认 True；旋转不改变共性方差与解释总量，
+            只让载荷更"简单"，便于给因子命名）。
+
+    返回:
+        dict，键为：
+        ``loadings``  形状 (p, k) 的因子载荷（旋转后，已固定符号并按解释量降序排列）；
+        ``communalities``  形状 (p,) 的共性方差 h2（载荷行平方和）；
+        ``uniqueness``  形状 (p,) 的特殊方差 ``1 - h2``；
+        ``variance_explained``  形状 (k,) 的每个因子解释的方差**比例**（列平方和 / p）；
+        ``n_iter``  int，实际迭代轮数。
+
+    算法:
+        1. 标准化得到 Z，算相关阵 ``R = Z'Z/(n-1)``；
+        2. 共性方差初值取"该变量与其余变量的最大绝对相关系数"（对角元不足的常用代理）；
+        3. 迭代：把 R 的对角元替换为 h2 得约化相关阵，取前 k 个特征对，
+           载荷 ``L = V_k sqrt(max(lambda_k, 0))``，再令 ``h2 <- diag(L L')``，
+           直到 h2 的最大变化量小于 tol（Heywood 情形把 h2 截断到 [0, 1]）；
+        4. 用最终 h2 重算一次载荷以保证自洽，可选 varimax 旋转，
+           再按各因子解释量降序重排并固定符号。
+
+    复杂度:
+        时间 O(max_iter * p^3) / 空间 O(np + p^2)。
+
+    陷阱:
+        - 主因子法不是极大似然：它把 h2 当已知反复代入，收敛到的是"约化相关阵"
+          的特征解，与 ``statsmodels`` 的 ML 解会有差异，论文里要写清用的是哪一种。
+        - **Heywood 情形**（某个 h2 顶到 1，uniqueness 变 0 或负）说明因子数过多或
+          模型不适定；本实现把 h2 截断到 [0,1] 只是让迭代能跑完，并不解决问题。
+        - 旋转后的载荷矩阵不再"按方差降序"，本实现在旋转后显式重排，
+          因此 ``loadings`` 的列序与未旋转时的特征向量序号不同。
+        - 因子个数的选择（碎石图/平行分析）本函数不做，必须由调用者决定并说明理由。
+
+    参考:
+        Harman, H.H. (1976) "Modern Factor Analysis", 3rd ed., University of Chicago Press；
+        Kaiser, H.F. (1958) Psychometrika 23(3): 187-200（varimax）。
+    """
+    Xm = as_matrix(X, "X")
+    n, p = Xm.shape
+    if n < 3:
+        raise ValueError(f"factor_analysis 至少需要 3 个样本，得到 n={n}")
+    if p < 2:
+        raise ValueError(f"至少需要 2 个变量，得到 p={p}")
+    k = int(n_factors)
+    if k < 1 or k >= p:
+        raise ValueError(f"n_factors 必须落在 1..{p - 1}，得到 {n_factors!r}")
+    it_max = int(max_iter)
+    if it_max < 1:
+        raise ValueError("max_iter 必须 >= 1")
+    tolf = float(tol)
+    if tolf <= 0.0:
+        raise ValueError("tol 必须为正")
+
+    Z = Xm - Xm.mean(axis=0)
+    sd = Z.std(axis=0, ddof=0)
+    Z = Z / np.where(sd > 0.0, sd, 1.0)
+    R = Z.T @ Z / float(n - 1)
+
+    off = np.abs(R - np.eye(p))
+    h2 = off.max(axis=1)
+    h2 = np.clip(h2, 0.0, 1.0)
+    n_iter = 0
+    for it in range(1, it_max + 1):
+        n_iter = it
+        Rs = np.array(R, dtype=float, copy=True)
+        np.fill_diagonal(Rs, h2)
+        evals, evecs = np.linalg.eigh(Rs)
+        order = np.argsort(evals)[::-1][:k]
+        lam = np.maximum(evals[order], 0.0)
+        load_tmp = evecs[:, order] * np.sqrt(lam)
+        h2_new = np.clip(np.sum(load_tmp ** 2, axis=1), 0.0, 1.0)
+        change = float(np.max(np.abs(h2_new - h2)))
+        h2 = h2_new
+        if change < tolf:
+            break
+
+    Rs = np.array(R, dtype=float, copy=True)
+    np.fill_diagonal(Rs, h2)
+    evals, evecs = np.linalg.eigh(Rs)
+    order = np.argsort(evals)[::-1][:k]
+    lam = np.maximum(evals[order], 0.0)
+    loadings = _fix_component_signs((evecs[:, order] * np.sqrt(lam)).T).T
+
+    if rotate:
+        loadings = _varimax(loadings)
+        var = np.sum(loadings ** 2, axis=0)
+        order = np.argsort(var)[::-1]
+        loadings = _fix_component_signs(loadings[:, order].T).T
+
+    communalities = np.sum(loadings ** 2, axis=1)
+    uniqueness = 1.0 - communalities
+    variance_explained = np.sum(loadings ** 2, axis=0) / float(p)
+    return {
+        "loadings": loadings,
+        "communalities": communalities,
+        "uniqueness": uniqueness,
+        "variance_explained": variance_explained,
+        "n_iter": int(n_iter),
+    }
+
+
+# --------------------------------------------------------------------------
+# 正则化回归 / 计数回归 / 回归诊断
+# --------------------------------------------------------------------------
+
+def _soft_threshold(z: float, gamma: float) -> float:
+    """软阈值算子 ``sign(z) * max(|z| - gamma, 0)``。
+
+    参数:
+        z: 输入标量（这里是坐标下降中的偏相关系数 ``x_j'r``）。
+        gamma: 阈值（>= 0），对应 L1 惩罚强度。
+
+    返回:
+        收缩后的标量；``|z| <= gamma`` 时精确返回 0。
+
+    算法:
+        分段线性收缩：正侧平移 -gamma，负侧平移 +gamma，中间压到 0。
+        它是 L1 惩罚下的近端算子，也是 Lasso 产生**稀疏解**的唯一来源。
+
+    复杂度:
+        时间 O(1) / 空间 O(1)。
+
+    陷阱:
+        必须返回**精确的 0**（而不是 1e-17 之类的小量），否则 ``n_nonzero`` 会
+        把数值噪声当成非零系数；用 ``max(|z| - gamma, 0)`` 而不是 ``|z| - gamma`` 是关键。
+
+    参考:
+        Friedman, J., Hastie, T. & Tibshirani, R. (2010) "Regularization Paths for
+        Generalized Linear Models via Coordinate Descent", JSS 33(1): 1-22。
+    """
+    if z > gamma:
+        return z - gamma
+    if z < -gamma:
+        return z + gamma
+    return 0.0
+
+
+def lasso_regression(
+    X: Sequence[Sequence[float]],
+    y: Sequence[float],
+    alpha: float = 0.1,
+    max_iter: int = 1000,
+    tol: float = 1e-8,
+) -> Dict[str, object]:
+    """Lasso（L1 正则最小二乘）的坐标下降求解，含截距。
+
+    参数:
+        X: 设计矩阵，形状 (n, p)，**不含截距列**。
+        y: 因变量，长度 n。
+        alpha: L1 惩罚强度（>= 0）。0 时退化为 OLS。
+        max_iter: 坐标下降的最大扫描轮数。
+        tol: 一轮扫描中系数最大变化量小于 tol 即认为收敛。
+
+    返回:
+        dict，键为：
+        ``coef``  长度 p 的斜率（原始尺度，不参与惩罚的列照原样返回）；
+        ``intercept``  float，截距 ``mean(y) - mean(X) @ coef``；
+        ``n_nonzero``  int，``|coef| > 0`` 的个数（软阈值给的是精确 0）；
+        ``objective``  float，最终目标 ``RSS/(2n) + alpha*||coef||_1``；
+        ``n_iter``  int，实际扫描轮数（收敛时是收敛发生的轮次，否则等于 ``max_iter``）；
+        ``converged``  bool，是否在 ``max_iter`` 轮内达到 ``tol`` 判据；
+                      ``False`` 表示"是被轮数上限截断的"，此时 ``coef`` 只是近似解。
+
+    算法:
+        1. 先把 y 与 X 各列**中心化**（截距因此不参与惩罚），得到 ``yc``、``Xc``；
+        2. 坐标下降：维护当前残差 ``r = yc - Xc beta``，对第 j 列做单变量更新
+           ``beta_j <- soft(x_j'r_j, n*alpha) / (x_j'x_j)``，其中
+           ``r_j = r + x_j * beta_j``（把该列的贡献加回去）；
+        3. 每次更新后同步刷新 r；一轮中系数最大变化量小于 tol 时停止；
+        4. 截距事后还原为 ``mean(y) - mean(X) @ coef``。
+
+    复杂度:
+        时间 O(max_iter * n p) / 空间 O(np)。
+
+    陷阱:
+        - **本实现不做列标准化**（只中心化），因此同一个 alpha 对不同量纲的列
+          惩罚力度完全不同：把某列的单位从"米"换成"毫米"，该列系数会缩小 1000 倍，
+          L1 阈值相对它就形同不存在。要跨变量比较稀疏性，请先自行标准化 X。
+        - 常数自变量列（``x_j'x_j = 0``）无法做单变量更新，本实现把该列系数固定为 0
+          （而不是除零得到 NaN），但它仍会原样出现在 ``coef`` 里。
+        - ``alpha`` 很大的时候所有系数被压成 0，``coef`` 全零但 ``intercept`` 就是
+          ``mean(y)``；不要把这种"全零模型"当成有效结论。
+        - 坐标下降**没有 p 值**：L1 解是有偏的，且被选中的变量个数本身依赖 alpha，
+          常规 t 检验完全失效；要报告不确定性请用 Bootstrap 或去偏 Lasso。
+        - ``tol`` 是系数变化量而不是目标函数变化量；目标函数在最优解附近是平的，
+          系数收敛得比目标值慢，报告 ``objective`` 时要注意这点。
+        - ``converged=False`` 是**真实存在**的情形：``max_iter`` 偏小、``tol`` 偏严、
+          或列的量纲差异极大时都会触发。此时 ``n_iter == max_iter``，解仍在下降路径上，
+          既不是 NaN 也不是"已经收敛"——请先调大 ``max_iter`` 或对 X 做标准化再复算。
+
+    参考:
+        Tibshirani, R. (1996) "Regression Shrinkage and Selection via the Lasso",
+        JRSS-B 58(1): 267-288；
+        Friedman, Hastie & Tibshirani (2010), JSS 33(1): 1-22（坐标下降）。
+    """
+    Xm = as_matrix(X, "X")
+    yv = as_vector(y, "y")
+    n, p = Xm.shape
+    if yv.size != n:
+        raise ValueError(f"X 有 {n} 行但 y 长度 {yv.size}")
+    a = float(alpha)
+    if not np.isfinite(a) or a < 0.0:
+        raise ValueError(f"alpha 必须是 >= 0 的有限数，得到 {alpha!r}")
+    it_max = int(max_iter)
+    if it_max < 1:
+        raise ValueError("max_iter 必须 >= 1")
+    tolf = float(tol)
+    if tolf <= 0.0:
+        raise ValueError("tol 必须为正")
+
+    xbar = Xm.mean(axis=0)
+    ybar = float(yv.mean())
+    Xc = Xm - xbar
+    yc = yv - ybar
+    colsq = np.sum(Xc ** 2, axis=0)
+    safe = np.where(colsq > 0.0, colsq, 1.0)
+    beta = np.zeros(p, dtype=float)
+    r = yc.copy()
+    thr = float(n) * a
+    n_iter = 0
+    converged = False
+    for it in range(1, it_max + 1):
+        n_iter = it
+        max_delta = 0.0
+        for j in range(p):
+            if colsq[j] <= 0.0:
+                continue
+            rj = r + Xc[:, j] * beta[j]
+            rho = float(Xc[:, j] @ rj)
+            new = _soft_threshold(rho, thr) / safe[j]
+            delta = new - beta[j]
+            if delta != 0.0:
+                r = rj - Xc[:, j] * new
+                beta[j] = new
+                if abs(delta) > max_delta:
+                    max_delta = abs(delta)
+        if max_delta < tolf:
+            converged = True
+            break
+    intercept = float(ybar - float(xbar @ beta))
+    resid = yv - (Xm @ beta + intercept)
+    objective = float(resid @ resid / (2.0 * n) + a * float(np.sum(np.abs(beta))))
+    return {
+        "coef": beta,
+        "intercept": intercept,
+        "n_nonzero": int(np.count_nonzero(beta)),
+        "objective": objective,
+        "n_iter": int(n_iter),
+        "converged": bool(converged),
+    }
+
+
+def poisson_regression(
+    X: Sequence[Sequence[float]],
+    y: Sequence[float],
+    max_iter: int = 200,
+    tol: float = 1e-8,
+) -> Dict[str, object]:
+    """Poisson 回归（对数链接 GLM）的 IRLS 求解。
+
+    参数:
+        X: 设计矩阵，形状 (n, p)，**不含截距列**（本函数自动加一列 1）。
+        y: 计数因变量，长度 n，必须全部非负。
+        max_iter: IRLS 最大迭代次数。
+        tol: 系数最大变化量小于 tol 即认为收敛。
+
+    返回:
+        dict，键为：
+        ``coef``  长度 p 的斜率；
+        ``intercept``  float，截距；
+        ``deviance``  float，残差偏差 ``2 sum [y log(y/mu) - (y - mu)]``（y=0 的项取 2*mu）；
+        ``loglik``  float，对数似然 ``sum [y log(mu) - mu - lgamma(y+1)]``；
+        ``aic``  float，``-2 loglik + 2 (p+1)``；
+        ``n_iter``  int，实际迭代次数。
+
+    算法:
+        1. 线性预测量 ``eta = Xd b``，均值 ``mu = exp(eta)``（eta 截断到 [-50, 50]，
+           mu 下限 1e-10）；
+        2. IRLS：工作响应 ``z = eta + (y - mu)/mu``，权重 ``w = mu``，
+           解加权最小二乘 ``b <- argmin ||sqrt(w) (z - Xd b)||^2``（用 ``np.linalg.lstsq``）；
+        3. 若新偏差大于旧偏差则步长折半（最多 30 次），保证单调下降；
+        4. 系数最大变化量小于 tol 时停止。
+
+    复杂度:
+        时间 O(max_iter * n p^2) / 空间 O(np)。
+
+    陷阱:
+        - **过散布（overdispersion）**：真实计数数据的方差常大于均值，Poisson 假设下
+          标准误会被严重低估、p 值偏小。本函数不返回标准误，但如果用似然比/Wald 检验，
+          请先检查偏差/自由度是否远大于 1，必要时改用负二项回归。
+        - ``y`` 含 0 时 ``log(y/mu)`` 会取到 ``0 * (-inf)``，本实现显式把 y=0 的偏差项
+          取为 2*mu（这是极限值），不能直接对 y 取对数。
+        - 计数需要**曝光量**（不同观测的暴露时间不同）时，正确做法是把 ``log(offset)``
+          作为系数固定为 1 的偏移项加入；把它当普通自变量会得到完全错误的系数。
+        - 设计矩阵里若有完全共线的列，IRLS 的加权最小二乘会给出最小范数解，
+          系数不可解释，请先用 ``vif`` 检查。
+
+    参考:
+        McCullagh, P. & Nelder, J.A. (1989) "Generalized Linear Models", 2nd ed.,
+        Chapman & Hall, Ch. 4-5（IRLS 与偏差）；
+        Nelder, J.A. & Wedderburn, R.W.M. (1972) "Generalized Linear Models",
+        JRSS-A 135(3): 370-384。
+    """
+    Xm = as_matrix(X, "X")
+    yv = as_vector(y, "y")
+    n, p = Xm.shape
+    if yv.size != n:
+        raise ValueError(f"X 有 {n} 行但 y 长度 {yv.size}")
+    if np.any(yv < 0.0):
+        raise ValueError("poisson_regression 要求 y 为非负计数")
+    it_max = int(max_iter)
+    if it_max < 1:
+        raise ValueError("max_iter 必须 >= 1")
+    tolf = float(tol)
+    if tolf <= 0.0:
+        raise ValueError("tol 必须为正")
+
+    Xd = np.column_stack([np.ones(n, dtype=float), Xm])
+    k = Xd.shape[1]
+    b = np.zeros(k, dtype=float)
+    b[0] = math.log(max(float(yv.mean()), 1e-6))
+
+    def _mu_of(beta: np.ndarray) -> np.ndarray:
+        eta = np.clip(Xd @ beta, -50.0, 50.0)
+        return np.maximum(np.exp(eta), 1e-10)
+
+    def _deviance(mu: np.ndarray) -> float:
+        pos = yv > 0.0
+        term = np.where(
+            pos,
+            yv * np.log(np.where(pos, yv, 1.0) / mu) - (yv - mu),
+            mu,
+        )
+        return float(2.0 * np.sum(term))
+
+    dev_old = _deviance(_mu_of(b))
+    n_iter = 0
+    for it in range(1, it_max + 1):
+        n_iter = it
+        mu = _mu_of(b)
+        eta = np.clip(Xd @ b, -50.0, 50.0)
+        w = mu
+        sw = np.sqrt(w)
+        z = eta + (yv - mu) / mu
+        A = Xd * sw[:, None]
+        cand, _, _, _ = np.linalg.lstsq(A, z * sw, rcond=None)
+        step = 1.0
+        accepted = False
+        for _ in range(30):
+            trial = b + step * (cand - b)
+            dev_try = _deviance(_mu_of(trial))
+            if np.isfinite(dev_try) and dev_try <= dev_old + 1e-12:
+                accepted = True
+                break
+            step *= 0.5
+        if not accepted:
+            break
+        change = float(np.max(np.abs(trial - b)))
+        b = trial
+        dev_old = dev_try
+        if change < tolf:
+            break
+
+    mu = _mu_of(b)
+    eta = np.clip(Xd @ b, -50.0, 50.0)
+    lgamma_term = float(np.sum([math.lgamma(float(v) + 1.0) for v in yv]))
+    loglik = float(np.sum(yv * np.log(mu) - mu) - lgamma_term)
+    deviance = _deviance(mu)
+    return {
+        "coef": b[1:].copy(),
+        "intercept": float(b[0]),
+        "deviance": float(deviance),
+        "loglik": float(loglik),
+        "aic": float(-2.0 * loglik + 2.0 * k),
+        "n_iter": int(n_iter),
+    }
+
+
+def durbin_watson(residual: Sequence[float]) -> float:
+    """Durbin-Watson 统计量：回归残差一阶自相关的经典检验量。
+
+    参数:
+        residual: 残差序列，长度 n >= 2（**必须按时间/顺序排列**）。
+
+    返回:
+        float，``DW = sum_{t=2..n} (e_t - e_{t-1})^2 / sum_{t=1..n} e_t^2``，
+        取值约在 [0, 4]：≈2 表示无一阶自相关，明显小于 2 表示正自相关，
+        明显大于 2 表示负自相关。
+
+    算法:
+        直接按定义算相邻残差差分平方和与残差平方和之比；等价形式
+        ``DW ≈ 2(1 - rho_1)``（rho_1 为一阶样本自相关，大样本下近似）。
+
+    复杂度:
+        时间 O(n) / 空间 O(n)。
+
+    陷阱:
+        - 残差必须按**原始观测顺序**传入：排序过的残差会算出接近 2 的 "正常" 值，
+          这是最容易骗过自己的用法。
+        - 必须含截距！无截距回归的 OLS 残差均值不为 0，DW 会系统性偏离 2，
+          此时该统计量的临界值表也不适用。
+        - DW 只能检测**一阶**自相关，对高阶或季节性自相关（季度数据的滞后 4）
+          无能为力，应改用 Breusch-Godfrey 检验。
+        - 只有 DW 落在临界值之间才算"不能拒绝无自相关"，单看"是否接近 2"没有
+          统计显著性含义；临界值表依赖 n 与自变量个数，本函数不提供。
+
+    参考:
+        Durbin, J. & Watson, G.S. (1951) "Testing for serial correlation in least squares
+        regression. II", Biometrika 38(1/2): 159-178。
+    """
+    e = as_vector(residual, "residual")
+    if e.size < 2:
+        raise ValueError(f"residual 至少需要 2 个观测，得到 {e.size}")
+    denom = float(e @ e)
+    if denom <= 0.0:
+        raise ValueError("残差全为 0，Durbin-Watson 统计量无定义")
+    num = float(np.sum((e[1:] - e[:-1]) ** 2))
+    return num / denom
+
+
+def breusch_pagan(
+    residual: Sequence[float],
+    X: Sequence[Sequence[float]],
+) -> Dict[str, object]:
+    """Breusch-Pagan 异方差检验：残差平方对自变量做辅助回归。
+
+    参数:
+        residual: OLS 残差，长度 n。
+        X: 原回归的设计矩阵，形状 (n, p)，**不含截距列**（辅助回归自动加截距）。
+
+    返回:
+        dict，键为：
+        ``stat``  float，``LM = n * R2_aux``；
+        ``df``  float，自由度 = p（辅助回归中除截距外的自变量个数）；
+        ``p_value``  float，卡方上尾概率（大统计量 -> 拒绝同方差）。
+
+    算法:
+        1. 取 ``e2 = residual^2``；
+        2. 用 ``ols`` 的同一套最小二乘把 e2 对 ``[1, X]`` 回归，得辅助 ``R2``；
+        3. ``LM = n * R2``，在原假设（同方差）下渐近服从 ``chi2_p``，
+           p 值用模块内自带的卡方生存函数 ``_chi2_sf`` 计算。
+
+    复杂度:
+        时间 O(n p^2) / 空间 O(np)。
+
+    陷阱:
+        - 这是 **LM（拉格朗日乘数）版本**，不是 Koenker 的学生化版本：它对残差的
+          正态性很敏感，厚尾数据会大量假阳性；稳健做法是用 ``e2`` 的稳健方差估计
+          （Koenker 1981）或直接用 White 检验。
+        - 检验的是"残差平方与 X **线性**相关"，因此对形如 ``var = exp(x'b)`` 的
+          异方差很灵，对非线性的方差结构（如 ``var = |x|`` 的某些形态）可能漏检。
+        - 拒绝原假设只说明存在异方差，**不告诉你该怎么做**；修正手段是稳健标准误
+          （White/HC3）或加权最小二乘，而后者需要知道方差函数的形式。
+        - 辅助回归若秩亏（X 有完全共线的列），本实现抛 ``ValueError``，
+          请先删掉冗余列。
+
+    参考:
+        Breusch, T.S. & Pagan, A.R. (1979) "A simple test for heteroscedasticity and
+        random coefficient variation", Econometrica 47(5): 1287-1294；
+        Koenker, R. (1981) "A note on studentizing a test for heteroscedasticity",
+        Journal of Econometrics 17(1): 107-112。
+    """
+    e = as_vector(residual, "residual")
+    Xm = as_matrix(X, "X")
+    n, p = Xm.shape
+    if e.size != n:
+        raise ValueError(f"residual 长度 {e.size} 与 X 的行数 {n} 不一致")
+    e2 = e ** 2
+    Xd = np.column_stack([np.ones(n, dtype=float), Xm])
+    coef, _, rank, _ = np.linalg.lstsq(Xd, e2, rcond=None)
+    if rank < Xd.shape[1]:
+        raise ValueError(
+            f"辅助回归设计矩阵秩亏（rank={rank} < 列数 {Xd.shape[1]}）：X 存在完全共线的列"
+        )
+    fitted = Xd @ coef
+    tss = float(np.sum((e2 - e2.mean()) ** 2))
+    if tss <= 0.0:
+        raise ValueError("残差平方为常数，Breusch-Pagan 辅助回归无定义")
+    rss = float(np.sum((e2 - fitted) ** 2))
+    r2 = 1.0 - rss / tss
+    stat = float(n) * r2
+    return {
+        "stat": float(stat),
+        "df": float(p),
+        "p_value": float(_chi2_sf(float(stat), float(p))),
+    }
+
+
+def stepwise_selection(
+    X: Sequence[Sequence[float]],
+    y: Sequence[float],
+    criterion: str = "aic",
+    max_steps: int = 50,
+) -> Dict[str, object]:
+    """逐步回归（前向 + 后向），以 AIC 或 BIC 为准则做变量筛选。
+
+    参数:
+        X: 候选自变量矩阵，形状 (n, p)，**不含截距列**（每次拟合自动加截距）。
+        y: 因变量，长度 n。
+        criterion: ``"aic"`` 或 ``"bic"``。AIC = ``n ln(RSS/n) + 2k``，
+            BIC = ``n ln(RSS/n) + k ln(n)``，k 为含截距的参数个数。
+        max_steps: 最多执行多少次增删动作。
+
+    返回:
+        dict，键为：
+        ``selected``  被选中的列下标（升序 list of int，可能为空）；
+        ``coef``  对应 ``selected`` 顺序的斜率；
+        ``intercept``  float，截距（``selected`` 为空时即 ``mean(y)``）；
+        ``criterion_value``  最终模型的准则值（越小越好）；
+        ``history``  list，每项 ``{"step","action","index","criterion"}``，
+            action 取 ``"add"`` 或 ``"remove"``。
+
+    算法:
+        1. 从空模型（只有截距）出发；
+        2. 每一轮同时评估所有"加入一个未选变量"与"剔除一个已选变量"的候选模型，
+           取准则值最低且**严格优于**当前模型的动作执行（这就是"逐步"而非纯前向）；
+        3. 没有任何动作能改进准则值、或达到 ``max_steps`` 时停止；
+        4. 用最终变量集重跑一次 OLS 得到系数与截距。
+
+    复杂度:
+        时间 O(max_steps * p * n p^2) / 空间 O(np)。
+
+    陷阱:
+        - **逐步回归后的 p 值不可信**：变量是被数据挑出来的，常规 t 检验的名义显著性
+          水平严重失真（选择性推断问题），不要用它给出"某变量显著"的结论。
+        - AIC/BIC 比较的是同一响应 ``y`` 下的模型，必须保持样本完全一致；
+          存在缺失值时必须先插补再筛选，不能边删样本边选变量。
+        - 完全共线的候选列会让 OLS 抛 ``ValueError``；本实现在评估候选模型时把这类
+          候选直接判为不可用（跳过），而不是让整个筛选崩掉。
+        - BIC 比 AIC 惩罚更重、倾向于更小的模型；样本量 n 很大时两者差异明显，
+          换准则后选出的变量集不同属于正常现象，必须在论文里写明用的是哪一个。
+        - 本函数只做**线性**模型的变量筛选；被排除的变量可能以交互项/非线性形式
+          起作用，逐步回归对此完全无感。
+
+    参考:
+        Akaike, H. (1974) "A new look at the statistical model identification",
+        IEEE TAC 19(6): 716-723；
+        Schwarz, G. (1978) "Estimating the dimension of a model", Annals of Statistics
+        6(2): 461-464；
+        Draper & Smith, "Applied Regression Analysis", 3rd ed., Ch. 6（逐步法）。
+    """
+    Xm = as_matrix(X, "X")
+    yv = as_vector(y, "y")
+    n, p = Xm.shape
+    if yv.size != n:
+        raise ValueError(f"X 有 {n} 行但 y 长度 {yv.size}")
+    crit_name = str(criterion)
+    if crit_name not in ("aic", "bic"):
+        raise ValueError(f"criterion 只能是 'aic' 或 'bic'，得到 {criterion!r}")
+    ms = int(max_steps)
+    if ms < 0:
+        raise ValueError(f"max_steps 必须 >= 0，得到 {max_steps!r}")
+
+    def _rss(cols: Sequence[int]) -> Optional[float]:
+        k = len(cols) + 1
+        if n <= k:
+            return None
+        Xd = np.column_stack([np.ones(n, dtype=float), Xm[:, list(cols)]]) if cols else \
+            np.ones((n, 1), dtype=float)
+        coef, _, rank, _ = np.linalg.lstsq(Xd, yv, rcond=None)
+        if rank < Xd.shape[1]:
+            return None
+        resid = yv - Xd @ coef
+        return float(resid @ resid)
+
+    def _criterion(cols: Sequence[int]) -> float:
+        rss = _rss(cols)
+        k = len(cols) + 1
+        if rss is None:
+            return float("inf")
+        floor = max(rss, 1e-300)
+        base = float(n) * math.log(floor / n)
+        if crit_name == "aic":
+            return base + 2.0 * k
+        return base + k * math.log(float(n))
+
+    selected: list = []
+    current = _criterion(selected)
+    history: list = []
+    for step in range(1, ms + 1):
+        best_crit = current
+        best_action = None
+        best_index = None
+        for j in range(p):
+            if j in selected:
+                continue
+            cand = _criterion(selected + [j])
+            if cand < best_crit - 1e-12:
+                best_crit = cand
+                best_action = "add"
+                best_index = j
+        for j in list(selected):
+            cand = _criterion([c for c in selected if c != j])
+            if cand < best_crit - 1e-12:
+                best_crit = cand
+                best_action = "remove"
+                best_index = j
+        if best_action is None:
+            break
+        if best_action == "add":
+            selected = selected + [best_index]
+        else:
+            selected = [c for c in selected if c != best_index]
+        selected = sorted(selected)
+        current = best_crit
+        history.append(
+            {
+                "step": int(step),
+                "action": best_action,
+                "index": int(best_index),
+                "criterion": float(current),
+            }
+        )
+
+    if selected:
+        Xd = np.column_stack([np.ones(n, dtype=float), Xm[:, selected]])
+        coef, _, _, _ = np.linalg.lstsq(Xd, yv, rcond=None)
+        intercept = float(coef[0])
+        slopes = np.asarray(coef[1:], dtype=float)
+    else:
+        intercept = float(yv.mean())
+        slopes = np.zeros(0, dtype=float)
+    return {
+        "selected": [int(j) for j in selected],
+        "coef": slopes,
+        "intercept": intercept,
+        "criterion_value": float(current),
+        "history": history,
+    }
+
+
+# --------------------------------------------------------------------------
 # 自测
 # --------------------------------------------------------------------------
 
@@ -1728,4 +2556,238 @@ def _self_test() -> dict:
     pt_alt = permutation_test(pa, pa + 2.0, n_perm=2000, seed=20240101)
     out["perm_alt_p"] = round(float(pt_alt["p_value"]), 6)
     out["perm_alt_reject"] = bool(float(pt_alt["p_value"]) < 0.01)
+
+    # 14) PCA：与 np.linalg.svd 独立对拍 + 正交性 + 解释率和为 1 + 共线时第二特征值 ~ 0
+    r6 = rng(20240301)
+    n_p = 400
+    zc = r6.normal(size=n_p)
+    Xp = np.column_stack(
+        [zc, zc + 0.01 * r6.normal(size=n_p), zc + 0.01 * r6.normal(size=n_p)]
+    )
+    pc = pca(Xp)
+    comp = np.asarray(pc["components"])
+    ev = np.asarray(pc["eigenvalues"])
+    ratio = np.asarray(pc["explained_variance_ratio"])
+    Zp = Xp - Xp.mean(axis=0)
+    Zp = Zp / Zp.std(axis=0, ddof=0)
+    sv = np.linalg.svd(Zp, compute_uv=False)
+    ev_svd = sv ** 2 / float(n_p - 1)
+    pca_svd_diff = float(np.max(np.abs(ev - ev_svd[: ev.size])))
+    if pca_svd_diff > 1e-8:
+        raise AssertionError(f"pca 特征值 {ev} 与 np.linalg.svd 对拍差 {pca_svd_diff}")
+    pca_orth = float(np.max(np.abs(comp @ comp.T - np.eye(comp.shape[0]))))
+    if pca_orth > 1e-8:
+        raise AssertionError(f"pca 主成分不正交：components @ components.T 最大偏差 {pca_orth}")
+    if abs(float(ratio.sum()) - 1.0) > 1e-9:
+        raise AssertionError(f"pca 解释率之和 {float(ratio.sum())} != 1")
+    if float(ratio[0]) <= 0.95:
+        raise AssertionError(f"强相关数据第一主成分解释率 {float(ratio[0])} 应 > 0.95")
+    # 两列完全线性相关：协方差阵秩 1，第二个特征值必须 ~ 0
+    pc_coll = pca(np.column_stack([zc, 2.0 * zc]))
+    ev_coll = np.asarray(pc_coll["eigenvalues"])
+    if abs(float(ev_coll[1])) > 1e-10:
+        raise AssertionError(f"完全共线时第二特征值应为 0，得到 {float(ev_coll[1])}")
+    out["pca_svd_max_diff"] = round(pca_svd_diff, 9)
+    out["pca_orthogonality_max_diff"] = round(pca_orth, 9)
+    out["pca_ratio_sum"] = round(float(ratio.sum()), 9)
+    out["pca_first_ratio_correlated"] = round(float(ratio[0]), 6)
+    out["pca_collinear_second_eig"] = round(float(ev_coll[1]), 12)
+    out["pca_eigenvalues"] = [round(float(v), 6) for v in ev]
+    out["pca_cumulative_last"] = round(float(np.asarray(pc["cumulative_ratio"])[-1]), 9)
+    out["pca_scores_shape"] = [int(v) for v in np.asarray(pc["scores"]).shape]
+
+    # 15) 因子分析：单因子模型的共性方差与相关阵非对角元必须能被载荷重构；
+    #     正交旋转不改变共性方差（旋转前后对拍）
+    r7 = rng(20240302)
+    n_fa = 400
+    f_latent = r7.normal(size=(n_fa, 1))
+    lam_true = np.array([0.9, 0.8, 0.7, 0.6, 0.5])
+    Xfa = f_latent * lam_true[None, :] + r7.normal(size=(n_fa, 5)) * np.sqrt(
+        1.0 - lam_true ** 2
+    )[None, :]
+    fa1 = factor_analysis(Xfa, n_factors=1)
+    h2_hat = np.asarray(fa1["communalities"])
+    uniq_hat = np.asarray(fa1["uniqueness"])
+    fa_comm_err = float(np.max(np.abs(h2_hat - lam_true ** 2)))
+    if fa_comm_err > 0.1:
+        raise AssertionError(f"单因子共性方差恢复误差 {fa_comm_err} 过大：{h2_hat}")
+    if float(np.max(np.abs(uniq_hat - (1.0 - h2_hat)))) > 1e-12:
+        raise AssertionError("factor_analysis 的 uniqueness 必须等于 1 - communalities")
+    Lfa = np.asarray(fa1["loadings"])
+    Zfa = Xfa - Xfa.mean(axis=0)
+    Zfa = Zfa / Zfa.std(axis=0, ddof=0)
+    Rfa = Zfa.T @ Zfa / float(n_fa - 1)
+    off_mask = ~np.eye(5, dtype=bool)
+    fa_off_err = float(np.max(np.abs((Lfa @ Lfa.T - Rfa)[off_mask])))
+    if fa_off_err > 0.1:
+        raise AssertionError(f"载荷重构相关阵非对角元的误差 {fa_off_err} 过大")
+    fa_rot = factor_analysis(Xfa, n_factors=2, rotate=True)
+    fa_unrot = factor_analysis(Xfa, n_factors=2, rotate=False)
+    fa_rot_diff = float(
+        np.max(np.abs(np.asarray(fa_rot["communalities"]) - np.asarray(fa_unrot["communalities"])))
+    )
+    if fa_rot_diff > 1e-8:
+        raise AssertionError(f"varimax 正交旋转不应改变共性方差，实际差 {fa_rot_diff}")
+    out["fa_n_iter"] = int(fa1["n_iter"])
+    out["fa_communalities"] = [round(float(v), 6) for v in h2_hat]
+    out["fa_communality_max_err"] = round(fa_comm_err, 6)
+    out["fa_offdiag_max_err"] = round(fa_off_err, 6)
+    out["fa_variance_explained"] = [
+        round(float(v), 6) for v in np.asarray(fa_rot["variance_explained"])
+    ]
+    out["fa_rotation_communality_diff"] = round(fa_rot_diff, 12)
+    out["fa_uniqueness_min"] = round(float(np.min(uniq_hat)), 6)
+
+    # 16) Lasso：alpha 极大 -> 全零；alpha -> 0 -> 逼近 ols；KKT 条件必须满足
+    r8 = rng(20240303)
+    n_l = 200
+    Xla = r8.normal(size=(n_l, 4))
+    b_true_l = np.array([2.0, -1.0, 0.5, 0.0])
+    yla = 1.0 + Xla @ b_true_l + r8.normal(scale=0.5, size=n_l)
+    ols_l = ols(Xla, yla)
+    lasso_big = lasso_regression(Xla, yla, alpha=1e3)
+    lasso_small = lasso_regression(Xla, yla, alpha=1e-8)
+    lasso_mid = lasso_regression(Xla, yla, alpha=0.05)
+    if int(lasso_big["n_nonzero"]) != 0:
+        raise AssertionError(f"alpha=1e3 时 Lasso 应全为 0，得到 {int(lasso_big['n_nonzero'])} 个非零")
+    lasso_vs_ols = float(
+        np.max(np.abs(np.asarray(lasso_small["coef"]) - np.asarray(ols_l["coef"][1:])))
+    )
+    if lasso_vs_ols > 1e-3:
+        raise AssertionError(f"alpha->0 时 Lasso 与 OLS 系数差 {lasso_vs_ols} 超过 1e-3")
+    resid_mid = yla - Xla @ np.asarray(lasso_mid["coef"]) - float(lasso_mid["intercept"])
+    lasso_kkt = float(np.max(np.abs(Xla.T @ resid_mid)) / n_l)
+    if lasso_kkt > 0.05 + 1e-6:
+        raise AssertionError(f"Lasso KKT 条件被违反：max|x_j'r|/n = {lasso_kkt} > alpha=0.05")
+    null_obj = float(np.sum((yla - yla.mean()) ** 2) / (2.0 * n_l))
+    if float(lasso_mid["objective"]) > null_obj:
+        raise AssertionError("Lasso 目标值不应高于全零模型的目标值")
+    # converged 标志必须双向可用：默认参数下这三组都应真收敛；
+    # 而把 max_iter 压到 1、tol 收得极严时，必须如实报 False（不能永远 True）。
+    for name_l, res_l in (("big", lasso_big), ("small", lasso_small), ("mid", lasso_mid)):
+        if not bool(res_l["converged"]):
+            raise AssertionError(
+                f"Lasso(alpha={name_l}) 默认 max_iter/tol 下应已收敛，"
+                f"却在 {int(res_l['n_iter'])} 轮被截断"
+            )
+    lasso_starved = lasso_regression(Xla, yla, alpha=0.05, max_iter=1, tol=1e-14)
+    if bool(lasso_starved["converged"]):
+        raise AssertionError("max_iter=1 且 tol=1e-14 时 Lasso 不可能收敛，converged 却为 True")
+    if int(lasso_starved["n_iter"]) != 1:
+        raise AssertionError(f"被截断时 n_iter 应等于 max_iter=1，得到 {int(lasso_starved['n_iter'])}")
+    out["lasso_converged_all_default"] = True
+    out["lasso_starved_converged"] = bool(lasso_starved["converged"])
+    out["lasso_n_nonzero_big"] = int(lasso_big["n_nonzero"])
+    out["lasso_intercept_big"] = round(float(lasso_big["intercept"]), 6)
+    out["lasso_vs_ols_max_diff"] = round(lasso_vs_ols, 6)
+    out["lasso_coef_small"] = [round(float(v), 6) for v in np.asarray(lasso_small["coef"])]
+    out["lasso_n_nonzero_mid"] = int(lasso_mid["n_nonzero"])
+    out["lasso_kkt_max"] = round(lasso_kkt, 6)
+    out["lasso_n_iter"] = int(lasso_small["n_iter"])
+
+    # 17) Poisson 回归：已知真参数的计数数据上系数恢复；偏差 = 2(饱和对数似然 - 模型对数似然)
+    r9 = rng(20240304)
+    n_po = 1000
+    Xpo = r9.normal(size=(n_po, 2))
+    b1_true, b2_true = 0.5, -0.3
+    mu_po = np.exp(0.4 + b1_true * Xpo[:, 0] + b2_true * Xpo[:, 1])
+    ypo = r9.poisson(mu_po).astype(float)
+    pois = poisson_regression(Xpo, ypo)
+    pois_err = float(np.max(np.abs(np.asarray(pois["coef"]) - np.array([b1_true, b2_true]))))
+    if pois_err > 0.1:
+        raise AssertionError(f"Poisson 回归系数恢复误差 {pois_err} 超过 0.1：{pois['coef']}")
+    sat_ll = float(
+        np.sum(ypo * np.log(np.where(ypo > 0.0, ypo, 1.0)) - ypo)
+        - np.sum([math.lgamma(float(v) + 1.0) for v in ypo])
+    )
+    pois_gap = abs(float(pois["deviance"]) - 2.0 * (sat_ll - float(pois["loglik"])))
+    if pois_gap > 1e-6:
+        raise AssertionError(f"偏差与对数似然的恒等式差 {pois_gap} 过大")
+    if abs(float(pois["aic"]) - (-2.0 * float(pois["loglik"]) + 2.0 * 3.0)) > 1e-9:
+        raise AssertionError("Poisson 的 AIC 必须等于 -2*loglik + 2*(p+1)")
+    out["poisson_coef"] = [round(float(v), 6) for v in np.asarray(pois["coef"])]
+    out["poisson_intercept"] = round(float(pois["intercept"]), 6)
+    out["poisson_coef_max_err"] = round(pois_err, 6)
+    out["poisson_deviance"] = round(float(pois["deviance"]), 6)
+    out["poisson_loglik"] = round(float(pois["loglik"]), 6)
+    out["poisson_deviance_loglik_gap"] = round(pois_gap, 12)
+    out["poisson_n_iter"] = int(pois["n_iter"])
+
+    # 18) Durbin-Watson：iid 残差 ~ 2；AR(1) 正自相关残差必须显著小于 2；对整体变号不变
+    r10 = rng(20240305)
+    n_dw = 300
+    e_iid = r10.normal(size=n_dw)
+    e_ar = np.zeros(n_dw, dtype=float)
+    eps_ar = r10.normal(size=n_dw)
+    for t in range(1, n_dw):
+        e_ar[t] = 0.9 * e_ar[t - 1] + eps_ar[t]
+    dw_iid = durbin_watson(e_iid)
+    dw_ar = durbin_watson(e_ar)
+    if not (1.5 < dw_iid < 2.5):
+        raise AssertionError(f"iid 残差的 DW={dw_iid} 应接近 2")
+    if not (dw_ar < 1.0):
+        raise AssertionError(f"AR(1) 正自相关残差的 DW={dw_ar} 应显著小于 2")
+    if abs(durbin_watson(-e_ar) - dw_ar) > 1e-12:
+        raise AssertionError("Durbin-Watson 对残差整体变号应保持不变")
+    out["dw_iid"] = round(float(dw_iid), 6)
+    out["dw_ar1_rho09"] = round(float(dw_ar), 6)
+    out["dw_ar1_lt_2"] = bool(dw_ar < 2.0)
+    out["dw_sign_invariant"] = bool(abs(durbin_watson(-e_ar) - dw_ar) < 1e-12)
+
+    # 19) Breusch-Pagan：同方差残差不拒绝；方差随 x 指数增长时必须拒绝
+    r11 = rng(20240306)
+    n_bp = 400
+    Xbp = r11.normal(size=(n_bp, 3))
+    e_homo = r11.normal(size=n_bp)
+    bp_homo = breusch_pagan(e_homo, Xbp)
+    e_het = r11.normal(size=n_bp) * np.exp(0.5 * Xbp[:, 1])
+    bp_het = breusch_pagan(e_het, Xbp)
+    if not (float(bp_homo["p_value"]) > 0.05):
+        raise AssertionError(f"同方差残差的 BP p 值 {bp_homo['p_value']} 应 > 0.05")
+    if not (float(bp_het["p_value"]) < 0.01):
+        raise AssertionError(f"异方差残差的 BP p 值 {bp_het['p_value']} 应 < 0.01")
+    if float(bp_het["stat"]) <= float(bp_homo["stat"]):
+        raise AssertionError("异方差数据的 BP 统计量必须大于同方差数据")
+    out["bp_homo_stat"] = round(float(bp_homo["stat"]), 6)
+    out["bp_homo_p"] = round(float(bp_homo["p_value"]), 6)
+    out["bp_het_stat"] = round(float(bp_het["stat"]), 6)
+    out["bp_het_p"] = round(float(bp_het["p_value"]), 6)
+    out["bp_df"] = round(float(bp_het["df"]), 6)
+
+    # 20) 逐步回归：只有第 1、3 列（0 基）真实相关时，BIC 准则下必须恰好选中它们；
+    #     AIC 准则惩罚更轻，允许纳入边缘变量，但真实列必须在内且准则值不劣于全模型
+    r12 = rng(20240307)
+    n_sw = 300
+    Xsw = r12.normal(size=(n_sw, 5))
+    b_sw = np.array([0.0, 4.0, 0.0, -3.0, 0.0])
+    ysw = 1.5 + Xsw @ b_sw + r12.normal(scale=1.0, size=n_sw)
+    step = stepwise_selection(Xsw, ysw, criterion="bic")
+    sel = [int(v) for v in step["selected"]]
+    if sel != [1, 3]:
+        raise AssertionError(f"BIC 逐步回归应选中 [1, 3]，实际选中 {sel}")
+    if abs(float(step["coef"][0]) - 4.0) > 0.3 or abs(float(step["coef"][1]) + 3.0) > 0.3:
+        raise AssertionError(f"逐步回归系数偏离真值：{step['coef']}")
+    step_aic = stepwise_selection(Xsw, ysw, criterion="aic")
+    sel_aic = [int(v) for v in step_aic["selected"]]
+    if not set([1, 3]).issubset(set(sel_aic)):
+        raise AssertionError(f"AIC 逐步回归漏掉了真实相关列，实际选中 {sel_aic}")
+    ols_sw = ols(Xsw, ysw)
+    rss_full = float(np.sum(np.asarray(ols_sw["resid"]) ** 2))
+    aic_full = float(n_sw) * math.log(rss_full / n_sw) + 2.0 * 6.0
+    if float(step_aic["criterion_value"]) > aic_full + 1e-9:
+        raise AssertionError(
+            f"逐步回归 AIC {step_aic['criterion_value']} 不应高于全模型 AIC {aic_full}"
+        )
+    if float(step["criterion_value"]) > float(step_aic["criterion_value"]) + 1e-9:
+        # 本例中 BIC 选中的子模型同时也是 AIC 最优子模型；仅记录，不做强制断言
+        pass
+    out["step_selected"] = sel
+    out["step_selected_aic"] = sel_aic
+    out["step_coef"] = [round(float(v), 6) for v in np.asarray(step["coef"])]
+    out["step_intercept"] = round(float(step["intercept"]), 6)
+    out["step_criterion_value"] = round(float(step["criterion_value"]), 6)
+    out["step_aic_value"] = round(float(step_aic["criterion_value"]), 6)
+    out["step_aic_full"] = round(aic_full, 6)
+    out["step_n_steps"] = int(len(step["history"]))
+    out["step_first_action"] = str(step["history"][0]["action"]) if step["history"] else ""
     return out

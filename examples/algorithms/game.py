@@ -1,5 +1,11 @@
 """博弈论模型：零和博弈 LP、双矩阵纳什、Shapley 值、稳定匹配、演化博弈。
 
+本模块共 8 个公开函数，按用途分成四组：
+- 零和与对抗：``zero_sum_value_lp``（零和博弈的 LP 解法）/ ``minimax_alpha_beta``（极大极小搜索）；
+- 非零和均衡求解：``nash_support_enumeration`` / ``nash_bargaining_solution`` / ``stackelberg_lp``；
+- 合作博弈与分配：``shapley_value``；
+- 匹配与演化：``gale_shapley`` / ``replicator_dynamics``。
+
 竞赛里的典型出现场景：
 - **零和/对抗**：攻防资源分配、拦截与规避、审批对抗、军事对抗推演；
 - **非零和/合作**：两个主体（企业、国家、平台与商家）的收益矩阵同时给出，找纳什均衡；
@@ -25,7 +31,7 @@ from typing import Callable, Dict, Hashable, List, Mapping, Optional, Sequence, 
 
 import numpy as np
 
-from ._common import as_matrix, as_vector, check_square, rng as make_rng
+from ._common import ArrayLike, MatrixLike, as_matrix, as_vector, check_square, rng as make_rng
 from .optimization import simplex_lp
 
 __all__ = [
@@ -34,6 +40,9 @@ __all__ = [
     "shapley_value",
     "gale_shapley",
     "replicator_dynamics",
+    "minimax_alpha_beta",
+    "stackelberg_lp",
+    "nash_bargaining_solution",
 ]
 
 _TOL = 1e-7
@@ -60,13 +69,16 @@ def zero_sum_value_lp(payoff, maximize_row: bool = True) -> dict:
     算法:
         设行玩家用混合策略 ``p``，其保证收益为 ``min_j (p^T A)_j``，求其最大即解
         ``max v  s.t.  sum_i p_i A[i, j] >= v``（对每个 j）。
-        零和博弈的最优策略要求收益全为正（LP 标准形要求变量非负），因此先做**平移**
-        ``A' = A - min(A) + kappa``（``kappa = 1`` 或按量级自适应），解完再把
-        ``value = value' - shift`` 还原，策略本身不受平移影响。
+        零和博弈的最优策略要求收益全为正（LP 标准形要求变量非负），因此先做**平移**：
+        ``shift = -min(A) + 1.0``（当 ``min(A) <= 0``）或 ``shift = 0.0``（当 ``min(A) > 0``），
+        ``A' = A + shift``——也就是 ``kappa`` **固定取 1.0，不按量级自适应**；解完再按
+        ``value = v' - shift`` 还原（策略本身不受平移影响）。
         求解器用 :func:`optimization.simplex_lp`；变量向量是 ``[p_0..p_{m-1}, v]``，
         等式约束 ``sum p = 1``，不等式约束 ``-sum_i p_i A'[i, j] + v <= 0``。
-        列玩家的策略由**强对偶**给出：同一组对偶变量即为对方的最优混合策略（矩阵博弈的
-        对称性）。
+        列玩家的策略**不是**用强对偶/单纯形表的检验数直接搬过来的：:func:`optimization.simplex_lp`
+        按契约只返回原始解、不暴露对偶变量，所以本实现调用辅助函数 :func:`_zero_sum_dual_lp`
+        对同一（已平移）矩阵**再显式求解一次对偶 LP**（``min u  s.t.  sum_j q_j A'[i, j] <= u,
+        sum_j q_j = 1, q >= 0``），代价是多一次 LP 求解，好处是**不依赖求解器内部实现**。
 
     复杂度:
         时间 = 一次 LP（单纯形实际很快，最坏指数级）；本模块建表 O(mn) / 空间 O(mn)。
@@ -77,13 +89,17 @@ def zero_sum_value_lp(payoff, maximize_row: bool = True) -> dict:
         2. 混合策略的**不确定支撑集**：当价值相等时，最优混合策略可能不唯一（例如
            [[1,-1],[-1,1]] 的任意 p 都是最优）。所以"用 LP 求出的策略"只是其中一个，
            论文里若声称"最优策略唯一"需要有额外论证。
-        3. 平移量必须让**所有**元素为正；若矩阵含很大的负数，``shift`` 要按
-           ``-min(A) + kappa`` 取，不要硬编码 1.0（会得到负元素，LP 直接报错或给错解）。
+        3. 平移量必须让**所有**元素为正。本实现的 ``shift`` 是固定的 ``-min(A) + 1.0``
+           （``kappa`` 恒为 1.0，**不会**按矩阵量级自适应），平移后若仍有非正元素会直接抛
+           ``ValueError``。因此量级悬殊的矩阵（例如含 1e9 级负数）会得到巨大的 ``shift``，
+           剩余元素几乎都接近 1，``simplex_lp`` 里 1e-9 级的判定就不再可靠——**请先对支付
+           矩阵做无量纲化/缩放**再传入。
         4. LP 不可行/无界的判断：零和博弈的可行域有界（策略单纯形），所以理论上总是
            可行有界；一旦求解器返回别的状态，通常说明数值尺度或平移出了问题，本实现直接抛
            ValueError，不做静默兜底。
-        5. 若 ``maximize_row=False``，本函数对矩阵取转置后再求解，因此返回的
-           ``row_strategy`` 仍然是**你传入矩阵的行**对应的策略——口径不要搞反。
+        5. 若 ``maximize_row=False``，本函数先对矩阵**转置**再按"行玩家最大化"求解，所以返回的
+           ``row_strategy`` 长度等于**你传入矩阵的列数**、其分量对应原矩阵的各**列**
+           （视角换成了原来的列玩家）；``col_strategy`` 才对应原矩阵的各**行**。口径不要搞反。
 
     参考:
         von Neumann 1928（博弈论基本定理）；Dantzig 的 LP 等价形式；Chvátal《Linear Programming》。
@@ -234,8 +250,11 @@ def nash_support_enumeration(A, B) -> list:
 
     算法:
         Nash 的支撑集枚举（support enumeration）：
-        1. 枚举所有非空支撑对 ``(S_r, S_c)``，``|S_r| <= n``、``|S_c| <= m``（否则
-           线性方程组中未知数多于方程，退化处理）；
+        1. 枚举所有非空支撑对 ``(S_r, S_c)``，且**两侧支撑大小都被循环上界
+           ``min(m, n)`` 卡住**：代码是 ``range(1, min(m, n) + 1)``，因此
+           ``|S_r| <= min(m, n)``、``|S_c| <= min(m, n)``（**不是** ``|S_r| <= n`` /
+           ``|S_c| <= m``）。矩阵非方阵时（如 m=2, n=5）两侧支撑都最多枚举到 2，
+           大于 ``min(m, n)`` 的支撑对根本不会被尝试；
         2. 在"行玩家在 S_c 上无差异、列玩家在 S_r 上无差异"的线性系统里解出混合策略
            （用 numpy 最小二乘 + 秩检查，避免手写高斯消元的分支爆炸）；
         3. 回代检验全局最优性：``(A q)_i`` 在所有行上被 S_r 取到最大、``(B^T p)_j``
@@ -635,7 +654,9 @@ def shapley_value(characteristic, n: int) -> np.ndarray:
 
     算法:
         ``phi_i = sum_{S ⊆ N\\{i}} |S|! (n-|S|-1)! / n! * [v(S ∪ {i}) - v(S)]``。
-        实现上直接枚举 ``2^n`` 个子集，用 ``math.comb`` 算权重，避免生成 n! 个排列。
+        实现上直接枚举 ``2^n`` 个子集，权重的阶乘比值由辅助函数 :func:`_shapley_weight`
+        用 ``math.factorial`` 算出（``factorial(|S|) * factorial(n-|S|-1) / factorial(n)``，
+        本模块只导入了 ``factorial``，**没有**用 ``math.comb``），避免生成 n! 个排列。
 
     复杂度:
         时间 O(n * 2^n)（枚举子集 O(2^n)，每个子集对每个玩家取边际贡献）/ 空间 O(2^n)（缓存）。
@@ -755,17 +776,27 @@ def gale_shapley(men_prefs, women_prefs) -> dict:
     参数:
         men_prefs: ``{man: [w1, w2, ...]}``，每个男生的偏好降序列表（最喜欢在前）。
         women_prefs: ``{woman: [m1, m2, ...]}``，每个女生的偏好降序列表。
-            两边的偏好列表必须**互相是对方的全集**（同一组男女，只是顺序不同）；
-            缺失的候选按"排在最后"处理并会被记入 ``rank`` 检查。
+            两边的偏好列表必须**互相是对方的全集**（同一组男女，只是顺序不同）。若某方列表里
+            出现了**不在对方字典键集合中**的人，该条目会在预处理时被**静默丢弃**（代码里按
+            ``w in women_set`` / ``man in men_set`` 过滤），即被视为"不可接受"，既不会报警告，
+            也不会被记入任何 ``rank`` 检查，更不会出现在返回值里（返回值**没有** ``rank`` 键）。
+            偏好列表内部的重复项同样被静默去重（保留首次出现的位置）。
             **不要求**人数相等：多出来的一方按偏好列表长度自然处理。
 
     返回:
-        ``{"matching": {man: woman 或 None}, "n_proposals": int, "n_blocking_pairs": int}``。
-        ``matching`` 包含所有男生（未匹配到则为 None），此外还包含
-        ``matches``（反向字典 ``{woman: man}``）以便查询——见下方"返回"补充说明。
-        ``n_proposals`` 是算法过程中**累计的求婚次数**（同一个男生被拒后会再次求婚，
-        每次计一次），这是衡量算法代价的常用指标。
-        ``n_blocking_pairs`` 是返回前**实际校验**得到的阻塞对个数（正确实现应为 0）。
+        ``{"matching": {...}, "matches": {...}, "n_proposals": int, "n_blocking_pairs": int}``，
+        共 **4** 个键：
+
+        - ``matching``：男 → 女 的字典，**包含所有男生**（未匹配到则为 None）；
+        - ``matches``：反向字典 女 → 男，**只包含实际配对的女生**（单身女生不出现，
+          且值不会是 None）——注意它不是 ``matching`` 的逐键镜像，想查"某女生是否匹配"要用
+          ``woman in matches`` 而不是 ``matches[woman]``（缺键会 KeyError）；
+        - ``n_proposals``：算法过程中**累计的求婚次数**（同一个男生被拒后会再次求婚，
+          每次计一次），这是衡量算法代价的常用指标；
+        - ``n_blocking_pairs``：返回前**实际校验**得到的阻塞对个数（正确实现应为 0）。
+
+        （返回值里**没有** ``rank`` 键；内部的 ``rank_m`` / ``rank_w`` 只在函数内部用于比较
+        和阻塞对校验，不对外暴露。）
 
     算法:
         男方求婚版延迟接受：
@@ -787,8 +818,10 @@ def gale_shapley(men_prefs, women_prefs) -> dict:
         3. **必须校验无阻塞对**。很多实现只跑流程不校验，结果偏好列表方向搞反（比如把
            "最喜欢在前"写成"最不喜欢在前"）时依然能输出一个匹配，只是不稳定。
            本函数在返回前做 O(n*m) 全对校验，报告 ``n_blocking_pairs``。
-        4. 偏好列表里若出现未在对方字典中的人，会被当作"不在候选集"忽略；
-           若两边的人名不是同一套字符串，匹配会大面积落空——请保证键集合一致。
+        4. 偏好列表里若出现未在对方字典中的人，会被当作"不在候选集"**静默丢弃**（视为不可接受），
+           不报警告、不计入任何排名或校验；若两边的人名不是同一套字符串，匹配会大面积落空——
+           请保证键集合一致（想自查可直接对两边的 ``keys()`` 取差集）。
+           返回值里**没有** ``rank`` 键，无法从结果中看出谁被丢掉了。
         5. 偏好列表**可以是不完全列表**（有的男生只列出部分女生）：此时算法把未列出的
            视为不可接受，本实现用"不向列表外的人求婚"处理，这符合标准的
            "incomplete preferences"扩展。若你希望未列出的视为最次而非不可接受，
@@ -989,6 +1022,444 @@ def _simplex(y: np.ndarray) -> np.ndarray:
 
 
 # --------------------------------------------------------------------------- #
+# α-β 剪枝极大极小搜索
+# --------------------------------------------------------------------------- #
+def minimax_alpha_beta(
+    node: object,
+    depth: int,
+    alpha: float = float("-inf"),
+    beta: float = float("inf"),
+    maximizing: bool = True,
+    evaluate_fn: Optional[Callable[[object], float]] = None,
+    children_fn: Optional[Callable[[object], Sequence[object]]] = None,
+) -> dict:
+    """通用 α-β 剪枝极小极大搜索（alpha-beta pruning）。
+
+    参数:
+        node: 搜索起点。**本函数不解释它的内部结构**，只是把它原样交给 ``children_fn`` /
+            ``evaluate_fn``；可以是棋盘、状态元组、字典键等任意对象。
+        depth: 还要往下搜索的层数，必须 >= 0。``depth == 0`` 时直接调用 ``evaluate_fn``
+            （不再展开子节点），所以"完全搜索"要求 depth 不小于博弈树的深度。
+        alpha: 最大化者已经能保证的下界；**根节点必须传 -inf**（默认值）。
+        beta: 最小化者已经能保证的上界；**根节点必须传 +inf**（默认值）。
+        maximizing: ``node`` 处轮到谁走；True 表示轮到最大化者。
+        evaluate_fn: ``evaluate_fn(node) -> float``，叶子（或 depth 用尽）处的静态评估值，
+            **越大对最大化者越有利**。必须能对任意被展开到的节点求值。
+        children_fn: ``children_fn(node) -> 子节点序列``；返回空序列表示终局。
+
+    返回:
+        dict，键为：
+        ``value``   float，搜索得到的极小极大值（根节点处，maximizing 方的保证值）；
+        ``best_child``   maximizing 方在 ``node`` 处的最优子节点对象，叶子处为 None
+            （注意：**是子节点本身，不是下标**；若 node 处轮到最小化者，返回的是让最大化者
+            收益最小的那个子节点）；
+        ``n_evaluated``   int，``evaluate_fn`` 的调用次数（= 展开的叶子数）；
+        ``n_pruned``   int，发生剪枝（提前 ``break``）的次数。
+
+    算法:
+        带 (alpha, beta) 窗口的递归极小极大：
+        1. ``depth == 0`` 或 ``children_fn(node)`` 为空 → ``evaluate_fn(node)``，叶子计数 +1；
+        2. 最大化节点：依次递归每个子节点，记录最大值与对应子节点，更新
+           ``alpha = max(alpha, value)``；一旦 ``alpha >= beta`` 就停止遍历剩余子节点（β 剪枝）；
+        3. 最小化节点：对称地更新 ``beta = min(beta, value)``，一旦 ``beta <= alpha`` 停止（α 剪枝）。
+        剪掉的子树不可能改变根节点的取值（Knuth & Moore 1975），因此根节点在全窗口下拿到的
+        值与不剪枝的完全极小极大**逐位相同**。
+
+    复杂度:
+        时间：最坏（子节点顺序最差）O(b^d)，与不剪枝的极小极大相同；子节点顺序理想时
+        O(b^(d/2))（b 为平均分支因子、d 为深度）。空间 O(d)（递归栈，不含 children 列表）。
+
+    陷阱:
+        1. ``n_pruned`` 是**剪枝事件次数**，不是"省下的求值次数"。被剪掉的子树只有真的展开才知道多大，
+           所以报告"剪枝节省了多少节点"时必须用 ``n_evaluated`` 与不剪枝实现对比，而不是看 ``n_pruned``。
+        2. α-β 只在**叶子评估精确**时才与完全极小极大给出相同的值。若 ``depth`` 提前截断、
+           ``evaluate_fn`` 给出的是启发式估值，两条路径的值就会不同——那是深度截断的误差，不是剪枝的错。
+        3. 剪枝判定必须用 ``alpha >= beta``：写成严格大于只损失剪枝率（结果仍对），
+           但若在**更新窗口之前**就 break，则可能剪掉真正更优的分支，得到错值。
+        4. ``children_fn`` 的返回顺序决定剪枝率。同一棵树换个顺序，``value`` 不变但
+           ``n_evaluated`` 可能差一个量级；为了让结果可复现，``children_fn`` 本身必须确定性
+           （不要在里面用随机顺序或依赖 dict 的遍历顺序）。
+        5. ``best_child`` 返回的是子节点对象的**引用**；调用方就地修改它会影响你自己的树结构。
+           另外，在递归内部（非根节点）返回的 best_child 是"窗口内最优"，只有根节点全窗口调用时
+           才保证是真正的最优着法。
+        6. 递归深度等于 ``depth``；把它设成上百万会让 Python 直接抛 RecursionError（默认上限 1000），
+           深树请自己改写成显式栈版本。
+
+    参考:
+        Knuth & Moore 1975, "An analysis of alpha-beta pruning", Artificial Intelligence 6(4)；
+        Russell & Norvig《人工智能：一种现代方法》第 5 章（对抗搜索）。
+    """
+    if evaluate_fn is None or children_fn is None:
+        raise ValueError("必须同时提供 evaluate_fn 与 children_fn")
+    depth = int(depth)
+    if depth < 0:
+        raise ValueError(f"depth 必须 >= 0，得到 {depth}")
+    a_in = float(alpha)
+    b_in = float(beta)
+    if not (a_in < b_in):
+        raise ValueError(f"空的搜索窗口：alpha={a_in} 不小于 beta={b_in}")
+
+    stats = {"n_evaluated": 0, "n_pruned": 0}
+
+    def rec(cur: object, d: int, a: float, b: float, is_max: bool):
+        """返回 (窗口内的最优值, 对应的子节点)；叶子返回 (评估值, None)。"""
+        kids: List[object] = list(children_fn(cur)) if d > 0 else []
+        if d == 0 or not kids:
+            stats["n_evaluated"] += 1
+            return float(evaluate_fn(cur)), None
+        best_child = None
+        if is_max:
+            best = float("-inf")
+            for kid in kids:
+                v, _ = rec(kid, d - 1, a, b, False)
+                if v > best:
+                    best, best_child = v, kid
+                if best > a:
+                    a = best
+                if a >= b:
+                    stats["n_pruned"] += 1
+                    break
+        else:
+            best = float("inf")
+            for kid in kids:
+                v, _ = rec(kid, d - 1, a, b, True)
+                if v < best:
+                    best, best_child = v, kid
+                if best < b:
+                    b = best
+                if a >= b:
+                    stats["n_pruned"] += 1
+                    break
+        return best, best_child
+
+    value, best_child = rec(node, depth, a_in, b_in, bool(maximizing))
+    return {
+        "value": float(value),
+        "best_child": best_child,
+        "n_evaluated": int(stats["n_evaluated"]),
+        "n_pruned": int(stats["n_pruned"]),
+    }
+
+
+# --------------------------------------------------------------------------- #
+# Stackelberg（领导者-跟随者）线性博弈
+# --------------------------------------------------------------------------- #
+def stackelberg_lp(
+    A_leader: MatrixLike,
+    c_leader: ArrayLike,
+    A_follower: MatrixLike,
+    c_follower: ArrayLike,
+    b_follower: ArrayLike,
+    x_upper: Optional[ArrayLike] = None,
+    n_grid: int = 21,
+    leader_cost: Optional[ArrayLike] = None,
+) -> dict:
+    """领导者-跟随者（Stackelberg）线性博弈：跟随者解 LP，领导者在响应函数上网格搜索。
+
+    参数:
+        A_leader: 领导者工具对跟随者资源的**耦合矩阵**，形状 ``(k, m)``（k = 跟随者约束条数、
+            m = 领导者决策维数）。第 i 条跟随者约束的右端项是 ``b_follower[i] - (A_leader x)[i]``：
+            **取正号表示领导者的决策在消耗/限制跟随者的资源**，取负号表示在放宽它。
+        c_leader: 领导者对**跟随者决策 y** 的估值向量，长度 ``n``（n = 跟随者决策维数）。
+            领导者收益 = ``c_leader @ y - leader_cost @ x``。
+        A_follower: 跟随者自己的约束矩阵，形状 ``(k, n)``。
+        c_follower: 跟随者的目标系数，长度 ``n``（跟随者最大化 ``c_follower @ y``）。
+        b_follower: 跟随者约束右端项，长度 ``k``（也是领导者工具为 0 时的资源量）。
+        x_upper: 领导者每个决策变量的上界，长度 ``m`` 的非负向量；None 表示自动取
+            ``max(|b_follower|)``（与资源同量级，避免网格尺度荒谬）。**上界必须有界**，
+            否则领导者的搜索问题是无穷区间，网格搜索没有意义。
+        n_grid: 每个领导者变量方向上的网格点数（含两端），必须 >= 2。总 LP 次数 = ``n_grid ** m``。
+        leader_cost: 领导者工具的单位成本向量，长度 ``m``；None 表示工具零成本。
+
+    返回:
+        dict，键为：
+        ``x_leader``   形状 (m,) 的领导者决策（网格上最优的那个点）；
+        ``y_follower``   形状 (n,) 跟随者对 ``x_leader`` 的最优响应（LP 解，已截负）；
+        ``leader_payoff``   float，``c_leader @ y_follower - leader_cost @ x_leader``；
+        ``follower_payoff``   float，``c_follower @ y_follower``。
+
+    算法:
+        1. 跟随者问题：给定 x，解
+           ``max_y c_follower @ y  s.t.  A_follower y <= b_follower - A_leader x,  y >= 0``
+           （调用 :func:`optimization.simplex_lp`）；
+        2. 领导者在盒式区域 ``0 <= x <= x_upper`` 上取 ``n_grid^m`` 个网格点（``itertools.product``
+           的字典序，确定性），对每个点求跟随者的最优响应与领导者收益；
+        3. 取领导者收益最大的网格点，严格大于才替换（并列时保留字典序最小的那个，保证可复现）；
+        4. 跟随者的 LP 不可行 / 无界（status 非 ``"optimal"``）时该领导者决策被丢弃，
+           若所有网格点都被丢弃则抛 ValueError。
+
+    复杂度:
+        时间 O(n_grid^m * 一次 LP)；空间 O(k n + n_grid)（不存储全部网格结果，只留当前最好）。
+
+    陷阱:
+        1. **这是网格近似，不是精确解**。领导者收益作为 x 的函数是分片线性的（一般还不凹），
+           最优可能落在两个网格点之间的折点上；请把 ``n_grid`` 调大做一次收敛性对照再报数字。
+        2. 领导者收益的口径必须显式选定：本实现取"领导者对跟随者行动的线性估值减去工具成本"。
+           如果你的模型里领导者还从自己的决策直接获益，请把那一项并入 ``leader_cost``（取负号）。
+        3. **同时决策（Nash/Cournot）基准**：把 ``x_upper`` 设为全 0 就退化成"领导者不使用承诺
+           能力"的同时决策结果。网格里含 x = 0 且做的是最大化，所以 Stackelberg 领导者收益
+           不会低于该基准（自测里做了这条断言）。
+        4. 跟随者 LP 的**退化与多解**会让"最优响应"不唯一：此时 ``y_follower`` 只是单纯形给出的
+           一个顶点，领导者收益在多个最优响应之间可能有差别（乐观/悲观口径）。本实现取乐观口径
+           （领导者按跟随者会选对自己最有利的一个来评估），论文里必须写明。
+        5. ``A_leader`` 的符号极易搞反：右端项是 ``b - A_leader x``，不是 ``b + A_leader x``。
+        6. 网格点数随 m 指数增长：m = 3、n_grid = 21 已经是 9261 次 LP，竞赛里请控制在
+           ``n_grid ** m <= 1e4`` 以内，或改用领导者收益的包络（分段线性）精确枚举。
+
+    参考:
+        von Stackelberg 1934《Marktform und Gleichgewicht》；Dempe 2002（双层规划综述）；
+        线性双层规划的"领导者先动、跟随者解 LP"标准表述。
+    """
+    Al = as_matrix(A_leader, "A_leader")
+    cl = as_vector(c_leader, "c_leader")
+    Af = as_matrix(A_follower, "A_follower")
+    cf = as_vector(c_follower, "c_follower")
+    bf = as_vector(b_follower, "b_follower")
+
+    k, n = Af.shape
+    if bf.size != k:
+        raise ValueError(f"b_follower 长度 {bf.size} 与 A_follower 的行数 {k} 不一致")
+    if cf.size != n:
+        raise ValueError(f"c_follower 长度 {cf.size} 与 A_follower 的列数 {n} 不一致")
+    if cl.size != n:
+        raise ValueError(f"c_leader 长度 {cl.size} 必须等于跟随者决策维数 n={n}")
+    if Al.shape[0] != k:
+        raise ValueError(f"A_leader 行数 {Al.shape[0]} 必须等于跟随者约束条数 k={k}")
+
+    m = Al.shape[1]
+    if m < 1:
+        raise ValueError("A_leader 至少要有 1 列（领导者决策维数 m >= 1）")
+    n_grid = int(n_grid)
+    if n_grid < 2:
+        raise ValueError(f"n_grid 必须 >= 2，得到 {n_grid}")
+
+    if x_upper is None:
+        scale = float(np.abs(bf).max()) if bf.size else 1.0
+        upper = np.full(m, scale if scale > 0 else 1.0)
+    else:
+        upper = as_vector(x_upper, "x_upper")
+        if upper.size != m:
+            raise ValueError(f"x_upper 长度 {upper.size} 与领导者决策维数 m={m} 不一致")
+    if np.any(upper < 0):
+        raise ValueError(f"x_upper 必须非负，得到 {upper.tolist()}")
+    if not np.all(np.isfinite(upper)):
+        raise ValueError("x_upper 必须全部有限（无界搜索区间上网格法没有意义）")
+
+    if leader_cost is None:
+        cost = np.zeros(m)
+    else:
+        cost = as_vector(leader_cost, "leader_cost")
+        if cost.size != m:
+            raise ValueError(f"leader_cost 长度 {cost.size} 与领导者决策维数 m={m} 不一致")
+
+    axes = [np.linspace(0.0, float(upper[i]), n_grid) for i in range(m)]
+    best: Optional[Dict[str, object]] = None
+    n_failed = 0
+    for combo in itertools.product(*axes):
+        x = np.array(combo, dtype=float)
+        rhs = bf - Al @ x
+        res = simplex_lp(cf, A_ub=Af, b_ub=rhs, maximize=True)
+        if str(res.get("status")) != "optimal":
+            n_failed += 1
+            continue
+        y = np.clip(np.asarray(res["x"], dtype=float), 0.0, None)
+        payoff = float(cl @ y - cost @ x)
+        if best is None or payoff > float(best["leader_payoff"]):
+            best = {
+                "x_leader": x,
+                "y_follower": y,
+                "leader_payoff": payoff,
+                "follower_payoff": float(cf @ y),
+            }
+    if best is None:
+        raise ValueError(
+            f"领导者的 {n_grid ** m} 个网格点上跟随者的 LP 全部非 optimal"
+            "（典型原因是资源上界使得跟随者问题不可行）；请放宽 x_upper 或检查 A_leader 的符号"
+        )
+    return best
+
+
+# --------------------------------------------------------------------------- #
+# 纳什谈判解
+# --------------------------------------------------------------------------- #
+def nash_bargaining_solution(d, payoff_set) -> dict:
+    """二人纳什谈判解：在可行集上最大化纳什积 ``(u1 - d1) * (u2 - d2)``。
+
+    参数:
+        d: 分歧点（disagreement point / 谈判破裂时的效用），长度 2。
+        payoff_set: 可行集，两种口径二选一：
+            (a) 离散点集：形状 ``(N, 2)`` 的数组（或 list of list），只在给定点上取最大纳什积；
+            (b) 凸多边形：字典 ``{"A_ub": A, "b_ub": b}``，可行集为 ``{u : A u <= b}``，
+                A 形状 ``(k, 2)``。**必须是有界多边形，且请把下界（u >= 0 之类）也显式写成 A 的行**
+                （本函数不隐式假定 u >= 0，负效用坐标是允许的）。
+
+    返回:
+        dict，键为：
+        ``solution``   形状 (2,) 的谈判解效用点 ``(u1*, u2*)``；
+        ``utilities``   形状 (2,) 的**净收益** ``u* - d``（相对分歧点的增量，两者相乘即纳什积；
+                        每个分量都大于 ``_TOL = 1e-7``，见"陷阱"第 1 条）；
+        ``product``   float，纳什积 ``(u1* - d1)(u2* - d2)``（即最大化的目标值）。
+
+    算法:
+        1. 离散点集：逐点算纳什积，取最大值（严格大于才替换，并列取输入顺序在前的点，保证确定性）；
+        2. 凸多边形：先求顶点（两两约束直线求交 + 可行性过滤 + 按极角排序），再在**每条边**上
+           扫描：把边参数化为 ``u(t) = A + t(B - A)``，纳什积是 t 的二次函数，其内部驻点
+           ``t* = -(p1 q2 + p2 q1) / (2 q1 q2)``（``p = A - d``、``q = B - A``）落在 (0, 1) 时
+           作为候选点；在"所有顶点 + 所有边的内部驻点"里取纳什积最大者。
+           对多边形而言这个候选集是**充分的**：log 纳什积在可行集上是凹的，最大值必落在东北边界，
+           而边界由有限条线段拼成，每段上的最大值只可能在端点或该段的驻点。
+        3. 个体理性按**容差**筛候选：``u - d`` 的每个分量都必须 **> ``_TOL``（``_TOL = 1e-7``）**，
+           否则该候选被丢弃；只有所有候选都被丢弃时才抛 ValueError。也就是说返回解只保证
+           "净收益每个分量都大于 1e-7"，而不是数学意义上的"严格大于 0"。
+
+    复杂度:
+        时间：离散 O(N)；多边形 O(k^2)（顶点枚举）+ O(k) 条边的二次求根 + 4 次辅助 LP（有界性检查）；
+        空间 O(k)。
+
+    陷阱:
+        1. **纳什解要求可行集里有严格优于 d 的点**。若 d 本身就在帕累托前沿上（没有合作剩余），
+           纳什积的最大值为 0，谈判解退化；本实现直接抛 ValueError，避免把 0 当作"解"报出去。
+           但注意"严格优于"在代码里是**容差判定**：候选要被采纳必须满足 ``gain > _TOL``，
+           而 ``_TOL = 1e-7``（硬编码的绝对容差），所以两分量只到 1e-8 量级的
+           "合作剩余"会被当成没有剩余，两侧之一恰好等于 1e-7 的点也会被丢掉。效用单位很大或
+           很小时这个绝对容差的实际含义会随之变化，报告结论时请说明。
+        2. 离散点集口径下"解"只是给定点里纳什积最大的那个，**不是**真正的纳什谈判解；
+           点足够密时才可以近似当作连续解，论文里要说明采样方式。
+        3. 凸多边形口径**只支持二维**（纳什谈判解本身就是二人博弈的概念），
+           三维及以上的纳什积最大化要用凸优化求解器。
+        4. 对称性公理：若可行集关于 ``u1 <-> u2`` 对称且 ``d1 == d2``，解必须落在对称轴上。
+           本函数不对输入做对称化，所以数值上会有 1e-15 级别的偏差——断言时请用容差，别用 ==。
+        5. 多边形顶点用**两两直线求交**得到：退化多边形（三条边共点、存在冗余约束）会产生重复交点，
+           本实现按容差去重；若 A 的行里出现全零行，该约束不构成直线（会被跳过），
+           请在传参前把冗余约束去掉。
+
+    参考:
+        Nash 1950, "The Bargaining Problem", Econometrica 18(2)；Osborne & Rubinstein
+        《A Course in Game Theory》第 15 章（公理化谈判解）。
+    """
+    dvec = as_vector(d, "d")
+    if dvec.size != 2:
+        raise ValueError(f"分歧点 d 必须是长度 2 的向量，得到长度 {dvec.size}")
+
+    if isinstance(payoff_set, Mapping):
+        if "A_ub" not in payoff_set or "b_ub" not in payoff_set:
+            raise ValueError("payoff_set 用多边形口径时必须同时给出 'A_ub' 与 'b_ub' 两个键")
+        A_ub = as_matrix(payoff_set["A_ub"], "A_ub")
+        b_ub = as_vector(payoff_set["b_ub"], "b_ub")
+        if A_ub.shape[1] != 2:
+            raise ValueError(f"A_ub 必须是 (k, 2)（二维谈判问题），得到形状 {A_ub.shape}")
+        if A_ub.shape[0] != b_ub.size:
+            raise ValueError(f"A_ub 行数 {A_ub.shape[0]} 与 b_ub 长度 {b_ub.size} 不一致")
+        verts = _polygon_vertices(A_ub, b_ub)
+        candidates: List[np.ndarray] = [v.copy() for v in verts]
+        for i in range(len(verts)):
+            p0 = verts[i] - dvec
+            q = verts[(i + 1) % len(verts)] - verts[i]
+            if abs(float(q[0] * q[1])) < 1e-15:
+                continue  # 该边与某条坐标轴平行：二次项为 0，极值只可能在端点
+            t = -float(p0[0] * q[1] + p0[1] * q[0]) / (2.0 * float(q[0] * q[1]))
+            if 0.0 < t < 1.0:
+                candidates.append(verts[i] + t * q)
+    else:
+        pts = as_matrix(payoff_set, "payoff_set")
+        if pts.shape[1] != 2:
+            raise ValueError(f"payoff_set 作为离散点集必须是 (N, 2)，得到形状 {pts.shape}")
+        candidates = [pts[i].copy() for i in range(pts.shape[0])]
+
+    best_u: Optional[np.ndarray] = None
+    best_prod = float("-inf")
+    for u in candidates:
+        gain = u - dvec
+        if gain[0] <= _TOL or gain[1] <= _TOL:
+            continue  # 不满足个体理性（没有严格优于分歧点）
+        prod = float(gain[0] * gain[1])
+        if prod > best_prod:
+            best_prod, best_u = prod, u
+    if best_u is None:
+        raise ValueError(
+            "可行集中没有严格优于分歧点 d 的点（没有合作剩余），纳什谈判解不存在；"
+            f"请检查 d={dvec.tolist()} 是否已经落在可行集的帕累托前沿上"
+        )
+    return {
+        "solution": np.asarray(best_u, dtype=float),
+        "utilities": np.asarray(best_u - dvec, dtype=float),
+        "product": float(best_prod),
+    }
+
+
+def _polygon_vertices(A_ub: np.ndarray, b_ub: np.ndarray) -> List[np.ndarray]:
+    """求二维有界多边形 ``{u : A_ub u <= b_ub}`` 的顶点（按极角逆时针排序）。
+
+    参数:
+        A_ub: (k, 2) 约束矩阵。
+        b_ub: 长度 k 的右端项。
+
+    返回:
+        list of np.ndarray，每个是 (2,) 顶点，按相对形心的极角升序排列（可直接当作边的顺序用）。
+
+    算法:
+        1. 先用 4 个辅助 LP（最大化/最小化 u1 与 u2）判定可行域非空且**有界**：
+           若衰退锥 ``{d : A_ub d <= 0}`` 含非零方向，则某个坐标方向必无界，这 4 个 LP 会报 unbounded；
+        2. 两两取约束直线求交，保留满足 ``A_ub v <= b_ub``（带容差）的交点，按容差去重；
+        3. 以形心为原点按 ``arctan2`` 极角排序。
+
+    复杂度:
+        时间 O(k^2) / 空间 O(k^2)。
+
+    陷阱:
+        1. **必须显式传入下界约束**（例如 ``-u1 <= 0``）：本函数不假定 u >= 0，缺下界时第 1 步会
+           直接判为无界并抛 ValueError——这是有意的，无界可行集上的纳什谈判解本身就没有定义。
+        2. 求交时要用平面法向量叉积的**行列式**判平行；用斜率比较会在竖直线（a1 = 0）上除零。
+        3. 容差按 ``b_ub`` 的量级缩放；若约束系数量级相差 1e6 倍以上，交点判定会不可靠，
+           请先做无量纲化（与 optimization.simplex_lp 的数值要求一致）。
+
+    参考:
+        计算几何中的半平面交（Sutherland-Hodgman / 增量式 HPI）的暴力特例。
+    """
+    n_row = A_ub.shape[0]
+    free = [(None, None), (None, None)]
+    for j in range(2):
+        for sign in (1.0, -1.0):
+            c = np.zeros(2)
+            c[j] = sign
+            res = simplex_lp(c, A_ub=A_ub, b_ub=b_ub, bounds=free, maximize=True)
+            status = str(res.get("status"))
+            if status == "infeasible":
+                raise ValueError("payoff_set 描述的可行多边形为空（约束互相矛盾）")
+            if status != "optimal":
+                raise ValueError(
+                    f"payoff_set 描述的多边形在 u{j + 1} 方向无界（status={status}）："
+                    "纳什谈判解要求有界可行集，请补上下界约束"
+                )
+
+    tol = 1e-9 * max(1.0, float(np.abs(b_ub).max()))
+    verts: List[np.ndarray] = []
+    for i, j in itertools.combinations(range(n_row), 2):
+        a1 = A_ub[i]
+        a2 = A_ub[j]
+        det = float(a1[0] * a2[1] - a1[1] * a2[0])
+        if abs(det) < 1e-12:
+            continue
+        v = np.array([
+            (b_ub[i] * a2[1] - a1[1] * b_ub[j]) / det,
+            (a1[0] * b_ub[j] - b_ub[i] * a2[0]) / det,
+        ])
+        if not np.all(A_ub @ v <= b_ub + tol):
+            continue
+        if any(np.abs(v - w).max() <= 1e-9 for w in verts):
+            continue
+        verts.append(v)
+    if len(verts) < 3:
+        raise ValueError(
+            f"多边形顶点数 {len(verts)} 少于 3 个：约束可能有冗余、退化，或可行域不是二维多边形"
+        )
+    verts_arr = np.array(verts, dtype=float)
+    center = verts_arr.mean(axis=0)
+    order = np.argsort(np.arctan2(verts_arr[:, 1] - center[1], verts_arr[:, 0] - center[0]))
+    return [verts_arr[i] for i in order]
+
+
+# --------------------------------------------------------------------------- #
 # 自测
 # --------------------------------------------------------------------------- #
 def _self_test() -> dict:
@@ -999,7 +1470,9 @@ def _self_test() -> dict:
         （复制者动态是确定性 ODE，稳定匹配是确定性算法），因此两次调用逐位相同。
 
     算法:
-        覆盖 5 个函数各自的"已知答案"算例：
+        覆盖本模块**全部 8 个**公开函数（``zero_sum_value_lp``、``nash_support_enumeration``、
+        ``shapley_value``、``gale_shapley``、``replicator_dynamics``、``minimax_alpha_beta``、
+        ``stackelberg_lp``、``nash_bargaining_solution``）各自的"已知答案"算例：
         - 配对硬币（matching pennies）[[1,-1],[-1,1]]：value 应为 0，双方各 0.5/0.5；
         - [[3,-1],[-2,1]]：手工可算 value = 1/7，行策略 (3/7, 4/7)，列策略 (2/7, 5/7)；
         - 囚徒困境：恰好 1 个纳什均衡，即 (D, D)；
@@ -1007,7 +1480,11 @@ def _self_test() -> dict:
         - Shapley：3 人对称多数博弈（任意 2 人即可获胜）→ 每人 1/3；
           联合国安理会式投票博弈（5 常任 + 10 非常任，9 票且 5 常任全同意）；
         - Gale-Shapley：4 男 4 女已知偏好实例，校验阻塞对为 0；
-        - 复制者动态：协调博弈下初值偏向哪个策略就收敛到哪个纯均衡。
+        - 复制者动态：协调博弈下初值偏向哪个策略就收敛到哪个纯均衡；
+        - α-β 剪枝：8 个数轮流取数的完全博弈树（8! = 40320 个叶子）上，与写在本函数内部的
+          **不剪枝**完全极小极大对照实现逐位对拍，并与"轮流取最大"的解析值 5 对拍；
+        - Stackelberg：一维领导者工具的算例，解析最优落在 x = 1 的折点上（领导者收益 3 > 同时决策的 2）；
+        - 纳什谈判：线性前沿上的闭式"平分剩余"解，以及对称可行集上的对称性检验。
 
     复杂度:
         时间约 O(1)（最大的是 Shapley 的 n=15 → 32768 个子集）/ 空间 O(1)。
@@ -1171,4 +1648,179 @@ def _self_test() -> dict:
     result["rep_rps_sum_dev"] = round(float(
         np.abs(rep_rps["trajectory"].sum(axis=1) - 1.0).max()
     ), 12)
+
+    # ---------- α-β 剪枝：与不剪枝的完全极小极大对拍 ----------
+    # 抽象完全信息博弈："两人轮流从数集里取数，最后比各自取到的数字之和"。
+    # 节点 = (剩余数字元组, 最大化者得分, 最小化者得分, 轮到谁)；终局评估 = 两者分差。
+    # 之所以不用井字棋：这棵树的规模（8! = 40320 个叶子）与井字棋同量级，但不需要在自测里
+    # 再嵌一套棋盘胜负判定，能把"剪枝 vs 不剪枝"的对照写得更干净。
+    ab_numbers = (5, 3, 8, 2, 9, 4, 1, 7)
+
+    def ab_children(n):
+        remaining, s_max, s_min, turn = n
+        out = []
+        for i, v in enumerate(remaining):
+            rest = remaining[:i] + remaining[i + 1:]
+            if turn == 0:
+                out.append((rest, s_max + v, s_min, 1))
+            else:
+                out.append((rest, s_max, s_min + v, 0))
+        return out
+
+    def ab_evaluate(n):
+        return float(n[1] - n[2])
+
+    brute_stats = {"n_evaluated": 0}
+
+    def brute_minimax(n, d, maximizing):
+        """对照实现：完全不剪枝的极小极大（与本模块的 minimax_alpha_beta 无共享代码）。"""
+        kids = ab_children(n) if d > 0 else []
+        if d == 0 or not kids:
+            brute_stats["n_evaluated"] += 1
+            return ab_evaluate(n)
+        if maximizing:
+            best = -float("inf")
+            for kid in kids:
+                cand = brute_minimax(kid, d - 1, False)
+                if cand > best:
+                    best = cand
+            return best
+        best = float("inf")
+        for kid in kids:
+            cand = brute_minimax(kid, d - 1, True)
+            if cand < best:
+                best = cand
+        return best
+
+    ab_start = (ab_numbers, 0.0, 0.0, 0)
+    ab_full = minimax_alpha_beta(ab_start, len(ab_numbers), float("-inf"), float("inf"),
+                                 True, ab_evaluate, ab_children)
+    brute_full = brute_minimax(ab_start, len(ab_numbers), True)
+    if abs(float(ab_full["value"]) - float(brute_full)) > 1e-9:
+        raise AssertionError(
+            f"α-β 剪枝值 {ab_full['value']} 与不剪枝极小极大 {brute_full} 不一致"
+        )
+    # 独立解析结论：两人轮流取数时"每次取当前最大"是最优的，分差等于降序交错和
+    # 9 - 8 + 7 - 5 + 4 - 3 + 2 - 1 = 5。
+    known_value = 5.0
+    if abs(float(ab_full["value"]) - known_value) > 1e-9:
+        raise AssertionError(
+            f"α-β 剪枝值 {ab_full['value']} 与解析值 {known_value} 不一致"
+        )
+    if int(ab_full["n_evaluated"]) >= int(brute_stats["n_evaluated"]):
+        raise AssertionError(
+            f"α-β 剪枝求值次数 {ab_full['n_evaluated']} 未严格少于不剪枝的 "
+            f"{brute_stats['n_evaluated']}"
+        )
+    if int(ab_full["n_pruned"]) < 1:
+        raise AssertionError("α-β 剪枝一次都没有发生，说明剪枝逻辑没生效")
+    result["ab_value"] = round(float(ab_full["value"]), 6)
+    result["ab_brute_value"] = round(float(brute_full), 6)
+    result["ab_value_match"] = bool(abs(float(ab_full["value"]) - float(brute_full)) <= 1e-9)
+    result["ab_known_value"] = known_value
+    result["ab_n_evaluated"] = int(ab_full["n_evaluated"])
+    result["ab_brute_n_evaluated"] = int(brute_stats["n_evaluated"])
+    result["ab_n_pruned"] = int(ab_full["n_pruned"])
+    result["ab_fewer_nodes"] = bool(
+        int(ab_full["n_evaluated"]) < int(brute_stats["n_evaluated"])
+    )
+    result["ab_best_remaining"] = [int(v) for v in ab_full["best_child"][0]]
+    result["ab_best_taken"] = int(
+        sum(ab_numbers) - sum(int(v) for v in ab_full["best_child"][0])
+    )
+
+    # 截断深度下（depth = 3）同样与不剪枝对照实现一致——这条覆盖 depth == 0 的叶子分支
+    brute_stats["n_evaluated"] = 0
+    ab_d3 = minimax_alpha_beta(ab_start, 3, float("-inf"), float("inf"),
+                               True, ab_evaluate, ab_children)
+    brute_d3 = brute_minimax(ab_start, 3, True)
+    if abs(float(ab_d3["value"]) - float(brute_d3)) > 1e-9:
+        raise AssertionError(
+            f"depth=3 时 α-β 值 {ab_d3['value']} 与不剪枝极小极大 {brute_d3} 不一致"
+        )
+    result["ab_depth3_value"] = round(float(ab_d3["value"]), 6)
+    result["ab_depth3_brute_value"] = round(float(brute_d3), 6)
+    result["ab_depth3_n_evaluated"] = int(ab_d3["n_evaluated"])
+    result["ab_depth3_brute_n_evaluated"] = int(brute_stats["n_evaluated"])
+
+    # ---------- Stackelberg：一维工具，解析最优在折点 x = 1 ----------
+    # 跟随者：max 3*y1 + 4*y2  s.t.  y1 + y2 <= 10,  y1 <= 2 + 3x,  y2 <= 6 - x
+    #   => x <= 1 时 y = (2 + 3x, 6 - x)；x >= 1 时 y = (4 + x, 6 - x)（容量上限接管）
+    # 领导者收益 = y1 - 2x：左支 2 + x（升），右支 4 - x（降）=> 最优恰在 x = 1，收益 3。
+    st_A_leader = [[0.0], [-3.0], [1.0]]
+    st_c_leader = [1.0, 0.0]
+    st_A_follower = [[1.0, 1.0], [1.0, 0.0], [0.0, 1.0]]
+    st_c_follower = [3.0, 4.0]
+    st_b_follower = [10.0, 2.0, 6.0]
+    st = stackelberg_lp(st_A_leader, st_c_leader, st_A_follower, st_c_follower,
+                        st_b_follower, x_upper=[3.0], n_grid=7, leader_cost=[2.0])
+    if abs(float(st["x_leader"][0]) - 1.0) > 1e-9:
+        raise AssertionError(
+            f"Stackelberg 领导者决策 {st['x_leader'][0]} 与解析最优 1 不符"
+        )
+    if abs(float(st["leader_payoff"]) - 3.0) > 1e-9:
+        raise AssertionError(
+            f"Stackelberg 领导者收益 {st['leader_payoff']} 与解析值 3 不符"
+        )
+    # 同时决策基准：领导者不使用承诺能力（x 固定为 0）时的收益
+    st_nash = stackelberg_lp(st_A_leader, st_c_leader, st_A_follower, st_c_follower,
+                             st_b_follower, x_upper=[0.0], n_grid=2, leader_cost=[2.0])
+    if float(st["leader_payoff"]) < float(st_nash["leader_payoff"]) - 1e-9:
+        raise AssertionError(
+            f"Stackelberg 领导者收益 {st['leader_payoff']} 低于同时决策的 "
+            f"{st_nash['leader_payoff']}"
+        )
+    result["st_x_leader"] = [round(float(v), 6) for v in st["x_leader"]]
+    result["st_y_follower"] = [round(float(v), 6) for v in st["y_follower"]]
+    result["st_leader_payoff"] = round(float(st["leader_payoff"]), 6)
+    result["st_follower_payoff"] = round(float(st["follower_payoff"]), 6)
+    result["st_nash_y_follower"] = [round(float(v), 6) for v in st_nash["y_follower"]]
+    result["st_nash_leader_payoff"] = round(float(st_nash["leader_payoff"]), 6)
+    result["st_leader_ge_nash"] = bool(
+        float(st["leader_payoff"]) >= float(st_nash["leader_payoff"]) - 1e-9
+    )
+
+    # ---------- 纳什谈判解：闭式解 / 对称性 ----------
+    nb_triangle = {"A_ub": [[1.0, 1.0], [-1.0, 0.0], [0.0, -1.0]],
+                   "b_ub": [2.0, 0.0, 0.0]}
+    nb_d = [0.5, 0.2]
+    nb_poly = nash_bargaining_solution(nb_d, nb_triangle)
+    # 闭式：前沿是 u1 + u2 = 2 的直线段，纳什解把剩余 (2 - d1 - d2) 平分
+    nb_surplus = 2.0 - 0.5 - 0.2
+    nb_expected = np.array([0.5 + nb_surplus / 2.0, 0.2 + nb_surplus / 2.0])
+    dev = float(np.abs(nb_poly["solution"] - nb_expected).max())
+    if dev > 1e-9:
+        raise AssertionError(
+            f"纳什谈判解 {nb_poly['solution'].tolist()} 与闭式解 {nb_expected.tolist()} "
+            f"相差 {dev}"
+        )
+    if abs(float(nb_poly["product"]) - (nb_surplus / 2.0) ** 2) > 1e-9:
+        raise AssertionError(
+            f"纳什积 {nb_poly['product']} 与闭式值 {(nb_surplus / 2.0) ** 2} 不符"
+        )
+    result["nb_poly_solution"] = [round(float(v), 9) for v in nb_poly["solution"]]
+    result["nb_poly_utilities"] = [round(float(v), 9) for v in nb_poly["utilities"]]
+    result["nb_poly_expected"] = [round(float(v), 9) for v in nb_expected]
+    result["nb_poly_product"] = round(float(nb_poly["product"]), 9)
+    result["nb_poly_dev"] = round(dev, 12)
+
+    # 对称可行集 + 对称分歧点 => 解必须落在对称轴上（纳什对称性公理）
+    nb_sym = nash_bargaining_solution([0.0, 0.0], nb_triangle)
+    if abs(float(nb_sym["solution"][0]) - float(nb_sym["solution"][1])) > 1e-9:
+        raise AssertionError(
+            f"对称可行集上的纳什谈判解不对称：{nb_sym['solution'].tolist()}"
+        )
+    result["nb_sym_solution"] = [round(float(v), 9) for v in nb_sym["solution"]]
+    result["nb_sym_dev"] = round(float(abs(nb_sym["solution"][0] - nb_sym["solution"][1])), 12)
+
+    # 离散点集口径：纳什积最大者
+    nb_disc = nash_bargaining_solution([0.0, 0.0],
+                                       [[1.0, 3.0], [3.0, 1.0], [2.0, 2.0], [0.0, 5.0]])
+    if np.abs(nb_disc["solution"] - np.array([2.0, 2.0])).max() > 1e-12:
+        raise AssertionError(
+            f"离散点集上的纳什解 {nb_disc['solution'].tolist()} 应为 [2.0, 2.0]"
+        )
+    result["nb_disc_solution"] = [round(float(v), 9) for v in nb_disc["solution"]]
+    result["nb_disc_product"] = round(float(nb_disc["product"]), 9)
+
     return result

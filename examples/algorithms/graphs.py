@@ -1,5 +1,14 @@
 """图与网络算法：最短路、最小生成树、最大流、TSP 启发式、PageRank、连通分量。
 
+本模块共 20 个公开函数，按用途分成六组：
+- 最短路：``dijkstra`` / ``floyd_warshall`` / ``a_star`` / ``reconstruct_path``；
+- 最小生成树：``kruskal_mst`` / ``prim_mst``；
+- 流与匹配：``max_flow_edmonds_karp`` / ``min_cut_edges`` / ``min_cost_flow`` / ``bipartite_matching``；
+- 路径启发式与配送：``tsp_nearest_neighbor`` / ``tsp_two_opt`` / ``vrp_clarke_wright``；
+- 中心性与社区：``pagerank`` / ``degree_centrality`` / ``closeness_centrality``
+  / ``betweenness_centrality`` / ``louvain_communities``；
+- 连通性与可靠性：``connected_components`` / ``network_robustness``。
+
 这一组是数学建模里出现频率最高的一类"结构模型"：
 - 最短路（Dijkstra / Floyd）用于路网、管网、换乘、依赖排序；
 - 最小生成树用于通信网/管网铺设、聚类骨架；
@@ -18,7 +27,20 @@
 from __future__ import annotations
 
 import heapq
-from typing import Dict, Hashable, Iterable, List, Mapping, Optional, Sequence, Tuple, Union
+import itertools
+from collections import deque
+from typing import (
+    Callable,
+    Dict,
+    Hashable,
+    Iterable,
+    List,
+    Mapping,
+    Optional,
+    Sequence,
+    Tuple,
+    Union,
+)
 
 import numpy as np
 
@@ -37,6 +59,16 @@ __all__ = [
     "tsp_two_opt",
     "pagerank",
     "connected_components",
+    "prim_mst",
+    "degree_centrality",
+    "closeness_centrality",
+    "betweenness_centrality",
+    "louvain_communities",
+    "min_cost_flow",
+    "bipartite_matching",
+    "a_star",
+    "vrp_clarke_wright",
+    "network_robustness",
 ]
 
 
@@ -146,8 +178,8 @@ def floyd_warshall(W) -> dict:
 
     返回:
         ``{"dist": np.ndarray(n, n), "next_node": np.ndarray(n, n)}``。
-        ``next_node[i, j]`` 是 i->j 最短路上 j 的前一个节点（"下一跳矩阵"），
-        不可达或 i==j 时为 ``-1``。它可直接喂给 :func:`reconstruct_path`。
+        ``next_node[i, j]`` 是 i->j 最短路上**从 i 出发的第一步**（"下一跳矩阵"，直接可达时
+        就是 j 本身），不可达或 i==j 时为 ``-1``。它可直接喂给 :func:`reconstruct_path`。
 
     算法:
         对每个中间点 k，做 ``dist[i, j] = min(dist[i, j], dist[i, k] + dist[k, j])``。
@@ -161,7 +193,8 @@ def floyd_warshall(W) -> dict:
            检查对角线并抛 ValueError，而不是返回一个看似正常的矩阵。
         2. 用 0 表示"无边"是错的：0 权边和无穷远必须区分开。填矩阵时无边请填 ``np.inf``。
         3. 浮点加法下的 ``inf`` 会传播：``inf + (-inf)`` 是 NaN，所以不允许出现 -inf。
-        4. 本函数**原地修改**传入的 numpy 数组副本（内部已 ``copy()``），调用方数组不受影响。
+        4. 本函数在工作副本上**原地更新**（``dist`` 由 ``W.astype(float).copy()`` 得到），
+           因此**不会**改动调用方传入的数组。
 
     参考:
         Floyd 1962 / Warshall 1962；《算法导论》第 25 章。
@@ -405,9 +438,10 @@ def max_flow_edmonds_karp(
         sink: 汇点，必须与 source 不同。
 
     返回:
-        ``{"max_flow": float, "flow": {u: {v: 流量}}}``。``flow`` 只包含残量网络中
-        有正流量的边（含反向抵消边，即为负流量形式的对偶记录时同为正），
-        每条边的净流量满足 ``0 <= flow[u][v] <= capacity[u][v]``。
+        ``{"max_flow": float, "flow": {u: {v: 净流量}}}``。``flow`` 按**原始容量字典的
+        方向**汇总净流量 ``cap[u][v] - res[u][v]``，只列出该值严格大于 0 的有序对；
+        因此它**不含**残量网络中的反向抵消边（那些边原始容量为 0，净流量必不超过 0，
+        会被过滤掉）。对任意中间点，流入量之和等于流出量之和。
 
     算法:
         反复用 BFS 在**残量网络**中找一条源到汇的最短（边数最少）增广路，沿路推
@@ -506,9 +540,10 @@ def min_cut_edges(
         有向边**。其容量之和恰好等于最大流。若 source 与 sink 之间无路，返回 ``[]``。
 
     算法:
-        先跑一次最大流，然后在残量网络（``res > 0`` 的边）上从 source 做 BFS/DFS，
-        得到源侧集合 S；割边 = 从 S 指向 V\\S 的原始边。由 max-flow min-cut 定理，
-        这些边必然全部饱和，且容量和 = 最大流。
+        先跑一次最大流，然后在残量网络（本实现取 ``res > 1e-12`` 的边，比
+        :func:`max_flow_edmonds_karp` 判增广路时的严格 ``> 0`` 略松，用于吸收浮点噪声）
+        上从 source 做 DFS，得到源侧集合 S；割边 = 从 S 指向 V\\S 且**原始容量 > 0**
+        的边。由 max-flow min-cut 定理，这些边必然全部饱和，且容量和 = 最大流。
 
     复杂度:
         时间 O(V E^2)（含最大流）/ 空间 O(V + E)。
@@ -520,6 +555,9 @@ def min_cut_edges(
            论文里若断言割边集合唯一，会被质疑。
         3. 割容量必须用**原始容量**求和，不要用残量；用残量求和会得到 0。
         4. 若原图有平行边，容量已合并，返回的 cap 是合并后的值，和输入逐条对不上。
+        5. 可达性判断用的是 ``res > 1e-12``（而非 ``max_flow_edmonds_karp`` 里的
+           ``> 0``）：容量量级远小于 1e-12 的题（例如先把单位换成"亿元"再取微小系数）
+           可能因此判错可达集合，请先把数据缩放到 O(1) 量级。
 
     参考:
         Ford & Fulkerson 1956（最大流最小割定理）。
@@ -572,7 +610,7 @@ def min_cut_edges(
 # TSP 启发式
 # --------------------------------------------------------------------------- #
 def _validate_dist(dist) -> np.ndarray:
-    """校验距离矩阵：方阵、非负、对角为 0、对称性给警告式校验（不强制）。"""
+    """校验距离矩阵：方阵、无 NaN、非负。**不做**对称性检查，也不发任何警告。"""
     D = as_matrix(dist, "dist")
     check_square(D, "dist")
     if np.any(D < 0):
@@ -656,15 +694,19 @@ def tsp_two_opt(tour, dist, max_pass: int = 100) -> dict:
 
     算法:
         反复扫描所有 0 <= i < j < n，尝试把边 (i, i+1) 与 (j, j+1) 换成
-        (i, j) 与 (i+1, j+1)，即**反转 tour[i+1..j]**；只接受严格改进。
-        每轮内用"首次改进即继续"（first-improvement），直到某轮无改进或达到 max_pass。
+        (i, j) 与 (i+1, j+1)，即**反转 tour[i+1..j]**；只接受严格改进（容差 1e-12）。
+        一轮扫描中每遇到一个严格改进就**立即接受并沿当前解继续扫下去**（不回到本轮开头
+        重扫），一轮扫完无改进或达到 max_pass 才停。
 
     复杂度:
         时间 O(n^2) 每次扫描，最多 max_pass 轮；实践上常几轮就停 / 空间 O(n)。
 
     陷阱:
-        1. 2-opt 是**局部最优**，对 10 城以下常能跑到最优，城市多了必须配合
-           多起点重启（这里的 ``improved=False`` 不代表已最优）。
+        1. 2-opt 只是**局部最优**：一轮扫描内不重扫，因此本轮接受的改进不会立刻被
+           后续交换重新评估，最终解依赖初始回路。本模块自带的 8 城反例就说明了这点——
+           最近邻构造后 2-opt 仍**达不到**穷举最优值 26.484006136241458
+           （见 ``_self_test`` 的 ``tsp8_2opt_len`` 与 ``tsp8_brute_opt_len``）。
+           论文里只能报"改进幅度"，不能宣称最优；城市多了还需多起点重启。
         2. 赚量算法（只算增量 delta）在**非对称**矩阵上不成立：反转一段会改变两端的
            方向。本实现直接重算整条回路长度，因此对非对称矩阵也正确但更慢。
         3. 传入的 tour 若含重复点或缺点，本函数不校验，会静默给出无意义结果；
@@ -904,6 +946,984 @@ def connected_components(adj: Mapping[Node, Mapping[Node, float]]) -> list:
 # --------------------------------------------------------------------------- #
 # 自测
 # --------------------------------------------------------------------------- #
+def _weight_matrix(
+    adj: Union[np.ndarray, Sequence[Sequence[float]], Mapping[Node, Mapping[Node, float]]],
+) -> Tuple[np.ndarray, List[Node]]:
+    """把邻接资料统一成（对称权重矩阵, 节点顺序）。
+
+    参数:
+        adj: ``{u: {v: w}}`` 邻接字典，或 ``n x n`` 邻接矩阵（``inf`` 表示无边）。
+
+    返回:
+        ``(W, nodes)``：``W`` 是 ``n x n`` float 矩阵（对角线置 0、无边处为 ``inf``、
+        **已对称化**）；``nodes`` 是下标 -> 原节点 的列表（矩阵输入时为 ``range(n)``）。
+
+    算法:
+        字典输入先按 :func:`_ordered_nodes` 定序再填矩阵；随后取 ``min(W, W.T)`` 完成
+        无向化（双向权重不同时取较小值）。
+
+    复杂度:
+        时间 O(V^2) / 空间 O(V^2)。
+
+    陷阱:
+        1. 本函数**丢掉方向**：有向图请直接用邻接字典，不要经过这里。
+        2. 双向权重不同时取**较小值**，这是本模块的约定，不是"真实无向权重"。
+        3. 平行边无法表示：字典输入取较小权重，矩阵输入以矩阵为准。
+        4. 矩阵输入不会检查对称性，非对称矩阵会被静默对称化。
+
+    参考:
+        图的无向化处理见任意图论教材；本模块内部约定。
+    """
+    if isinstance(adj, Mapping):
+        nodes = _ordered_nodes(adj)
+        n = len(nodes)
+        W = np.full((n, n), np.inf)
+        idx = {node: i for i, node in enumerate(nodes)}
+        for u, nbrs in adj.items():
+            for v, w in nbrs.items():
+                if u == v:
+                    continue
+                iu, iv = idx[u], idx[v]
+                W[iu, iv] = min(W[iu, iv], float(w))
+        np.fill_diagonal(W, 0.0)
+        W = np.minimum(W, W.T)
+    else:
+        W = np.asarray(adj, dtype=float)
+        if W.ndim == 1:
+            W = W.reshape(1, -1)
+        if W.ndim != 2:
+            raise ValueError(f"adj 必须是二维数组，得到 ndim={W.ndim}")
+        check_square(W, "adj")
+        if np.isnan(W).any():
+            raise ValueError("adj 含 NaN：无边请用 inf 表示，不要用 NaN")
+        W = np.array(W, dtype=float, copy=True)
+        np.fill_diagonal(W, 0.0)
+        W = np.minimum(W, W.T)
+        nodes = list(range(W.shape[0]))
+    return W, nodes
+
+
+# --------------------------------------------------------------------------- #
+# 生成树：Prim（邻接矩阵版本）
+# --------------------------------------------------------------------------- #
+def prim_mst(
+    adj: Union[np.ndarray, Sequence[Sequence[float]], Mapping[Node, Mapping[Node, float]]],
+) -> dict:
+    """邻接矩阵（``inf`` 表示无边）上的 Prim 最小生成树。
+
+    参数:
+        adj: ``n x n`` 邻接矩阵，``inf`` 表示无边（对角线视为 0）；也接受 ``{u: {v: w}}``
+        邻接字典，此时节点按下标 0,1,2,... 对齐（顺序由 :func:`_ordered_nodes` 决定：
+        可比较时取 ``sorted``，否则退化为扫描顺序），并按**无向**处理（见
+        :func:`_weight_matrix`）。
+
+    返回:
+        dict，键 ``"edges"``：list，每项是 ``[u, v, w]``，端点是 :func:`_weight_matrix`
+        给出的**整数下标**（字典输入时请用同一顺序解读）；``"total_weight"``：float，总权重。
+
+    算法:
+        堆优化 Prim：从下标 0 出发，用二叉堆维护"已入树集合的横切边"，每次取最小边并入
+        新节点并松弛其邻边。
+
+    复杂度:
+        时间 O(E log E)（E 为有效边数，等价 O(E log V)）/ 空间 O(V + E)。
+
+    陷阱:
+        1. 与 :func:`kruskal_mst` 的输入格式不同（这里是矩阵），但同一张图上两者总权重必须
+           一致；本模块自测做了这项交叉验证。
+        2. 图不连通时 ``raise ValueError``，不会返回"最小生成森林"。
+        3. 返回的端点是下标而非原节点名；矩阵输入时下标即原下标。
+        4. 负权边不会被拒绝（Prim 对负权仍然正确，只是"最小"含义要自己确认）。
+
+    参考:
+        Prim 1957；堆优化实现见 CLRS 第 23 章。
+    """
+    W, _nodes = _weight_matrix(adj)
+    n = W.shape[0]
+    if n == 0:
+        return {"edges": [], "total_weight": 0.0}
+
+    in_tree = np.zeros(n, dtype=bool)
+    in_tree[0] = True
+    heap: List[Tuple[float, int, int]] = []
+    for v in range(1, n):
+        w = float(W[0, v])
+        if np.isfinite(w):
+            heapq.heappush(heap, (w, 0, v))
+
+    edges: List[List[float]] = []
+    total = 0.0
+    while heap and len(edges) < n - 1:
+        w, u, v = heapq.heappop(heap)
+        if in_tree[v]:
+            continue
+        in_tree[v] = True
+        edges.append([int(u), int(v), float(w)])
+        total += float(w)
+        for x in range(n):
+            if in_tree[x]:
+                continue
+            wx = float(W[v, x])
+            if np.isfinite(wx):
+                heapq.heappush(heap, (wx, int(v), int(x)))
+    if len(edges) != n - 1:
+        raise ValueError("图不连通：无法构造生成树（请检查 inf 的位置）")
+    return {"edges": edges, "total_weight": float(total)}
+
+
+# --------------------------------------------------------------------------- #
+# 中心性
+# --------------------------------------------------------------------------- #
+def degree_centrality(
+    adj: Union[np.ndarray, Sequence[Sequence[float]], Mapping[Node, Mapping[Node, float]]],
+    weighted: bool = True,
+) -> dict:
+    """度中心性（按**无向**图计算），带权时用强度归一化。
+
+    参数:
+        adj: ``{u: {v: w}}`` 邻接字典或 ``n x n`` 邻接矩阵（``inf`` 表示无边）。
+        weighted: ``False`` 用"不同邻居个数 / (n-1)"；``True`` 用"相邻权重之和 / 最大权重和"。
+
+    返回:
+        dict，键 ``"centrality"``：``{节点: float}``（取值 ``[0, 1]``）；
+        ``"ranking"``：list，节点按中心性**降序**排列，同分时按 :func:`_weight_matrix`
+        的节点顺序稳定排列。
+
+    算法:
+        一次扫描邻接矩阵求每行权重和（或非零邻居计数），再做标量归一化；
+        排序是 O(V log V) 的稳定排序。
+
+    复杂度:
+        时间 O(V^2)（矩阵运算）/ 空间 O(V^2)（含输入的矩阵副本）。
+
+    陷阱:
+        1. 方向被忽略（有向图的出/入度中心性请自己按行/列统计）。
+        2. ``weighted=True`` 归一化用的是**最大强度**，不是 ``(n-1)*max_w``；因此中心点
+           在星形图上恰好为 1，而"绝对强度"没有单位意义。
+        3. 权重为负时可能让强度为 0 甚至为负，此时分母取最大值仍可运行，但解释失效。
+        4. 返回字典的键是原节点，若节点不可 JSON 序列化（如 tuple）不能直接写进黄金值。
+
+    参考:
+        Freeman 1978《Centrality in social networks》。
+    """
+    W, nodes = _weight_matrix(adj)
+    n = len(nodes)
+    if n == 0:
+        return {"centrality": {}, "ranking": []}
+    finite = np.where(np.isfinite(W), W, 0.0)
+    if weighted:
+        vals = finite.sum(axis=1).astype(float)
+        mx = float(vals.max()) if n > 0 else 0.0
+        cent = vals / mx if mx > 0 else np.zeros(n)
+    else:
+        cnt = (finite != 0).sum(axis=1).astype(float)
+        cent = cnt / (n - 1) if n > 1 else np.zeros(n)
+    centrality = {nodes[i]: float(cent[i]) for i in range(n)}
+    order = sorted(range(n), key=lambda i: (-float(cent[i]), i))
+    return {"centrality": centrality, "ranking": [nodes[i] for i in order]}
+
+
+def closeness_centrality(adj: Mapping[Node, Mapping[Node, float]]) -> dict:
+    """紧密中心性：``可达点数 / 可达最短路长度之和``（Dijkstra 全源）。
+
+    参数:
+        adj: ``{u: {v: w}}`` 邻接字典，边权必须非负（直接交给 :func:`dijkstra`）。
+
+    返回:
+        dict，键 ``"centrality"``：``{节点: float}``；``"ranking"``：list，按中心性降序、
+        同分时按 :func:`_ordered_nodes` 顺序稳定排列。
+
+    算法:
+        以每个节点为源跑一次 Dijkstra，统计**可达**（有限距离）节点的个数与距离和，
+        中心性 = 可达点数 / 距离和；没有可达点时取 0。
+
+    复杂度:
+        时间 O(V * (E log V)) / 空间 O(V + E)。
+
+    陷阱:
+        1. **不可达对既不计入分子也不计入分母**（不是"距离记 0"，也不是"记无穷大"）。
+           因此孤立点中心性为 0，而"只能到达很少但很近的点"的节点中心性可能偏高
+           ——这是本实现的约定，与"只用最大连通分量计算"的教科书写法不同。
+        2. 有向图会得到非对称结果：谁都能到的节点中心性高，别当成无向图的结论。
+        3. 中心性的量纲是 1/距离，不要跨算例比较绝对值。
+
+    参考:
+        Bavelas 1950；Freeman 1978；不可达处理见 Wasserman & Faust 1994。
+    """
+    if not isinstance(adj, Mapping):
+        raise ValueError("adj 必须是 {u: {v: w}} 形式的字典")
+    nodes = _ordered_nodes(adj)
+    n = len(nodes)
+    if n == 0:
+        return {"centrality": {}, "ranking": []}
+
+    cent: Dict[Node, float] = {}
+    for s in nodes:
+        dist = dijkstra(adj, s)["dist"]
+        reach = 0
+        total = 0.0
+        for t in nodes:
+            if t == s:
+                continue
+            d = float(dist.get(t, float("inf")))
+            if np.isfinite(d):
+                reach += 1
+                total += d
+        cent[s] = float(reach / total) if total > 0 else 0.0
+    order = sorted(nodes, key=lambda v: (-cent[v], nodes.index(v)))
+    return {"centrality": cent, "ranking": order}
+
+
+def betweenness_centrality(adj: Mapping[Node, Mapping[Node, float]]) -> dict:
+    """介数中心性（Brandes 算法，按**无权**最短路计数，无向图口径）。
+
+    参数:
+        adj: ``{u: {v: w}}`` 邻接字典；边权和方向都**被忽略**（自环忽略，重复边去重）。
+
+    返回:
+        dict，键 ``"centrality"``：``{节点: float}``，已用 ``C(n-1, 2)`` 归一化，
+        取值 ``[0, 1]``；``"ranking"``：list，按介数降序、同分按 :func:`_ordered_nodes`
+        顺序稳定排列。
+
+    算法:
+        Brandes 2001：以每个节点为源做 BFS，记录最短路上溯节点与最短路条数，再逆序累加
+        依赖量；无向图每对点被数了两次，故除以 2，最后除以组合数 ``C(n-1, 2)``。
+
+    复杂度:
+        时间 O(V * E) / 空间 O(V + E)。
+
+    陷阱:
+        1. 只按**无权**（每条边算 1 跳）计最短路；带权图的介数（用边权求最短路）需要另写。
+        2. 归一化分母是 ``C(n-1, 2) = (n-1)(n-2)/2``，n < 3 时全部取 0（不报错）。
+        3. "只有中间点非零"是常见误记：路径图 P5 上两端点为 0 但次中间点也非零（各 0.5）。
+        4. 有向图必须另版实现（无向口径会把反向路径也算进依赖量）。
+
+    参考:
+        Brandes 2001《A faster algorithm for betweenness centrality》。
+    """
+    if not isinstance(adj, Mapping):
+        raise ValueError("adj 必须是 {u: {v: w}} 形式的字典")
+    nodes = _ordered_nodes(adj)
+    n = len(nodes)
+    if n == 0:
+        return {"centrality": {}, "ranking": []}
+    idx = {node: i for i, node in enumerate(nodes)}
+    nb: List[List[int]] = [[] for _ in range(n)]
+    seen = set()
+    for u, nbrs in adj.items():
+        for v in nbrs:
+            if u == v:
+                continue
+            a, b = idx[u], idx[v]
+            key = (min(a, b), max(a, b))
+            if key in seen:
+                continue
+            seen.add(key)
+            nb[a].append(int(b))
+            nb[b].append(int(a))
+
+    bc = np.zeros(n)
+    for s in range(n):
+        stack: List[int] = []
+        pred: List[List[int]] = [[] for _ in range(n)]
+        sigma = np.zeros(n)
+        sigma[s] = 1.0
+        depth = np.full(n, -1, dtype=int)
+        depth[s] = 0
+        queue = deque([s])
+        while queue:
+            v = int(queue.popleft())
+            stack.append(v)
+            for w in nb[v]:
+                if depth[w] < 0:
+                    depth[w] = depth[v] + 1
+                    queue.append(w)
+                if depth[w] == depth[v] + 1:
+                    sigma[w] += sigma[v]
+                    pred[w].append(v)
+        delta = np.zeros(n)
+        while stack:
+            w = stack.pop()
+            for v in pred[w]:
+                delta[v] += (sigma[v] / sigma[w]) * (1.0 + delta[w])
+            if w != s:
+                bc[w] += delta[w]
+
+    bc = bc / 2.0  # 无向图：每对无序点被 BFS 数了两次
+    if n > 2:
+        bc = bc / ((n - 1) * (n - 2) / 2.0)
+    else:
+        bc = np.zeros(n)
+    centrality = {nodes[i]: float(bc[i]) for i in range(n)}
+    order = sorted(range(n), key=lambda i: (-float(bc[i]), i))
+    return {"centrality": centrality, "ranking": [nodes[i] for i in order]}
+
+
+# --------------------------------------------------------------------------- #
+# 社区发现：单层 Louvain
+# --------------------------------------------------------------------------- #
+def louvain_communities(
+    adj: Union[np.ndarray, Sequence[Sequence[float]], Mapping[Node, Mapping[Node, float]]],
+    resolution: float = 1.0,
+    seed: Optional[int] = None,
+    max_iter: int = 20,
+) -> dict:
+    """单层 Louvain：模块度增益贪心 + 局部移动（不做社区聚合的递归）。
+
+    参数:
+        adj: ``{u: {v: w}}`` 邻接字典或 ``n x n`` 邻接矩阵（``inf`` 表示无边）；
+        边权即无向权重（负权按 0 处理）。
+        resolution: 分辨率参数 ``gamma > 0``，越大社区越多。
+        seed: 随机种子；``None`` 时用 ``_common.rng(None)`` 的库默认种子。
+        max_iter: 局部移动的最大轮数（至少 1）。
+
+    返回:
+        dict，键 ``"labels"``：list of int，长度 = 节点数，按 :func:`_weight_matrix` 的
+        节点顺序排列，社区编号从 0 开始且按首次出现顺序紧凑编号；``"modularity"``：
+        float，最终划分在给定分辨率下的模块度；``"n_communities"``：int，社区个数。
+
+    算法:
+        初始每个节点自成一社区，按随机顺序遍历节点，对每个节点试算"移动到某个邻居社区"
+        的模块度增量 ``(k_i_in_D - k_i_in_C)/m - gamma * k_i * (d_D - d_C') / (2 m^2)``，
+        取增益最大的正增益移动；一轮无移动或达到 ``max_iter`` 后停止。模块度按闭式
+        ``sum_C [ l_C/m - gamma * (d_C/(2m))^2 ]`` 独立重算（不是把增量累加）。
+
+    复杂度:
+        时间 O(max_iter * E) / 空间 O(V + E)。
+
+    陷阱:
+        1. 只有**一层**局部移动，没有把社区收缩成超点再迭代，所以在大图上质量低于完整
+           Louvain（这也是自测里只保证"两个团 + 桥"这类小算例分对的原因）。
+        2. 结果依赖节点遍历顺序：换 ``seed`` 可能得到不同划分（模块度也可能不同），
+           自测只断言同 seed 可复现。
+        3. 单层贪心**不保证全局最优**，模块度可能停在局部极大（例如先吞下桥端点）。
+        4. 无向、无权重的自环与负权不做支持：自环丢弃，负权截断为 0。
+
+    参考:
+        Blondel et al. 2008《Fast unfolding of communities in large networks》。
+    """
+    if resolution <= 0:
+        raise ValueError("resolution 必须为正数")
+    if max_iter < 1:
+        raise ValueError("max_iter 必须 >= 1")
+    W, nodes = _weight_matrix(adj)
+    n = len(nodes)
+    if n == 0:
+        return {"labels": [], "modularity": 0.0, "n_communities": 0}
+
+    Wf = np.where(np.isfinite(W), W, 0.0)
+    Wf = np.where(Wf > 0, Wf, 0.0)
+    np.fill_diagonal(Wf, 0.0)
+    deg = Wf.sum(axis=1)
+    m2 = float(Wf.sum())  # = 2m
+    m = m2 / 2.0
+    if m <= 0:
+        return {"labels": list(range(n)), "modularity": 0.0, "n_communities": n}
+
+    labels = np.arange(n, dtype=int)
+    tot = deg.astype(float).copy()
+    gen = make_rng(seed)
+    for _round in range(max_iter):
+        order = gen.permutation(n)
+        moved = 0
+        for i_raw in order:
+            i = int(i_raw)
+            ci = int(labels[i])
+            k_i = float(deg[i])
+            nbr_com: Dict[int, float] = {}
+            row = Wf[i]
+            for j_raw in np.nonzero(row)[0]:
+                j = int(j_raw)
+                cj = int(labels[j])
+                nbr_com[cj] = nbr_com.get(cj, 0.0) + float(row[j])
+            tot[ci] -= k_i
+            d_ci_after = float(tot[ci])
+            k_in_ci = nbr_com.get(ci, 0.0)
+            best_c = ci
+            best_gain = 0.0
+            for c, k_in_c in nbr_com.items():
+                if c == ci:
+                    continue
+                d_c = float(tot[c])
+                gain = (k_in_c - k_in_ci) / m - resolution * k_i * (d_c - d_ci_after) / (2.0 * m * m)
+                if gain > best_gain + 1e-12:
+                    best_gain = gain
+                    best_c = int(c)
+            if best_c != ci:
+                labels[i] = best_c
+                tot[best_c] += k_i
+                moved += 1
+            else:
+                tot[ci] += k_i
+        if moved == 0:
+            break
+
+    remap: Dict[int, int] = {}
+    out_labels: List[int] = []
+    for i in range(n):
+        c = int(labels[i])
+        if c not in remap:
+            remap[c] = len(remap)
+        out_labels.append(int(remap[c]))
+
+    modularity = 0.0
+    for c in range(len(remap)):
+        members = np.nonzero(np.asarray(out_labels) == c)[0]
+        sub = Wf[np.ix_(members, members)]
+        l_c = float(sub.sum()) / 2.0
+        d_c = float(deg[members].sum())
+        modularity += l_c / m - resolution * (d_c / m2) ** 2
+    return {
+        "labels": [int(x) for x in out_labels],
+        "modularity": float(modularity),
+        "n_communities": int(len(remap)),
+    }
+
+
+# --------------------------------------------------------------------------- #
+# 最小费用流
+# --------------------------------------------------------------------------- #
+def min_cost_flow(
+    cost: Union[np.ndarray, Sequence[Sequence[float]]],
+    capacity: Union[np.ndarray, Sequence[Sequence[float]]],
+    source: int,
+    sink: int,
+    demand: float,
+) -> dict:
+    """连续最短路（SSP）增广的最小费用流。
+
+    参数:
+        cost: ``n x n`` 费用矩阵，``cost[u][v]`` 是 ``u -> v`` 的单位费用。
+        capacity: ``n x n`` 容量矩阵，``capacity[u][v]`` 是 ``u -> v`` 的容量上限。
+        source: 源点下标；sink: 汇点下标（二者不能相同）。
+        demand: 需要从 source 送到 sink 的总流量（正数）。
+
+    返回:
+        dict，键 ``"flow"``：float，实际送达流量（一定等于 ``demand``，否则报错）；
+        ``"cost"``：float，总费用；``"edge_flow"``：list，每项 ``[u, v, f]``，
+        只列出 ``f > 0`` 的**原始方向**边，按 ``(u, v)`` 升序。
+
+    算法:
+        SSP（successive shortest path）：每次在残量网络上用 Bellman-Ford 找单位费用最小的
+        增广路，沿路推进"剩余需求 与 路上最小残量"的瓶颈量；残量反向边的费用取 ``-cost``
+        （用"流量矩阵可为负"的技巧表示反向流）。
+
+    复杂度:
+        时间 O(A * V * E)（A 为增广次数，每次 Bellman-Ford 为 O(VE)）/ 空间 O(V^2)。
+
+    陷阱:
+        1. 容量不足时 ``raise ValueError``，**不会**静默返回"能满足多少算多少"的部分流；
+           只想要最大流请用 :func:`max_flow_edmonds_karp`。
+        2. 依赖 `capacity - flow` 表示残量，因此 ``u->v`` 与 ``v->u`` 不能同时有独立容量，
+           否则两条管道会被混成同一条（请把双向边拆成虚拟节点）。
+        3. 原图存在负费用环时 SSP 不保证最优（Bellman-Ford 只跑 V-1 轮，也不报错）。
+        4. 费用与容量都按 float 处理，大整数需求会有浮点误差；比较时请留容差。
+
+    参考:
+        Ahuja, Magnanti & Orlin 1993《Network Flows》第 9 章；
+        Bellman-Ford 增广的实现即 SSP。
+    """
+    C = np.array(as_matrix(cost, "cost"), dtype=float, copy=True)
+    K = np.array(as_matrix(capacity, "capacity"), dtype=float, copy=True)
+    check_square(C, "cost")
+    check_square(K, "capacity")
+    if C.shape != K.shape:
+        raise ValueError("cost 与 capacity 的形状必须一致")
+    n = C.shape[0]
+    if not (0 <= int(source) < n) or not (0 <= int(sink) < n):
+        raise ValueError("source / sink 下标越界")
+    if int(source) == int(sink):
+        raise ValueError("source 与 sink 不能是同一个节点")
+    if not np.isfinite(demand) or demand <= 0:
+        raise ValueError("demand 必须是正的有限数")
+    if np.any(K < 0):
+        raise ValueError("capacity 不能为负")
+    if not np.all(np.isfinite(C)):
+        raise ValueError("cost 必须全部有限（无边请用容量 0 表示）")
+
+    s = int(source)
+    t = int(sink)
+    flow = np.zeros((n, n))
+    total_cost = 0.0
+    total_flow = 0.0
+    while total_flow < demand - 1e-12:
+        dist = np.full(n, np.inf)
+        dist[s] = 0.0
+        prev = np.full(n, -1, dtype=int)
+        for _ in range(n - 1):
+            updated = False
+            for u in range(n):
+                if not np.isfinite(dist[u]):
+                    continue
+                for v in range(n):
+                    if u == v:
+                        continue
+                    if K[u, v] - flow[u, v] > 1e-12:
+                        nd = dist[u] + C[u, v]
+                        if nd < dist[v] - 1e-12:
+                            dist[v] = nd
+                            prev[v] = u
+                            updated = True
+            if not updated:
+                break
+        if not np.isfinite(dist[t]):
+            raise ValueError("容量不足：在给定 capacity 下无法满足 demand")
+        add = float(demand - total_flow)
+        v = t
+        while v != s:
+            u = int(prev[v])
+            add = min(add, float(K[u, v] - flow[u, v]))
+            v = u
+        if add <= 1e-12:
+            raise ValueError("增广瓶颈为 0，残量网络异常（请检查 cost/capacity）")
+        v = t
+        while v != s:
+            u = int(prev[v])
+            flow[u, v] += add
+            flow[v, u] -= add
+            total_cost += add * float(C[u, v])
+            v = u
+        total_flow += add
+
+    edge_flow = [
+        [int(u), int(v), float(flow[u, v])]
+        for u in range(n)
+        for v in range(n)
+        if flow[u, v] > 1e-12
+    ]
+    return {"flow": float(total_flow), "cost": float(total_cost), "edge_flow": edge_flow}
+
+
+# --------------------------------------------------------------------------- #
+# 二分图最大权匹配
+# --------------------------------------------------------------------------- #
+def _hungarian_min(a: np.ndarray) -> Tuple[float, List[int]]:
+    """匈牙利算法（e-maxx 的 O(n^2 m) 势函数版本）求最小费用**完备**匹配。
+
+    参数:
+        a: ``n x m`` 有限实数矩阵，且必须 ``n <= m``（每行都能配上列）。
+
+    返回:
+        ``(总费用, assign)``：``assign[i]`` 是第 i 行匹配到的列下标（长度为 n）。
+
+    算法:
+        逐行加入，维护行势 ``u`` 与列势 ``v``，在"未用列"上用松弛量 ``minv`` 找增广列，
+        沿 ``way`` 回溯改写匹配。
+
+    复杂度:
+        时间 O(n^2 * m) / 空间 O(n + m)。
+
+    陷阱:
+        1. 要求 ``n <= m`` 且矩阵有限，否则行为未定义（调用方需自行转置 / 检查）。
+        2. 只求"行数那么多个匹配"（小边侧的完备匹配），不做"允许空匹配"的松弛。
+
+    参考:
+        Kuhn 1955；Jonker-Volgenant 1987；e-maxx "Hungarian algorithm" 实现。
+    """
+    n, m = a.shape
+    if n > m:
+        raise ValueError("匈牙利算法要求行数 <= 列数")
+    INF = float("inf")
+    u = np.zeros(n + 1)
+    v = np.zeros(m + 1)
+    p = np.zeros(m + 1, dtype=int)
+    way = np.zeros(m + 1, dtype=int)
+    for i in range(1, n + 1):
+        p[0] = i
+        j0 = 0
+        minv = np.full(m + 1, INF)
+        used = np.zeros(m + 1, dtype=bool)
+        while True:
+            used[j0] = True
+            i0 = int(p[j0])
+            delta = INF
+            j1 = 0
+            for j in range(1, m + 1):
+                if used[j]:
+                    continue
+                cur = float(a[i0 - 1, j - 1]) - u[i0] - v[j]
+                if cur < minv[j]:
+                    minv[j] = cur
+                    way[j] = j0
+                if minv[j] < delta:
+                    delta = minv[j]
+                    j1 = j
+            if j1 == 0:
+                raise ValueError("匈牙利算法失败：矩阵含无效值")
+            for j in range(m + 1):
+                if used[j]:
+                    u[int(p[j])] += delta
+                    v[j] -= delta
+                else:
+                    minv[j] -= delta
+            j0 = j1
+            if p[j0] == 0:
+                break
+        while j0:
+            j1 = int(way[j0])
+            p[j0] = p[j1]
+            j0 = j1
+    assign = [0] * n
+    for j in range(1, m + 1):
+        if p[j] != 0:
+            assign[int(p[j]) - 1] = j - 1
+    total = sum(float(a[i, assign[i]]) for i in range(n))
+    return float(total), assign
+
+
+def bipartite_matching(
+    cost: Union[np.ndarray, Sequence[Sequence[float]]],
+) -> dict:
+    """二分图最大权匹配（直接实现增广路 / 匈牙利，不依赖外部优化库）。
+
+    参数:
+        cost: ``rows x cols`` 权重矩阵，``cost[i][j]`` 是左部 i 与右部 j 匹配的收益
+        （可正可负，但必须全部有限）。
+
+    返回:
+        dict，键 ``"matching"``：list，每项 ``[i, j]``（按 i 升序）；``"total_cost"``：
+        float，匹配对的收益之和；``"size"``：int，匹配边数 ``= min(rows, cols)``。
+
+    算法:
+        最大化收益等价于最小化 ``-cost``：把矩阵取负后用 :func:`_hungarian_min` 求小边侧的
+        完备匹配（行数多于列数时先转置），再还原原始下标。
+
+    复杂度:
+        时间 O(min(r, c)^2 * max(r, c)) / 空间 O(r * c)。
+
+    陷阱:
+        1. 返回的是**小边侧的完备匹配**（``size = min(rows, cols)``），零收益甚至负收益的
+           边也会被选上；若只想保留正收益边，请自己按 ``total_cost`` 过滤。
+        2. 权重必须有限；"禁止匹配"不能写 ``inf``，请用足够小的负数（如 ``-1e9``）。
+        3. 收益矩阵被当作**权重**而不是费用；若你的矩阵是成本，请传 ``-cost`` 并读
+           ``-total_cost``。
+        4. 不支持一对多/多对一（那不是匹配问题，要建流网络）。
+
+    参考:
+        Kuhn 1955；Munkres 1957；最大权匹配的理论见 Schrijver 2003。
+    """
+    M = np.array(as_matrix(cost, "cost"), dtype=float, copy=True)
+    if M.ndim != 2:
+        raise ValueError("cost 必须是二维矩阵")
+    if M.size == 0:
+        return {"matching": [], "total_cost": 0.0, "size": 0}
+    if not np.all(np.isfinite(M)):
+        raise ValueError("cost 必须全部有限（禁止匹配请用很小的负数）")
+    rows, cols = M.shape
+    if rows <= cols:
+        neg_total, assign = _hungarian_min(-M)
+        pairs = [[int(i), int(assign[i])] for i in range(rows)]
+    else:
+        neg_total, assign = _hungarian_min(-M.T)
+        pairs = [[int(assign[k]), int(k)] for k in range(cols)]
+    pairs.sort()
+    total = sum(float(M[i, j]) for i, j in pairs)
+    return {
+        "matching": pairs,
+        "total_cost": float(total),
+        "size": int(len(pairs)),
+    }
+
+
+# --------------------------------------------------------------------------- #
+# A*
+# --------------------------------------------------------------------------- #
+def a_star(
+    adj: Mapping[Node, Mapping[Node, float]],
+    start: Node,
+    goal: Node,
+    heuristic: Union[Mapping[Node, float], Callable[[Node], float]],
+) -> dict:
+    """A* 最短路：启发式可采纳时与 Dijkstra 结果相同。
+
+    参数:
+        adj: ``{u: {v: w}}`` 邻接字典，边权必须非负。
+        start: 起点；goal: 终点。
+        heuristic: ``{节点: 估计值}`` 字典或 ``f(节点) -> float`` 可调用对象；
+        缺省节点按 0 处理（即退化为 Dijkstra）。
+
+    返回:
+        dict，键 ``"path"``：list，从 start 到 goal 的节点序列（不可达时为 ``[]``）；
+        ``"cost"``：float，路径总代价（不可达时为 ``inf``）；``"expanded"``：int，
+        从优先队列中真正弹出的节点个数（衡量搜索规模）。
+
+    算法:
+        标准 A*：``f = g + h``，用二叉堆取最小 f；节点出堆时才判定是否扩展（配合"同一节点
+        允许多次入堆、取最优 g"），遇到 goal 立即返回。
+
+    复杂度:
+        时间 O(E log V)（最坏退化为 Dijkstra）/ 空间 O(V + E)。
+
+    陷阱:
+        1. 启发式必须**可采纳**（``h <= 真实剩余代价``）；不可采纳时返回的 cost 可能大于真实
+           最短路，且不会报错。这里只检查"非负且有限"，查不出可采纳性。
+        2. 用"出堆即闭合"的写法，配合**不一致**（inconsistent）启发式时可能失去最优性；
+           要保证最优请用一致启发式，或允许重新打开已闭合节点。
+        3. 只支持非负边权（负权请用 Bellman-Ford）；一旦在扩展中读到负权边就抛 ValueError，
+           但**只遍历到的边**会被检查，不可达部分的负权边不会被发现。
+        4. ``heuristic`` 用可调用对象时会对每个入堆邻居求值，代价高请先做成字典。
+        5. ``start`` 或 ``goal`` **不在图中**时直接抛 ``ValueError``（不会返回
+           "不可达"）；只有两者都在图中但确实无路时才返回 ``path=[]``、``cost=inf``。
+        6. ``heuristic`` 若对任一节点给出负值或非有限值，会在搜索前就抛 ``ValueError``
+           （本实现会先对全部节点求一遍 ``h`` 做校验）。
+
+    参考:
+        Hart, Nilsson & Raphael 1968《A Formal Basis for the Heuristic Determination of
+        Minimum Cost Paths》。
+    """
+    if not isinstance(adj, Mapping):
+        raise ValueError("adj 必须是 {u: {v: w}} 形式的字典")
+    nodes = _ordered_nodes(adj)
+    if start not in set(nodes):
+        raise ValueError("start 不在图中")
+    if goal not in set(nodes):
+        raise ValueError("goal 不在图中")
+    if not isinstance(heuristic, Mapping) and not callable(heuristic):
+        raise ValueError("heuristic 必须是字典或可调用对象")
+
+    def h(v: Node) -> float:
+        val = heuristic(v) if callable(heuristic) else heuristic.get(v, 0.0)
+        out = float(val)
+        if not np.isfinite(out) or out < 0:
+            raise ValueError("启发式必须是非负有限值")
+        return out
+
+    for node in nodes:
+        h(node)
+
+    counter = itertools.count()
+    g: Dict[Node, float] = {start: 0.0}
+    prev: Dict[Node, Optional[Node]] = {start: None}
+    heap: List[Tuple[float, int, Node]] = [(h(start), next(counter), start)]
+    closed = set()
+    expanded = 0
+    while heap:
+        _f, _tie, u = heapq.heappop(heap)
+        if u in closed:
+            continue
+        closed.add(u)
+        expanded += 1
+        if u == goal:
+            break
+        for v, w in adj.get(u, {}).items():
+            wv = float(w)
+            if wv < 0:
+                raise ValueError("A* 只支持非负边权")
+            ng = g[u] + wv
+            if ng < g.get(v, float("inf")) - 1e-15:
+                g[v] = ng
+                prev[v] = u
+                heapq.heappush(heap, (ng + h(v), next(counter), v))
+
+    if goal not in g:
+        return {"path": [], "cost": float("inf"), "expanded": int(expanded)}
+    if goal == start:
+        return {"path": [start], "cost": 0.0, "expanded": int(expanded)}
+    path = reconstruct_path(prev, start, goal)
+    return {"path": path, "cost": float(g[goal]), "expanded": int(expanded)}
+
+
+# --------------------------------------------------------------------------- #
+# 车辆路径：Clarke-Wright 节约算法
+# --------------------------------------------------------------------------- #
+def vrp_clarke_wright(
+    distance: Union[np.ndarray, Sequence[Sequence[float]]],
+    demand: Sequence[float],
+    capacity: float,
+    depot: int = 0,
+) -> dict:
+    """Clarke-Wright 节约算法求解带容量约束的车辆路径问题（CVRP，送货型）。
+
+    参数:
+        distance: ``n x n`` 距离矩阵（**假设对称**，对角线视为 0）。
+        demand: 长度 n 的需求序列，``demand[depot]`` 被忽略。
+        capacity: 单车容量上限（正数）。
+        depot: 车场下标，默认 0。
+
+    返回:
+        dict，键 ``"routes"``：list，每条路线是 ``[depot, 客户..., depot]``（元素为下标，
+        路线之间按首个客户下标升序排列）；``"total_distance"``：float，所有路线长度之和；
+        ``"n_routes"``：int，路线条数。
+
+    算法:
+        节约法：先给每个客户一条 ``depot -> i -> depot`` 的独立路线，计算节约值
+        ``s(i, j) = d(depot, i) + d(depot, j) - d(i, j)``，按节约值降序尝试把两条路线的
+        **端点**客户 i、j 合并（要求容量之和不超过 capacity，且 i、j 都在各自路线端点），
+        直到没有可合并的节约。
+
+    复杂度:
+        时间 O(n^2 log n)（节约值排序主导）/ 空间 O(n^2)。
+
+    陷阱:
+        1. 只做"端点合并"，不做 2-opt / Or-opt 改进，因此结果一般不是最优解（Clarke-Wright
+           本身是启发式，只保证可行）。
+        2. 距离矩阵假定对称；非对称矩阵上路径长度计算会静默偏小（回程按正向元素取）。
+        3. 单个客户需求超过 capacity 时直接 ``raise ValueError``，不返回不可行路线。
+        4. 节约值相同的手工比较顺序由 ``(-s, i, j)`` 决定，是有意为之的确定性 tie-break；
+           不同实现（不同 tie-break）会给出不同但同样可行的解。
+
+    参考:
+        Clarke & Wright 1964《Scheduling of vehicles from a central depot to a number of
+        delivery points》。
+    """
+    D = np.array(as_matrix(distance, "distance"), dtype=float, copy=True)
+    check_square(D, "distance")
+    n = D.shape[0]
+    if not (0 <= int(depot) < n):
+        raise ValueError("depot 下标越界")
+    dem = np.asarray(demand, dtype=float).reshape(-1)
+    if dem.size != n:
+        raise ValueError("demand 的长度必须等于距离矩阵的阶数")
+    if not np.isfinite(capacity) or capacity <= 0:
+        raise ValueError("capacity 必须是正的有限数")
+    if not np.all(np.isfinite(D)):
+        raise ValueError("distance 必须全部有限")
+
+    dep = int(depot)
+    customers = [i for i in range(n) if i != dep]
+    for i in customers:
+        if dem[i] > capacity + 1e-9:
+            raise ValueError("存在客户需求超过单车容量，问题不可行")
+        if dem[i] < 0:
+            raise ValueError("demand 不能为负")
+
+    routes: Dict[int, List[int]] = {i: [dep, i, dep] for i in customers}
+    load: Dict[int, float] = {i: float(dem[i]) for i in customers}
+    route_of: Dict[int, int] = {i: i for i in customers}
+
+    savings: List[Tuple[float, int, int]] = []
+    for a in range(len(customers)):
+        for b in range(a + 1, len(customers)):
+            i, j = customers[a], customers[b]
+            s = float(D[dep, i]) + float(D[dep, j]) - float(D[i, j])
+            savings.append((-s, int(i), int(j)))
+    savings.sort()
+
+    for _neg_s, i, j in savings:
+        ri = route_of[i]
+        rj = route_of[j]
+        if ri == rj:
+            continue
+        if load[ri] + load[rj] > capacity + 1e-9:
+            continue
+        seq_i = routes[ri][1:-1]
+        seq_j = routes[rj][1:-1]
+        if not seq_i or not seq_j:
+            continue
+        if i != seq_i[0] and i != seq_i[-1]:
+            continue
+        if j != seq_j[0] and j != seq_j[-1]:
+            continue
+        a_seq = list(seq_i)
+        b_seq = list(seq_j)
+        if a_seq[0] == i:  # 让 i 落在 a_seq 末端（对称距离下反转不改变长度）
+            a_seq.reverse()
+        if b_seq[-1] == j:  # 让 j 落在 b_seq 首端
+            b_seq.reverse()
+        routes[ri] = [dep] + a_seq + b_seq + [dep]
+        load[ri] = load[ri] + load[rj]
+        for c in b_seq:
+            route_of[c] = ri
+        del routes[rj]
+        del load[rj]
+
+    out_routes = sorted(routes.values(), key=lambda r: r[1] if len(r) > 2 else -1)
+    total = 0.0
+    for r in out_routes:
+        for k in range(len(r) - 1):
+            total += float(D[r[k], r[k + 1]])
+    return {
+        "routes": [[int(x) for x in r] for r in out_routes],
+        "total_distance": float(total),
+        "n_routes": int(len(out_routes)),
+    }
+
+
+# --------------------------------------------------------------------------- #
+# 网络鲁棒性
+# --------------------------------------------------------------------------- #
+def network_robustness(
+    adj: Union[np.ndarray, Sequence[Sequence[float]], Mapping[Node, Mapping[Node, float]]],
+    n_remove: int = 3,
+) -> dict:
+    """依次移除度最大的节点，评估剩余网络的连通性与效率。
+
+    参数:
+        adj: ``{u: {v: w}}`` 邻接字典或 ``n x n`` 邻接矩阵（``inf`` 表示无边）；
+        按**无向无权**图处理（只关心"有没有边"）。
+        n_remove: 要移除的节点个数（非负；最多移除到只剩 1 个节点）。
+
+    返回:
+        dict，键 ``"largest_component"``：int，**移除结束后**剩余图的最大连通分量规模
+        （单个孤立点算 1；没有剩余节点时为 0）；``"efficiency"``：float，剩余图的全局效率
+        ``1/(m(m-1)) * sum_{i != j} 1/d(i,j)``（d 为**跳数**，不可达对贡献 0）；
+        ``"removed"``：list，按移除顺序排列的节点。
+
+    算法:
+        每轮在剩余图中用"非零邻接计数"选度最大的节点（同分取 :func:`_weight_matrix` 顺序中
+        靠前的），标记删除；全部移除结束后用一次 BFS 全源跳数统计最大连通分量与全局效率。
+
+    复杂度:
+        时间 O(n_remove * V^2 + V * (V + E)) / 空间 O(V + E)。
+
+    陷阱:
+        1. 移除顺序是**确定性贪心**（度最大 + 下标 tie-break），不是随机攻击；随机故障
+           鲁棒性请自行打乱顺序重复实验。
+        2. 效率用的是**跳数**而非边权，带权图上的结论可能完全不同。
+        3. 返回的是"移除完毕之后"的指标，不含每步演化曲线；需要曲线请循环调用本函数。
+        4. ``n_remove`` 过大时只会移除到剩 1 个节点，``removed`` 长度可能小于 n_remove。
+
+    参考:
+        Albert, Jeong & Barabási 2000《Error and attack tolerance of complex networks》；
+        Latora & Marchiori 2001（全局效率定义）。
+    """
+    W, nodes = _weight_matrix(adj)
+    n = len(nodes)
+    if n_remove < 0:
+        raise ValueError("n_remove 不能为负")
+    if n == 0:
+        return {"largest_component": 0, "efficiency": 0.0, "removed": []}
+
+    adjm = np.isfinite(W) & (W != 0)
+    act = np.ones(n, dtype=bool)
+    removed_idx: List[int] = []
+    while len(removed_idx) < int(n_remove) and int(act.sum()) > 1:
+        deg = ((adjm & act[None, :]).sum(axis=1)).astype(float)
+        deg = np.where(act, deg, -1.0)
+        i = int(np.argmax(deg))
+        act[i] = False
+        removed_idx.append(i)
+
+    idx = np.nonzero(act)[0]
+    m = int(idx.size)
+    if m == 0:
+        return {"largest_component": 0, "efficiency": 0.0, "removed": [nodes[i] for i in removed_idx]}
+
+    largest = 0
+    reach_sum = 0.0
+    for s_raw in idx:
+        s = int(s_raw)
+        dist = {s: 0}
+        queue = deque([s])
+        while queue:
+            u = int(queue.popleft())
+            for v_raw in np.nonzero(adjm[u] & act)[0]:
+                v = int(v_raw)
+                if v not in dist:
+                    dist[v] = dist[u] + 1
+                    queue.append(v)
+        largest = max(largest, len(dist))
+        for t, d in dist.items():
+            if t != s:
+                reach_sum += 1.0 / float(d)
+    efficiency = reach_sum / (m * (m - 1)) if m > 1 else 0.0
+    return {
+        "largest_component": int(largest),
+        "efficiency": float(efficiency),
+        "removed": [nodes[i] for i in removed_idx],
+    }
+
+
 def _self_test() -> dict:
     """跑一组小规模确定性算例，返回关键数值供 examples/run_algorithms.py 断言。
 
@@ -1030,4 +2050,223 @@ def _self_test() -> dict:
     labels = connected_components(g)
     result["cc_labels"] = [int(x) for x in labels]
     result["cc_count"] = int(max(labels) + 1)
+
+    # ======================= 新增：10 个图算法的独立判据 ======================= #
+    # --- Prim：与 Kruskal 在同一张 7 节点图上比较总权重（交叉验证）---
+    W7 = np.full((7, 7), np.inf)
+    np.fill_diagonal(W7, 0.0)
+    for u, v, w in edges:
+        W7[u, v] = min(W7[u, v], float(w))
+        W7[v, u] = min(W7[v, u], float(w))
+    prim = prim_mst(W7)
+    result["graphs_prim_total_weight"] = float(prim["total_weight"])
+    result["graphs_prim_n_edges"] = int(len(prim["edges"]))
+    result["graphs_prim_vs_kruskal_dev"] = float(
+        abs(float(prim["total_weight"]) - float(mst["total_weight"]))
+    )
+    if result["graphs_prim_vs_kruskal_dev"] > 1e-9:
+        raise AssertionError("Prim 与 Kruskal 的总权重不一致，两者至少有一个错")
+    if result["graphs_prim_n_edges"] != 6:
+        raise AssertionError("生成树边数应为 V-1 = 6")
+    # 树边总权重 = 逐边求和（不复用 total_weight，独立重算一遍）
+    if abs(sum(float(e[2]) for e in prim["edges"]) - 39.0) > 1e-9:
+        raise AssertionError("Prim 生成树逐边求和应等于教材值 39")
+
+    # --- 度中心性：星形图闭式解（中心 1、叶子 1/(n-1)），带权按最大强度归一化 ---
+    star = {0: {1: 2.0, 2: 4.0, 3: 6.0}, 1: {0: 2.0}, 2: {0: 4.0}, 3: {0: 6.0}}
+    deg_u = degree_centrality(star, weighted=False)
+    deg_w = degree_centrality(star, weighted=True)
+    result["graphs_deg_star_center"] = float(deg_u["centrality"][0])
+    result["graphs_deg_star_leaf"] = float(deg_u["centrality"][1])
+    if abs(result["graphs_deg_star_center"] - 1.0) > 1e-12:
+        raise AssertionError("无权星形图中心点度中心性应为 1")
+    if abs(result["graphs_deg_star_leaf"] - 1.0 / 3.0) > 1e-12:
+        raise AssertionError("无权星形图叶子度中心性应为 1/(n-1)=1/3")
+    if abs(float(deg_w["centrality"][0]) - 1.0) > 1e-12:
+        raise AssertionError("带权星形图中心点（强度 12）应为 1")
+    if abs(float(deg_w["centrality"][3]) - 0.5) > 1e-12:
+        raise AssertionError("带权星形图叶子强度 6/12 应为 0.5")
+    if deg_u["ranking"][0] != 0:
+        raise AssertionError("星形图 ranking 首位应是中心点")
+
+    # --- 紧密中心性：路径图 P4 手算 3/(1+1+2)=0.75 与 3/(1+2+3)=0.5 ---
+    p4 = {
+        "0": {"1": 1.0},
+        "1": {"0": 1.0, "2": 1.0},
+        "2": {"1": 1.0, "3": 1.0},
+        "3": {"2": 1.0},
+    }
+    clo = closeness_centrality(p4)
+    result["graphs_closeness_p4_mid"] = float(clo["centrality"]["1"])
+    result["graphs_closeness_p4_end"] = float(clo["centrality"]["0"])
+    if abs(result["graphs_closeness_p4_mid"] - 0.75) > 1e-12:
+        raise AssertionError("P4 中间点紧密中心性手算应为 0.75")
+    if abs(result["graphs_closeness_p4_end"] - 0.5) > 1e-12:
+        raise AssertionError("P4 端点紧密中心性手算应为 0.5")
+    if not clo["centrality"]["1"] > clo["centrality"]["0"]:
+        raise AssertionError("P4 上中间点中心性应大于端点")
+
+    # --- 介数中心性：路径图 P5，中间点 = 2*2/C(4,2) = 2/3，两端点为 0 ---
+    p5 = {str(i): {str(j): 1.0 for j in (i - 1, i + 1) if 0 <= j <= 4} for i in range(5)}
+    btw = betweenness_centrality(p5)
+    result["graphs_btw_p5_mid"] = float(btw["centrality"]["2"])
+    ends = [float(btw["centrality"]["0"]), float(btw["centrality"]["4"])]
+    result["graphs_btw_p5_ends_zero"] = bool(max(abs(x) for x in ends) < 1e-12)
+    if abs(result["graphs_btw_p5_mid"] - 2.0 / 3.0) > 1e-12:
+        raise AssertionError("P5 中间点介数应为 (2*2)/C(4,2)=2/3")
+    if not result["graphs_btw_p5_ends_zero"]:
+        raise AssertionError("P5 两端点介数应为 0")
+    if not all(
+        float(btw["centrality"]["2"]) > float(btw["centrality"][k]) for k in ("0", "1", "3", "4")
+    ):
+        raise AssertionError("P5 中间点应是唯一介数最大点")
+
+    # --- Louvain：两个三角形 + 一条桥必须分到两个社区，且同 seed 可复现 ---
+    tri = {i: {} for i in range(6)}
+    for a_, b_ in [(0, 1), (1, 2), (0, 2), (3, 4), (4, 5), (3, 5), (2, 3)]:
+        tri[a_][b_] = 1.0
+        tri[b_][a_] = 1.0
+    lv = louvain_communities(tri, resolution=1.0, seed=0, max_iter=20)
+    lv2 = louvain_communities(tri, resolution=1.0, seed=0, max_iter=20)
+    result["graphs_louvain_n_communities"] = int(lv["n_communities"])
+    result["graphs_louvain_modularity"] = float(lv["modularity"])
+    result["graphs_louvain_same_seed_equal"] = bool(list(lv["labels"]) == list(lv2["labels"]))
+    if result["graphs_louvain_n_communities"] != 2:
+        raise AssertionError("两个团 + 一条桥应划分为 2 个社区")
+    if not result["graphs_louvain_modularity"] > 0.3:
+        raise AssertionError("该算例的模块度应大于 0.3")
+    if not result["graphs_louvain_same_seed_equal"]:
+        raise AssertionError("同一 seed 两次调用结果必须一致")
+    lab = list(lv["labels"])
+    if not (lab[0] == lab[1] == lab[2]) or not (lab[3] == lab[4] == lab[5]):
+        raise AssertionError("每个团内部应同社区")
+    if lab[0] == lab[3]:
+        raise AssertionError("两个团不应被合并成一个社区")
+
+    # --- 最小费用流：0->2 直达费用 5，0->1->2 费用 1+1，容量各 4，手算 4*2=8 ---
+    mcf_cost = np.array([[0.0, 1.0, 5.0], [0.0, 0.0, 1.0], [0.0, 0.0, 0.0]])
+    mcf_cap = np.array([[0.0, 4.0, 4.0], [0.0, 0.0, 4.0], [0.0, 0.0, 0.0]])
+    mcf = min_cost_flow(mcf_cost, mcf_cap, 0, 2, 4.0)
+    result["graphs_mcf_flow"] = float(mcf["flow"])
+    result["graphs_mcf_cost"] = float(mcf["cost"])
+    if abs(result["graphs_mcf_flow"] - 4.0) > 1e-9:
+        raise AssertionError("送达流量应等于 demand = 4")
+    if abs(result["graphs_mcf_cost"] - 8.0) > 1e-9:
+        raise AssertionError("手算最小费用应为 4*(1+1)=8（走 0->1->2）")
+    net: Dict[int, float] = {}
+    for u_, v_, f_ in mcf["edge_flow"]:
+        net[u_] = net.get(u_, 0.0) + float(f_)
+        net[v_] = net.get(v_, 0.0) - float(f_)
+    result["graphs_mcf_conservation"] = bool(
+        all(abs(val) < 1e-9 for key, val in net.items() if key not in (0, 2))
+    )
+    if not result["graphs_mcf_conservation"]:
+        raise AssertionError("中间节点必须满足流量守恒（净流出为 0）")
+    if abs(net.get(0, 0.0) - 4.0) > 1e-9:
+        raise AssertionError("源点净流出应等于总流量 4")
+
+    # --- 二分匹配：3x3 单位矩阵 + 穷举对照 + 2x2 手算 ---
+    unit3 = np.ones((3, 3))
+    bm = bipartite_matching(unit3)
+    result["graphs_bip_unit_size"] = int(bm["size"])
+    result["graphs_bip_unit_cost"] = float(bm["total_cost"])
+    if result["graphs_bip_unit_size"] != 3 or abs(result["graphs_bip_unit_cost"] - 3.0) > 1e-12:
+        raise AssertionError("3x3 单位权矩阵应给出 size=3, total_cost=3")
+    # 2x2 反例：贪心先取最大元素 (0,0)=10 只能得 10+1=11，最优是 (0,1)+(1,0)=9+9=18
+    m2 = np.array([[10.0, 9.0], [9.0, 1.0]])
+    bm2 = bipartite_matching(m2)
+    result["graphs_bip_2x2_cost"] = float(bm2["total_cost"])
+    if abs(result["graphs_bip_2x2_cost"] - 18.0) > 1e-12:
+        raise AssertionError("2x2 手算最大权应为 9+9=18（贪心取 10 只能得 11）")
+    hard = np.array([[10.0, 2.0, 8.0], [9.0, 7.0, 5.0], [6.0, 4.0, 3.0]])
+    bmh = bipartite_matching(hard)
+    brute_max = max(
+        sum(float(hard[i, perm[i]]) for i in range(3))
+        for perm in itertools.permutations(range(3))
+    )
+    result["graphs_bip_brute_equal"] = bool(abs(float(bmh["total_cost"]) - brute_max) < 1e-9)
+    if not result["graphs_bip_brute_equal"]:
+        raise AssertionError("二分匹配结果应等于 3x3 穷举最优值")
+
+    # --- A*：5x5 栅格（挖掉中心格），可采纳的曼哈顿启发式应与 Dijkstra 完全一致 ---
+    side = 5
+    grid: Dict[int, Dict[int, float]] = {r * side + c: {} for r in range(side) for c in range(side)}
+    for r in range(side):
+        for c in range(side):
+            if (r, c) == (2, 2):
+                continue
+            for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < side and 0 <= nc < side and (nr, nc) != (2, 2):
+                    grid[r * side + c][nr * side + nc] = 1.0
+    manhattan = {node: float(abs(node // side - 4) + abs(node % side - 4)) for node in grid}
+    ast = a_star(grid, 0, 24, manhattan)
+    ast_zero = a_star(grid, 0, 24, {})
+    djg = dijkstra(grid, 0)
+    ref = float(djg["dist"][24])
+    result["graphs_astar_cost_dev"] = float(abs(float(ast["cost"]) - ref))
+    result["graphs_astar_zero_h_dev"] = float(abs(float(ast_zero["cost"]) - ref))
+    if result["graphs_astar_cost_dev"] > 1e-9:
+        raise AssertionError("可采纳启发式下 A* 代价必须等于 Dijkstra 最短路")
+    if result["graphs_astar_zero_h_dev"] > 1e-9:
+        raise AssertionError("h=0 时 A* 应退化为 Dijkstra（代价相同）")
+    if abs(ref - 8.0) > 1e-9:
+        raise AssertionError("5x5 栅格 (0,0)->(4,4) 的最短路应为 8 跳")
+    if int(ast["expanded"]) > 25 or int(ast_zero["expanded"]) > 25:
+        raise AssertionError("A* 扩展节点数不可能超过节点总数")
+    if int(ast["expanded"]) > int(ast_zero["expanded"]):
+        raise AssertionError("曼哈顿启发式不应比 h=0 扩展更多节点")
+    path = list(ast["path"])
+    if path[0] != 0 or path[-1] != 24:
+        raise AssertionError("A* 返回路径的起点/终点不正确")
+    if abs(len(path) - 1 - 8.0) > 1e-9:
+        raise AssertionError("单位权栅格上路径应恰好 8 条边")
+
+    # --- VRP：直线上 depot 居中、需求各 1、容量 2 的手算算例 ---
+    pos = np.array([0.0, -1.0, -2.0, 1.0, 2.0])
+    Dv = np.abs(pos[:, None] - pos[None, :])
+    vrp = vrp_clarke_wright(Dv, [0.0, 1.0, 1.0, 1.0, 1.0], capacity=2.0, depot=0)
+    result["graphs_vrp_total_distance"] = float(vrp["total_distance"])
+    result["graphs_vrp_n_routes"] = int(vrp["n_routes"])
+    if abs(result["graphs_vrp_total_distance"] - 8.0) > 1e-9:
+        raise AssertionError("手算最优应为 2 条路线各 1+1+2=4，合计 8")
+    if result["graphs_vrp_n_routes"] != 2:
+        raise AssertionError("总需求 4 / 容量 2 恰好需要 2 辆车")
+    seen_customers: List[int] = []
+    manual_total = 0.0
+    for route in vrp["routes"]:
+        if route[0] != 0 or route[-1] != 0:
+            raise AssertionError("每条路线都必须从 depot 出发并回到 depot")
+        load_sum = sum(float(dem_v) for dem_v in [1.0] * (len(route) - 2))
+        if load_sum > 2.0 + 1e-9:
+            raise AssertionError("路线需求不得超过 capacity")
+        seen_customers.extend(route[1:-1])
+        for k in range(len(route) - 1):
+            manual_total += float(Dv[route[k], route[k + 1]])
+    if sorted(seen_customers) != [1, 2, 3, 4]:
+        raise AssertionError("每个客户必须恰好被服务一次")
+    if abs(manual_total - result["graphs_vrp_total_distance"]) > 1e-9:
+        raise AssertionError("total_distance 应等于逐路线距离求和")
+
+    # --- 网络鲁棒性：K5 移除 1 点剩 K4；星形图移除中心点只剩孤立点 ---
+    K5 = np.ones((5, 5))
+    np.fill_diagonal(K5, 0.0)
+    rob = network_robustness(K5, n_remove=1)
+    result["graphs_robu_k5_largest"] = int(rob["largest_component"])
+    star_adj = {0: {1: 1.0, 2: 1.0, 3: 1.0, 4: 1.0}, 1: {0: 1.0}, 2: {0: 1.0}, 3: {0: 1.0}, 4: {0: 1.0}}
+    rob2 = network_robustness(star_adj, n_remove=1)
+    result["graphs_robu_star_largest"] = int(rob2["largest_component"])
+    if result["graphs_robu_k5_largest"] != 4:
+        raise AssertionError("K5 移除 1 个点后最大连通分量应为 4")
+    if abs(float(rob["efficiency"]) - 1.0) > 1e-12:
+        raise AssertionError("K4 的全局效率应为 1")
+    if list(rob["removed"]) != [0]:
+        raise AssertionError("完全图上应移除 tie-break 最靠前的节点 0")
+    if result["graphs_robu_star_largest"] != 1:
+        raise AssertionError("星形图移除中心点后只剩孤立点，最大分量应为 1")
+    if list(rob2["removed"]) != [0]:
+        raise AssertionError("星形图上度最大的点应是中心点 0")
+    if abs(float(rob2["efficiency"]) - 0.0) > 1e-12:
+        raise AssertionError("只剩孤立点时全局效率应为 0")
+
     return result

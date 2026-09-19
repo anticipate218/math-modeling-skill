@@ -1,3 +1,61 @@
+## [1.7.0] - 2026-09-19
+
+本版回应四件具体的事：**README 要能查到"怎么下载 LaTeX 模板"**、**算法要"每个类别里的每个算法都有详细实现"**、**要讲清"怎么创新、哪些参数可以动"**、以及**下载之后用户怎么把这个技能跑起来要顺**。前两件是内容缺口（有模板但不讲怎么拿；算法只覆盖到 11 个模块、部分函数只有名字没有细节），第三件是知识缺口，第四件是体验缺口。
+
+### 关键结论（先说结果）
+
+- **算法覆盖从"点到为止"补成"逐个交代"**：公开名称 **97 → 224**（函数 96 → 222，另 2 个常量），模块 **11 → 17**，黄金值断言键 **324 → 875**。新增的 6 个模块是时间序列（GM(1,1)/ARIMA/SARIMA/GARCH/卡尔曼）、机器学习（KNN/树/森林/提升/朴素贝叶斯/LDA/置换重要性/SMOTE）、多准则决策（PROMETHEE/ELECTRE/RSR/Borda/Copeland）、多目标优化（NSGA-II/ε 约束/HV）、灵敏度与数据清洗（Morris/Sobol/插补/异常检测）、空间与物理场（热传导/Poisson/元胞自动机/量纲分析）。
+- **黄金值合并是"纯新增"，不是"改数值"**：`changed=0，removed=0，added=551`。原有 324 个键一个都没动——这类操作最容易变成"用 `--update-golden` 把回归洗掉"，所以本版把 diff 结果写进验证记录，供任何人复核。
+- **"哪些参数能动"落成一张可查的表**：新增的 `references/innovation-playbook.md` 给 **17 个算法族**逐族列出参数、常规取值、创新方向与创新度分档（⚪调参 / 🔶结构化 / 🔴假设层），并明确"改数值 ≠ 创新"。
+- **LaTeX 模板从"仓库里有"变成"一条命令拿到手"**：`scripts/download_templates.py` 按竞赛一键导出（国赛/研赛/美赛/全部），在非 Windows 平台自动把 `fontset=windows` 换成 `fontset=fandol`，可选打包 zip；`--self-test` 26/26 通过，重复打出的 zip **逐字节一致**。
+
+### 新增
+
+- **`references/algorithm-details.md`（2333 行，223 个条目）**：逐算法的**数学形式 → 步骤 → 复杂度 → 参数表 → 陷阱 → 怎么检验**。分节与 `algorithm-implementations.md` 完全对齐（§3.1–§3.17），条目顺序与该模块 `__all__` 一致；"怎么检验"一栏给的是**独立于本实现**的手段（闭式解、对拍、极限行为），可直接改写成论文的"模型检验"章节。
+- **`references/innovation-playbook.md`（372 行）**：三个误解的纠正、创新的五个层级、**17 族参数创新总表**、把"改参数"升级成"真创新"的四步法（机制假设 → 可辨识化 → 消融实验 → 结论边界）、实验设计速查、论文写法三件套、12 条伪创新反面模式、定稿自查清单。
+- **六个新算法模块**（均在 `examples/algorithms/`，只依赖 numpy + 标准库）：`timeseries.py`（12）、`ml.py`（23）、`multicriteria.py`（8）、`multiobjective.py`（9）、`sensitivity.py`（11）、`spatial.py`（7）。
+- **`scripts/download_templates.py`（613 行，纯标准库）**：`--contest {cumcm,yjs,mcm,all}` / `--out` / `--force` / `--fontset {auto,keep,fandol}` / `--zip` / `--list` / `--self-test`；默认不覆盖已存在文件，导完直接打印编译序列与注意事项。
+- **README 新增「下载与安装」专章**（5 小节）：三种获取方式（clone / Release ZIP / 网页 ZIP，并说明目录名必须等于 `SKILL.md` 的 `name`）、四个宿主的安装路径、依赖表、**下载 LaTeX 论文模板**（三套模板对照 + 脚本用法 + 字体坑 + 4 遍编译序列 + raw 链接）、装完 30 秒自检。
+
+### 实现说明（几个真踩到的点）
+
+- **逐算法文档的"覆盖率"必须能被脚本判定**：文档里的函数名是手写的，很容易出现"文档有、代码没有"或"代码有、文档漏了"。本版用 `.dsh-tmp/check_details_full.py` 把 `#### \`名字(...)\`` 的标题与 17 个模块的 `__all__` 双向比对（先把签名在 `(` 处截断，常量单列），得到**公开名称 224 / 条目 223（含 `Z95` 一个常量条目）/ 缺失 0 / 多余 0 / 重复标题 0**。
+- **创新手册里每个反引号引用都能落到代码上**：同一套思路核对 `innovation-playbook.md` 的反引号标识符，允许集取"17 个模块的函数名 + 所有形参名"共 **795** 个，未解析项 0。这一步真的抓到过问题——初稿里有一处把参数名当函数名写。
+- **模块头 docstring 与 `__all__` 会对不上**：扩写算法时新增了函数，但模块开头的"本模块包含……"还停在旧清单（例如 `optimization.py` 的头只列了 5 个、实际 9 个）。本版把 **17/17** 个模块的头部清单补全为分组枚举并写明条数，用 `.dsh-tmp/check_headers.py` 断言"条数 = `len(__all__)`、无名称遗漏"。
+- **文档里的数字必须与实测一致**：`spatial.py` 里 Poisson 截断误差一处写 ≈2.8e-3、一处写 ≈2.9e-3。实际算过（n=16, h=1/17：实测最大误差 2.826e-3，解析量级 π²h²/12 = 2.846e-3），2.8e-3 才对，已统一。
+
+### 变更
+
+- `README.md`：目录加「下载与安装」；「算法与代码」由「11 个模块」改为「17 个算法模块、222 个公开函数」并指向 `algorithm-details.md`；几何与空间一行改成 `geometry.py`/`spatial.py` 的真实内容（凸包/Haversine/IDW/克里金/泰森多边形 + 热传导/Poisson/元胞自动机/量纲分析）；「怎么做出创新点」改为引用创新手册；质量保障表算法回归一行由「11 个算法模块、324 个断言键」改为「**17 个算法模块、875 个断言键**」；仓库结构树补三行新文件。
+- `SKILL.md`：版本升至 `1.7.0`；索引新增 `algorithm-details.md`、`innovation-playbook.md`、`download_templates.py` 三行；`compatibility` 补上 `download_templates.py` 与 `examples/algorithms/` 的依赖口径。
+- `CITATION.cff` 同步版本与日期（`1.7.0` / 2026-09-19）。
+- `examples/algorithms/` 的 11 个原模块扩写（公开名称 97 → 154）：优化 5→9、图论 10→20、启发式 4→8、预测 16→19、统计 16→23、评价 11→11（内部校订）、聚类 6→12、微分方程 8→15、随机仿真 8→16、几何 8→13、博弈 5→8。
+- `examples/algorithms_golden.json`：**只新增键**，由 `--update-golden` 重写，键数 324 → 875。
+- `references/algorithm-implementations.md`：§2「一眼速查表」补 6 行新模块，§3 扩到 §3.17。
+
+### 关键验证记录
+
+| 项目 | 方式 | 结果 |
+|---|---|---|
+| 全量算法回归 | `python examples/run_algorithms.py` | **17 个模块 / 875 个断言键，失败 0 个模块**；每个模块跑两遍比对确定性，无一条"数值不匹配" |
+| 黄金值合并是否夹带回归 | `.dsh-tmp/golden_diff.py before after` | **changed=0、removed=0、added=551**；模块 11 → 17，键 324 → 875 |
+| 逐算法文档覆盖 | `.dsh-tmp/check_details_full.py` | 公开名称 224 / 条目 223（含 1 个常量条目）；缺失 0、多余 0、重复标题 0；17 个模块逐族 OK |
+| 创新手册引用完整性 | `.dsh-tmp/check_playbook_refs.py` | 白名单 795 个函数名/形参名；未解析的反引号标识符 **0** |
+| 模块头清单与 `__all__` 对齐 | `.dsh-tmp/check_headers.py` | **17/17** 模块通过（条数一致、无名称遗漏） |
+| 模板导出脚本自测 | `python scripts/download_templates.py --self-test` | **26/26 通过**；同一输入重复打包的 zip 逐字节一致 |
+| 技能结构校验 | `python scripts/validate_skill.py . --strict` | **0 个错误，0 个警告**（检查了 29 个文件引用） |
+| 依赖边界与代码纪律 | 见 `.github/workflows/ci.yml` 的 AST 扫描 | 17 个算法模块无 scipy/sklearn/pandas 等禁用依赖、无 `assert`、无全局 `np.random`、docstring 字段顺序正确 |
+| 论文自检逻辑 | `python scripts/check_paper.py --self-test` | 好稿 FAIL=0、坏稿/美赛坏稿均按预期报错，骨架三套 FAIL=0 |
+| 模板编译体检逻辑 | `python scripts/check_latex.py --self-test` | **26/26 通过**（无需装 TeX） |
+| 配图配色与数值 | `python scripts/check_palette.py --quiet`、`python scripts/make_figures.py --self-test` | 配色断言全部满足（二色觉最差 ΔE 16.1）；24 项配图数值与改动前一致 |
+
+### 诚实说明
+
+- **本版没有把任何第三方的论文图、表、代码并入仓库**。`references/paper-examples.md` 仍然只给链接与出处索引；`assets/gallery/` 的 16 张图全部由 `make_figures.py` 用固定种子原创生成。
+- **"每个算法都有实现"的边界要说清**：这 222 个函数是**教学透明版**——网格小、格式简单、中间量全部显式返回，目的是让论文能写清每一步在算什么、以及结果怎么检验。真正的生产规模问题，各模块 docstring 都写明了该换哪个成熟库（OR-Tools、Pyomo、statsmodels、sklearn、SALib、PySAL 等）。把"能跑通并对照"说成"工业级性能"是不诚实的，本版没有这么写。
+- **自测断言是独立的，不是复读实现**：`_self_test()` 里用的是闭式解、独立实现（如 SOR 解与直接法解对拍）、极限行为与解析值（如 Sobol 的 S1 解析值 [0.8, 0.2]、GARCH 的方差递推），而不是"实现输出等于实现输出"。
+- **黄金值的作用是防回归，不是证明正确**：875 个键只保证"以后改动不会悄悄改变结果"。数值本身的正确性由那些独立断言负责——这也是为什么新增模块的黄金值是在断言全过之后才记录的。
+
 ## [1.6.0] - 2026-09-18
 
 本版补上一个**一直在漏的覆盖缺口**：`assets/latex/` 下的三套论文模板此前**从未在 CI 里被编译过**——CI 只校验仓库结构、算法模块和配图，不碰 LaTeX。也就是说模板可以一直悄悄地坏下去（宏包改名、`\cite` 打错、字体装不上），仓库照样全绿，而学生拿到手第一遍编译就报错。本版把"这三个模板真的能编译"变成 CI 上的硬门禁。

@@ -1,5 +1,12 @@
 """几何与空间分析：凸包、多边形面积、点在多边形内、球面距离、IDW 插值、普通克里金。
 
+本模块共 13 个公开名称（12 个函数 + 1 个常量），按用途分成三组：
+- 平面几何：``convex_hull`` / ``polygon_area`` / ``point_in_polygon`` / ``polygon_centroid``
+  / ``segment_intersection`` / ``minimum_enclosing_circle`` / ``point_to_segment_distance``
+  / ``voronoi_nearest``；
+- 球面距离：``haversine`` 与常量 ``EARTH_RADIUS_KM``；
+- 空间插值与地统计：``idw_interpolate`` / ``ordinary_kriging`` / ``estimate_variogram_params``。
+
 这些都是**教学透明版**实现，只依赖 numpy 与标准库：目标是让论文能写清"数据是怎么
 从若干个采样点被插值/判定出来的"，以及每种方法的隐含假设。
 
@@ -15,7 +22,7 @@
 from __future__ import annotations
 
 import math
-from typing import Dict, List, Optional, Sequence, Union
+from typing import Dict, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 
@@ -35,6 +42,11 @@ __all__ = [
     "idw_interpolate",
     "ordinary_kriging",
     "estimate_variogram_params",
+    "segment_intersection",
+    "minimum_enclosing_circle",
+    "polygon_centroid",
+    "point_to_segment_distance",
+    "voronoi_nearest",
     "EARTH_RADIUS_KM",
 ]
 
@@ -343,7 +355,10 @@ def ordinary_kriging(
         model: 半变异函数模型，``"spherical"``（默认）/``"exponential"``/
             ``"gaussian"``/``"linear"``。
         nugget: 块金常数 c0（测量误差 + 微尺度变异），>= 0，默认 0。
-        sill: 总基台值；默认取样本方差（``np.var(values)``）。传 None 表示自动估计。
+        sill: **总基台值**（= 块金 + 偏基台）；默认取样本方差（``np.var(values)``）。
+            传 None 表示自动估计。显式传入时必须满足 ``sill >= nugget``，否则抛
+            ``ValueError``；注意 :func:`estimate_variogram_params` 返回的是**偏基台**
+            （样本方差，不含块金），nugget > 0 时要先加回 nugget 再传进来。
         vrange: 变程（相关性的空间尺度）；默认取样本点最大两两距离的一半。
 
     返回:
@@ -377,6 +392,9 @@ def ordinary_kriging(
            ``np.linalg.solve`` 会报 LinAlgError 或给出巨大权重；此时应拉开采样间距、
            加 nugget 或改用带惩罚的解法。
         5. 变异函数模型选错（例如数据是周期性的却用球状模型）会让预测"看起来光滑但错"。
+        6. 若 ``nugget`` 超过样本方差而 ``sill`` 仍留 None，会直接抛
+           ``ValueError: sill(...) 不能小于 nugget(...)``——这不是 bug：总基台值不可能
+           小于块金。此时要么显式给一个更大的 ``sill``，要么承认块金估计过大。
 
     参考:
         Matheron, "Principles of geostatistics", Economic Geology, 1963；
@@ -459,7 +477,7 @@ def estimate_variogram_params(points: MatrixLike, values: ArrayLike, nugget: flo
 
     返回:
         dict，键为：
-        ``sill`` 总基台值（样本方差，ddof=0）；
+        ``sill`` **样本方差**（``np.var(values)``，ddof=0），**不含块金**；
         ``vrange`` 变程（样本点最大两两距离的一半）；
         ``nugget`` 原样回传的块金常数。
 
@@ -471,8 +489,14 @@ def estimate_variogram_params(points: MatrixLike, values: ArrayLike, nugget: flo
         时间 O(n²) / 空间 O(n²)。
 
     陷阱:
-        这个估计**没有任何统计学最优性**：样本点分布范围越大，变程估计越大，
-        预测越平滑；要得到可靠参数必须拟合实验变异函数或做交叉验证。
+        1. 这个估计**没有任何统计学最优性**：样本点分布范围越大，变程估计越大，
+           预测越平滑；要得到可靠参数必须拟合实验变异函数或做交叉验证。
+        2. **口径不一致，必须自己换算**：本函数返回的 ``sill`` 是样本方差（偏基台值），
+           而 :func:`ordinary_kriging` 与 :func:`_variogram_model` 的 ``sill`` 参数是
+           **总基台值 = 块金 + 偏基台**。因此当 ``nugget > 0`` 时，不能把本函数的结果
+           直接喂回去；正确做法是传 ``sill = estimate_variogram_params(...)["sill"] + nugget``
+           （否则 ``ordinary_kriging`` 内部会算成 ``sill - nugget`` 的偏基台，凭空吃掉一块
+           方差，预测被系统性压平）。只有 ``nugget == 0`` 时两者才恰好相等。
 
     参考:
         Cressie, "Statistics for Spatial Data", 1993（实验变异函数与模型拟合）。
@@ -495,6 +519,412 @@ def estimate_variogram_params(points: MatrixLike, values: ArrayLike, nugget: flo
     }
 
 
+def _point_on_segment(pt: np.ndarray, a: np.ndarray, b: np.ndarray, tol: float) -> bool:
+    """内部工具：判断点 pt 是否落在线段 ab 上（tol 为绝对距离容差）。"""
+    ab = b - a
+    denom = float(np.dot(ab, ab))
+    if denom <= 0.0:
+        return float(np.hypot(pt[0] - a[0], pt[1] - a[1])) <= tol
+    t = float(np.dot(pt - a, ab)) / denom
+    if t < -1e-9 or t > 1.0 + 1e-9:
+        return False
+    t_clamped = min(1.0, max(0.0, t))
+    proj = a + t_clamped * ab
+    return float(np.hypot(pt[0] - proj[0], pt[1] - proj[1])) <= tol
+
+
+def segment_intersection(
+    p1: ArrayLike,
+    p2: ArrayLike,
+    p3: ArrayLike,
+    p4: ArrayLike,
+    eps: float = 1e-12,
+) -> Dict[str, object]:
+    """判断两条平面线段 (p1,p2) 与 (p3,p4) 是否相交，并给出交点与退化标志。
+
+    参数:
+        p1, p2: 第一条线段的两个端点，各为长度 2 的坐标 ``(x, y)``。
+        p3, p4: 第二条线段的两个端点，各为长度 2 的坐标 ``(x, y)``。
+        eps: 相对容差，用于"是否平行"与"是否共线"的判据（默认 1e-12）。
+
+    返回:
+        dict，键为：
+        ``intersect``  bool，两线段是否有公共点（含只有一个公共端点的情形）；
+        ``point``  相交时的交点，形状 (2,) 的数组；不相交时为 ``None``。共线重叠时
+                   返回重叠区间的**中点**（重叠退化为一点时即该点）；
+        ``parallel``  bool，两线段方向平行（含共线与零长度线段）时为 True；
+        ``collinear_overlap``  bool，仅当两线段共线且重叠长度**严格为正**时为 True；
+                   共线但只接触一个点时返回 False（同时 ``intersect`` 为 True）。
+
+    算法:
+        1. 记 r = p2-p1，s = p4-p3，qp = p3-p1，叉积 cross(u,v) = u_x v_y - u_y v_x。
+        2. 平行判据用相对形式 |cross(r, s)| <= eps·|r|·|s|（零长度线段自动落入此支）。
+        3. 非平行时解参数方程 p1+t·r = p3+u·s：
+           t = cross(qp, s) / cross(r, s)，u = cross(qp, r) / cross(r, s)，
+           两者都落在 [0, 1]（参数容差 1e-9，即线段长度的十亿分之一）才算相交。
+        4. 平行时先判共线：|cross(qp, ref)| <= eps·|qp|·|ref|（ref 取 r，r 退化时取 s）。
+           共线则把四个端点投影到 |ref| 较大的那个坐标轴上，两个闭区间交非空即相交；
+           区间重叠长度 > 容差记为 ``collinear_overlap``。
+        5. 零长度线段（一个端点为点）退化为"点在另一线段上"的判定。
+
+    复杂度:
+        时间 O(1) / 空间 O(1)。
+
+    陷阱:
+        1. **"相交"必须区分"一个公共点"与"一段公共线段"**：平行且共线的两线段即使
+           重叠，叉积判据也永远给不出唯一交点；只写"解方程求交点"的实现在这里会除以 0
+           或给出 NaN。本函数用 ``collinear_overlap`` 显式区分这两种情形。
+        2. 浮点数据的共线几乎从不是精确的：eps 取太大（如 1e-6）会把近距离平行但
+           不共线的线段误判为共线；取太小则真实共线数据（由计算得来的坐标）判不出来。
+           eps 是**相对**容差，与坐标量纲无关，但坐标整体幅值极大/极小时仍建议复核。
+        3. ``intersect`` 只回答"是否有公共点"，不回答"内部是否穿越"。T 形接触
+           （一个端点落在另一线段内部）与端点重合都返回 True，需要区分时请检查交点是否
+           等于某个端点。
+        4. 交点由第一条线段的参数式 p1+t·r 算出，因此 t 略超出 [0,1] 时交点会落在
+           线段外一点点；参数容差 1e-9 意味着"距离端点 1e-9·|r| 以内"的接触也算相交。
+
+    参考:
+        计算几何经典线段相交判据（O'Rourke, "Computational Geometry in C", 1998）。
+    """
+    a = as_vector(p1, "p1")
+    b = as_vector(p2, "p2")
+    c = as_vector(p3, "p3")
+    d = as_vector(p4, "p4")
+    for name, v in (("p1", a), ("p2", b), ("p3", c), ("p4", d)):
+        if v.size != 2:
+            raise ValueError(f"{name} 必须是长度 2 的坐标，得到长度 {v.size}")
+    if eps <= 0.0:
+        raise ValueError(f"eps 必须 > 0，得到 {eps}")
+
+    coords = np.vstack([a, b, c, d])
+    pt_tol = eps * max(1.0, float(np.max(np.abs(coords))))
+
+    r = b - a
+    s = d - c
+    len_r = float(np.hypot(r[0], r[1]))
+    len_s = float(np.hypot(s[0], s[1]))
+    rxs = float(r[0] * s[1] - r[1] * s[0])
+    qp = c - a
+    len_qp = float(np.hypot(qp[0], qp[1]))
+    qpxr = float(qp[0] * r[1] - qp[1] * r[0])
+    qpxs = float(qp[0] * s[1] - qp[1] * s[0])
+
+    if abs(rxs) <= eps * len_r * len_s:
+        # 平行（含共线与零长度线段）
+        if len_r > pt_tol:
+            ref, origin, len_ref = r, a, len_r
+        else:
+            ref, origin, len_ref = s, c, len_s
+        collinear = abs(float(qp[0] * ref[1] - qp[1] * ref[0])) <= eps * len_qp * len_ref
+        if not collinear:
+            return {
+                "intersect": False,
+                "point": None,
+                "parallel": True,
+                "collinear_overlap": False,
+            }
+        if len_r <= pt_tol and len_s <= pt_tol:
+            same = float(np.hypot(a[0] - c[0], a[1] - c[1])) <= pt_tol
+            return {
+                "intersect": bool(same),
+                "point": a.copy() if same else None,
+                "parallel": True,
+                "collinear_overlap": False,
+            }
+        if len_r <= pt_tol:
+            on = _point_on_segment(a, c, d, pt_tol)
+            return {
+                "intersect": bool(on),
+                "point": a.copy() if on else None,
+                "parallel": True,
+                "collinear_overlap": False,
+            }
+        if len_s <= pt_tol:
+            on = _point_on_segment(c, a, b, pt_tol)
+            return {
+                "intersect": bool(on),
+                "point": c.copy() if on else None,
+                "parallel": True,
+                "collinear_overlap": False,
+            }
+        # 共线且两段都非退化：投影到 |ref| 较大的坐标轴上比较区间
+        axis = 0 if abs(ref[0]) >= abs(ref[1]) else 1
+        lo1, hi1 = sorted((float(a[axis]), float(b[axis])))
+        lo2, hi2 = sorted((float(c[axis]), float(d[axis])))
+        lo = max(lo1, lo2)
+        hi = min(hi1, hi2)
+        if lo > hi + pt_tol:
+            return {
+                "intersect": False,
+                "point": None,
+                "parallel": True,
+                "collinear_overlap": False,
+            }
+        t_mid = (0.5 * (lo + hi) - float(origin[axis])) / float(ref[axis])
+        point = origin + t_mid * ref
+        return {
+            "intersect": True,
+            "point": point,
+            "parallel": True,
+            "collinear_overlap": bool(hi - lo > pt_tol),
+        }
+
+    param_tol = 1e-9
+    t = qpxs / rxs
+    u = qpxr / rxs
+    hit = (-param_tol <= t <= 1.0 + param_tol) and (-param_tol <= u <= 1.0 + param_tol)
+    return {
+        "intersect": bool(hit),
+        "point": (a + t * r) if hit else None,
+        "parallel": False,
+        "collinear_overlap": False,
+    }
+
+
+def _circle_from_two(a: np.ndarray, b: np.ndarray) -> Tuple[np.ndarray, float]:
+    """内部工具：以 ab 为直径的圆（唯一能同时过两点的最小圆）。"""
+    center = 0.5 * (a + b)
+    return center, float(np.hypot(a[0] - b[0], a[1] - b[1])) / 2.0
+
+
+def _circle_from_three(a: np.ndarray, b: np.ndarray, c: np.ndarray) -> Tuple[np.ndarray, float]:
+    """内部工具：三点确定的外接圆；三点近似共线时退化为最远两点的直径圆。"""
+    ax, ay = float(a[0]), float(a[1])
+    bx, by = float(b[0]), float(b[1])
+    cx, cy = float(c[0]), float(c[1])
+    d = 2.0 * (ax * (by - cy) + bx * (cy - ay) + cx * (ay - by))
+    scale = max(
+        float(np.hypot(ax - bx, ay - by)),
+        float(np.hypot(ax - cx, ay - cy)),
+        float(np.hypot(bx - cx, by - cy)),
+    )
+    if scale <= 0.0:
+        return a.copy(), 0.0
+    if abs(d) <= 1e-12 * scale * scale:
+        pairs = ((a, b), (a, c), (b, c))
+        best = max(pairs, key=lambda pr: float(np.hypot(pr[0][0] - pr[1][0], pr[0][1] - pr[1][1])))
+        return _circle_from_two(best[0], best[1])
+    sa = ax * ax + ay * ay
+    sb = bx * bx + by * by
+    sc = cx * cx + cy * cy
+    ux = (sa * (by - cy) + sb * (cy - ay) + sc * (ay - by)) / d
+    uy = (sa * (cx - bx) + sb * (ax - cx) + sc * (bx - ax)) / d
+    center = np.array([ux, uy], dtype=float)
+    return center, float(np.hypot(ux - ax, uy - ay))
+
+
+def minimum_enclosing_circle(points: MatrixLike) -> Dict[str, Union[np.ndarray, float]]:
+    """求点集的最小包围圆（Welzl 增量算法，**确定性固定顺序**版本）。
+
+    参数:
+        points: 形状 (n, 2) 的点集，n >= 1。
+
+    返回:
+        dict，键为：
+        ``center``  形状 (2,) 的圆心坐标；
+        ``radius``  float，半径（n=1 时为 0.0）。
+
+    算法:
+        1. 先取前两个点构成直径圆；随后依次加入第 i 个点（i 从 2 到 n-1）。
+        2. 若第 i 个点在当前圆内则跳过；否则第 i 个点必在新圆边界上 —— 重置为
+           "以第 i 个点为圆心、半径 0"的退化圆。
+        3. 对 j < i：若点 j 不在圆内，则新圆必同时过 i 与 j，取两点直径圆；再对
+           k < j 检查，若点 k 不在圆内，则新圆是 i、j、k 的外接圆（近似共线时退化为
+           最远两点直径圆，它同样覆盖第三点）。
+        4. 内点判据用 ``dist <= radius + 1e-12·max(1, radius)``；两点圆用直径、
+           三点圆用外接圆闭式解，全部为确定性算术。
+
+    复杂度:
+        时间 O(n³) 最坏（本实现不做随机洗牌，因此没有"期望 O(n)"的保证）/
+        空间 O(n)。
+
+    陷阱:
+        1. **不洗牌 = 放弃期望线性时间**：Welzl 算法的 O(n) 期望复杂度依赖随机化，
+           这里为满足"两次调用结果必须逐位一致"而固定输入顺序，最坏 O(n³)。对竞赛
+           常见的 n ≤ 数千仍然够用；若 n 很大，请自行传入已按固定种子打乱的点集
+           （结果与输入顺序无关，只有耗时有关）。
+        2. **最小包围圆由 2 或 3 个点唯一决定**（直径圆或外接圆），所以半径是一个
+           "脆"的量：输入中一个远点就会换掉决定圆的那组点。用半径做断言时应当选
+           正多边形顶点这类对称点集。
+        3. 近共线的三点外接圆半径会趋于无穷，本实现用相对判据 |2·cross| <= 1e-12·L²
+           （L 为三点最大边长）切到直径圆分支，否则会得到巨大的圆心与半径。
+        4. **点必须互不相同**：重复点不会破坏算法（半径仍正确），但会让"内部"判定
+           全部落在边界上，不影响结论。
+
+    参考:
+        Welzl, "Smallest enclosing disks (balls and ellipsoids)", LNCS 555, 1991；
+        Nayuki 的确定性迭代实现说明。
+    """
+    pts = _as_points(points, "points")
+    n = pts.shape[0]
+    if n == 1:
+        return {"center": pts[0].copy(), "radius": 0.0}
+
+    center, radius = _circle_from_two(pts[0], pts[1])
+
+    def outside(pt: np.ndarray) -> bool:
+        tol = 1e-12 * max(1.0, radius)
+        return float(np.hypot(pt[0] - center[0], pt[1] - center[1])) > radius + tol
+
+    for i in range(2, n):
+        if not outside(pts[i]):
+            continue
+        center, radius = pts[i].copy(), 0.0
+        for j in range(i):
+            if not outside(pts[j]):
+                continue
+            center, radius = _circle_from_two(pts[i], pts[j])
+            for k in range(j):
+                if not outside(pts[k]):
+                    continue
+                center, radius = _circle_from_three(pts[i], pts[j], pts[k])
+
+    return {"center": center, "radius": float(radius)}
+
+
+def polygon_centroid(polygon: MatrixLike) -> Dict[str, Union[np.ndarray, float]]:
+    """求简单多边形的**面积加权**质心（不是顶点平均值），并返回带符号面积。
+
+    参数:
+        polygon: 形状 (n, 2) 的多边形顶点，按顺序给出（顺/逆时针都行），n >= 3。
+
+    返回:
+        dict，键为：
+        ``centroid``  形状 (2,) 的质心坐标；
+        ``signed_area``  float，带符号面积（逆时针为正、顺时针为负）。
+
+    算法:
+        记 cross_i = x_i·y_{i+1} - x_{i+1}·y_i（下标按模 n 回绕），
+        A = 0.5·Σ cross_i；
+        Cx = Σ (x_i + x_{i+1})·cross_i / (6A)，Cy = Σ (y_i + y_{i+1})·cross_i / (6A)。
+        退化判据：设 L 为包围盒对角线长度，若 L = 0 或 |A| <= 1e-12·L² 则抛 ValueError。
+
+    复杂度:
+        时间 O(n) / 空间 O(n)。
+
+    陷阱:
+        1. **顶点平均 ≠ 质心**：把顶点坐标直接求平均只在正多边形等特殊情形下成立，
+           对一般的"细长"或顶点疏密不均的多边形会明显偏。本函数用的是面积加权公式。
+        2. **自交多边形的质心无意义**：分母里的带符号面积会被正负部分抵消；本函数
+           只在 |A| 退化到接近 0 时报错，面积恰好抵消为 0 的自交图形（如对称"8 字"）
+           会抛异常，但面积不为 0 的自交图形不会 —— 返回值不可解释，使用前应先检查
+           多边形是否简单。
+        3. 首尾重复写一次闭合点不影响结果（cross 贡献为 0），但会多计一个顶点。
+        4. 阈值是**相对**的（1e-12·L²）：坐标整体缩放不改变结论，但极扁多边形
+           （面积远小于 L²）会被判为退化并抛错，这是有意的保护。
+
+    参考:
+        多边形质心的标准鞋带公式（计算几何教材通例）。
+    """
+    pts = _as_points(polygon, "polygon")
+    n = pts.shape[0]
+    if n < 3:
+        raise ValueError(f"polygon 至少需要 3 个顶点，得到 {n}")
+    x = pts[:, 0]
+    y = pts[:, 1]
+    x_next = np.roll(x, -1)
+    y_next = np.roll(y, -1)
+    cross = x * y_next - x_next * y
+    signed_area = 0.5 * float(np.sum(cross))
+    extent = float(np.hypot(x.max() - x.min(), y.max() - y.min()))
+    if extent <= 0.0 or abs(signed_area) <= 1e-12 * extent * extent:
+        raise ValueError(
+            f"多边形退化（带符号面积 {signed_area}，包围盒对角线 {extent}），无法定义质心"
+        )
+    cx = float(np.sum((x + x_next) * cross)) / (6.0 * signed_area)
+    cy = float(np.sum((y + y_next) * cross)) / (6.0 * signed_area)
+    return {"centroid": np.array([cx, cy], dtype=float), "signed_area": signed_area}
+
+
+def point_to_segment_distance(p: ArrayLike, a: ArrayLike, b: ArrayLike) -> float:
+    """点到**线段**（不是直线）的最短欧氏距离。
+
+    参数:
+        p: 待测点，长度 2 的坐标 ``(x, y)``。
+        a, b: 线段的两个端点，各为长度 2 的坐标。
+
+    返回:
+        float，最短距离（非负）。
+
+    算法:
+        设 ab = b-a。若 |ab|² = 0（线段退化为点）返回 |p-a|；
+        否则 t = ((p-a)·ab) / |ab|²，把 t 截断到 [0, 1] 得最近点 a + t·ab，
+        返回 |p - (a + t·ab)|。投影落在线段外时 t 被截断为 0 或 1，
+        距离自动等于到较近端点的距离。
+
+    复杂度:
+        时间 O(1) / 空间 O(1)。
+
+    陷阱:
+        1. **不要漏掉 t 的截断**：直接算 |(p-a)×ab|/|ab| 得到的是到**直线**的距离，
+           点在端点外侧时会严重偏小（例如点到其正后方 100 km 的线段，直线距离可能是
+           0，而真实距离是 100 km）。这类错误在做"最近道路距离"时后果很大。
+        2. 经纬度不能直接代入：Δ经度的地面长度随纬度收缩，必须先投影或用球面距离。
+        3. 本函数返回的是标量而非点坐标；需要最近点本身请自己按 t 重算。
+        4. 若调用方已经知道点在线段所在直线的哪一侧，用截断形式仍然正确，无需分支。
+
+    参考:
+        点到线段距离的标准投影公式（计算几何教材通例）。
+    """
+    pv = as_vector(p, "p")
+    av = as_vector(a, "a")
+    bv = as_vector(b, "b")
+    for name, v in (("p", pv), ("a", av), ("b", bv)):
+        if v.size != 2:
+            raise ValueError(f"{name} 必须是长度 2 的坐标，得到长度 {v.size}")
+    ab = bv - av
+    denom = float(np.dot(ab, ab))
+    if denom <= 0.0:
+        return float(np.hypot(pv[0] - av[0], pv[1] - av[1]))
+    t = float(np.dot(pv - av, ab)) / denom
+    t = min(1.0, max(0.0, t))
+    proj = av + t * ab
+    return float(np.hypot(pv[0] - proj[0], pv[1] - proj[1]))
+
+
+def voronoi_nearest(points: MatrixLike, queries: MatrixLike) -> Dict[str, np.ndarray]:
+    """Voronoi 最近站点查询（暴力版）：对每个查询点找欧氏距离最近的站点。
+
+    参数:
+        points: 站点坐标，形状 (n, 2)，n >= 1。
+        queries: 查询点，形状 (m, 2)。
+
+    返回:
+        dict，键为：
+        ``index``  形状 (m,) 的 int 数组，最近站点的下标；
+        ``distance``  形状 (m,) 的 float 数组，对应的最近距离。
+
+    算法:
+        1. 构造 (m, n) 的距离矩阵 D_jk = ‖q_j - p_k‖。
+        2. 每行取最小值下标。并列（距离完全相同）时 ``np.argmin`` 返回**最小下标**，
+           这是本实现固定的口径：查询点落在 Voronoi 边界上时归给编号最小的站点。
+
+    复杂度:
+        时间 O(mn) / 空间 O(mn)。暴力实现，n、m 都上千时请改用 KD 树或 Delaunay 对偶。
+
+    陷阱:
+        1. **Voronoi 胞元只由最近距离定义，不含任何障碍/路网约束**：把站点当设施、
+           查询点当需求点算"最近设施"时，直线距离会系统性低估实际通行距离。
+        2. 并列口径必须写清楚：浮点误差会让"本应并列"的点倒向任一侧，边界附近的
+           归属不可依赖；需要稳定归属时应显式加权重或改用距离排序后的规则。
+        3. 站点重复（重合）时只会返回其中下标最小的那个，另一个永远不被查询到。
+        4. 距离是平面欧氏的；用经纬度必须先换算成公里，否则高纬度处东西向距离被高估。
+
+    参考:
+        Voronoi, "Nouvelles applications des paramètres continus...", 1908；
+        最近邻查询的通例（见 computational geometry 教材）。
+    """
+    pts = _as_points(points, "points")
+    q = _as_points(queries, "queries")
+    diff = q[:, None, :] - pts[None, :, :]
+    dist = np.sqrt(np.sum(diff ** 2, axis=2))
+    idx = np.argmin(dist, axis=1).astype(int)
+    return {
+        "index": idx,
+        "distance": dist[np.arange(q.shape[0]), idx],
+    }
+
+
 def _self_test() -> dict:
     """跑一组小规模确定性算例，返回关键数值供 examples/run_algorithms.py 断言。
 
@@ -502,20 +932,40 @@ def _self_test() -> dict:
         无。
 
     返回:
-        dict（int/float/list），固定种子下两次调用完全一致：
-        ``hull_size`` 单位正方形 + 2 个内部点 + 4 个共线边中点的凸包顶点数（应为 4）；
-        ``hull_indices`` 凸包顶点下标（升序，便于断言）；
-        ``polygon_area`` 三角形 (0,0)-(4,0)-(0,3) 的面积（应为 6.0）；
-        ``square_area`` 单位正方形面积（应为 1.0）；
-        ``pip_inside`` / ``pip_outside`` / ``pip_on_edge`` 点包含判定（1/0）；
-        ``haversine_bj_sh`` 北京→上海的大圆距离（km）；
-        ``idw_at_sample`` 查询点与样本重合时的插值值（应精确等于样本值）；
-        ``idw_center`` 正方形四角对称采样时中心点的 IDW 值；
-        ``krige_max_dev_at_sample`` 在样本点处预测值与观测值的最大偏差（nugget=0，应≈0）；
-        ``krige_var_at_sample`` 样本点处克里金方差的最大值（应≈0）；
-        ``krige_pred_center`` 中心点的克里金预测值；
-        ``krige_var_center`` 中心点的克里金方差；
-        ``krige_sill`` / ``krige_vrange`` 默认参数估计出的基台值与变程。
+        dict（int/float/list，固定种子下两次调用完全一致），共 46 个键，按族分组：
+
+        - **凸包与多边形**（7 个）：``hull_size`` 单位正方形 + 4 个共线边中点 + 2 个内部点
+          的凸包顶点数（应为 4）；``hull_indices`` 凸包顶点下标（升序）；
+          ``polygon_area`` 三角形 (0,0)-(4,0)-(0,3) 的面积（应为 6.0）；
+          ``square_area`` 单位正方形面积（应为 1.0）；``pip_inside`` / ``pip_outside`` /
+          ``pip_on_edge`` 点包含判定（1/0）。
+        - **距离与插值**（3 个）：``haversine_bj_sh`` 北京→上海大圆距离（km）；
+          ``idw_at_sample`` 查询点与样本重合时的 IDW 值（应精确等于样本值）；
+          ``idw_center`` 四角对称采样下中心点的 IDW 值。
+        - **克里金**（7 个）：``krige_max_dev_at_sample`` 样本点处预测与观测的最大偏差
+          （nugget=0，应≈0）；``krige_var_at_sample`` 样本点处克里金方差的最大值（应≈0）；
+          ``krige_pred_center`` / ``krige_var_center`` 中心点的预测值与方差；
+          ``krige_sill`` / ``krige_vrange`` 默认参数估计出的基台值与变程；
+          ``krige_keys`` 返回值字典的键名（升序）。
+        - **最小包围圆**（7 个）：``mec_triangle_radius`` / ``mec_triangle_center``
+          边长 1 正三角形的外接圆半径与圆心；``mec_square_radius`` /
+          ``mec_square_center`` 单位正方形的最小包围圆；``mec_square_covers_all``
+          是否覆盖全部顶点（1/0）；``mec_two_point_center`` / ``mec_two_point_radius``
+          两点退化情形（圆心为中点）。
+        - **点到线段距离**（4 个）：``pt_seg_outside_right`` / ``pt_seg_outside_left``
+          投影落在线段外两侧时应等于到端点的距离；``pt_seg_perp`` 垂直投影距离；
+          ``pt_seg_degenerate`` 线段退化为一点时的距离。
+        - **多边形质心**（4 个）：``centroid_square`` / ``centroid_square_signed_area``
+          单位正方形质心与带符号面积；``centroid_triangle`` /
+          ``centroid_triangle_signed_area`` 同上，取自 (0,0)-(4,0)-(0,3)。
+        - **线段相交**（12 个）：``seg_parallel_intersect`` / ``seg_parallel_flag``
+          平行不共线；``seg_collinear_intersect`` / ``seg_collinear_overlap`` /
+          ``seg_collinear_point`` 共线重叠的中点；``seg_touch_point_overlap`` /
+          ``seg_touch_point`` 共线仅接触一点；``seg_endpoint_intersect`` /
+          ``seg_endpoint_point`` 端点重合；``seg_t_junction_point`` T 形接触；
+          ``seg_cross_point`` 正常交叉；``seg_disjoint_intersect`` 完全分离。
+        - **Voronoi 最近站点**（2 个）：``voronoi_index`` 最近站点下标（暴力法）；
+          ``voronoi_distance`` 对应距离。
 
     算法:
         点集与数值全部硬编码，不含随机量，因此天然可复现；克里金用默认参数
@@ -557,6 +1007,79 @@ def _self_test() -> dict:
     krig_center = ordinary_kriging(sample_pts, sample_vals, np.array([[0.5, 0.5]]), model="spherical")
     vparams = estimate_variogram_params(sample_pts, sample_vals)
 
+    # ---- 新增函数的闭式解 / 退化情形断言 ----
+    # 1) 最小包围圆：正三角形与正方形的外接圆有闭式解
+    tri = np.array([[0.0, 0.0], [1.0, 0.0], [0.5, math.sqrt(3.0) / 2.0]])
+    mec_tri = minimum_enclosing_circle(tri)
+    closed_radius_tri = 1.0 / math.sqrt(3.0)  # 边长 1 的正三角形外接圆半径
+    if abs(float(mec_tri["radius"]) - closed_radius_tri) > 1e-9:
+        raise AssertionError(
+            f"正三角形最小包围圆半径 {mec_tri['radius']} 与外接圆闭式解 {closed_radius_tri} 不符"
+        )
+    closed_center_tri = np.array([0.5, math.sqrt(3.0) / 6.0])
+    if float(np.max(np.abs(mec_tri["center"] - closed_center_tri))) > 1e-9:
+        raise AssertionError(f"正三角形最小包围圆圆心 {mec_tri['center']} 与闭式解 {closed_center_tri} 不符")
+    mec_sq = minimum_enclosing_circle(square)
+    closed_radius_sq = math.sqrt(2.0) / 2.0  # 单位正方形外接圆 = 半对角线
+    if abs(float(mec_sq["radius"]) - closed_radius_sq) > 1e-9:
+        raise AssertionError(
+            f"正方形最小包围圆半径 {mec_sq['radius']} 与外接圆闭式解 {closed_radius_sq} 不符"
+        )
+    if float(np.max(np.abs(mec_sq["center"] - np.array([0.5, 0.5])))) > 1e-9:
+        raise AssertionError(f"正方形最小包围圆圆心 {mec_sq['center']} 应为 (0.5, 0.5)")
+    if not bool(np.all(np.hypot(*(square - mec_sq["center"]).T) <= float(mec_sq["radius"]) + 1e-12)):
+        raise AssertionError("正方形最小包围圆未覆盖全部顶点")
+    mec_two = minimum_enclosing_circle(np.array([[0.0, 0.0], [2.0, 0.0]]))
+
+    # 2) 点到线段距离：投影落在线段外时必须等于到端点的距离
+    d_outside = point_to_segment_distance([2.0, 0.0], [0.0, 0.0], [1.0, 0.0])
+    if abs(d_outside - math.hypot(2.0 - 1.0, 0.0)) > 1e-12:
+        raise AssertionError(f"点在投影外侧时距离 {d_outside} 应等于到端点 b 的距离 1.0")
+    d_before = point_to_segment_distance([-3.0, 4.0], [0.0, 0.0], [1.0, 0.0])
+    if abs(d_before - 5.0) > 1e-12:
+        raise AssertionError(f"点在投影外侧时距离 {d_before} 应等于到端点 a 的距离 5.0")
+
+    # 3) 多边形质心：单位正方形为 (0.5, 0.5)，带符号面积 1.0
+    cent_sq = polygon_centroid(square)
+    if float(np.max(np.abs(cent_sq["centroid"] - np.array([0.5, 0.5])))) > 1e-12:
+        raise AssertionError(f"单位正方形质心 {cent_sq['centroid']} 应为 (0.5, 0.5)")
+    if abs(float(cent_sq["signed_area"]) - 1.0) > 1e-12:
+        raise AssertionError(f"逆时针单位正方形带符号面积 {cent_sq['signed_area']} 应为 1.0")
+
+    # 4) 线段相交的三种退化情形（平行 / 共线重叠 / 端点相交）各有确定结论
+    seg_par = segment_intersection([0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0])
+    if seg_par["intersect"] or not seg_par["parallel"] or seg_par["collinear_overlap"]:
+        raise AssertionError(f"平行不共线线段判定错误：{seg_par}")
+    if seg_par["point"] is not None:
+        raise AssertionError("不相交线段的 point 必须为 None")
+    seg_col = segment_intersection([0.0, 0.0], [2.0, 0.0], [1.0, 0.0], [3.0, 0.0])
+    if not (seg_col["intersect"] and seg_col["parallel"] and seg_col["collinear_overlap"]):
+        raise AssertionError(f"共线重叠线段判定错误：{seg_col}")
+    if float(np.max(np.abs(seg_col["point"] - np.array([1.5, 0.0])))) > 1e-12:
+        raise AssertionError(f"共线重叠区间中点 {seg_col['point']} 应为 (1.5, 0.0)")
+    seg_touch = segment_intersection([0.0, 0.0], [1.0, 0.0], [1.0, 0.0], [2.0, 0.0])
+    if not seg_touch["intersect"] or seg_touch["collinear_overlap"]:
+        raise AssertionError(f"共线仅接触一点时 collinear_overlap 必须为 False：{seg_touch}")
+    seg_end = segment_intersection([0.0, 0.0], [1.0, 0.0], [1.0, 0.0], [1.0, 1.0])
+    if not seg_end["intersect"] or seg_end["parallel"]:
+        raise AssertionError(f"端点相交判定错误：{seg_end}")
+    if float(np.max(np.abs(seg_end["point"] - np.array([1.0, 0.0])))) > 1e-12:
+        raise AssertionError(f"端点相交交点 {seg_end['point']} 应为 (1.0, 0.0)")
+    seg_t = segment_intersection([0.0, 0.0], [2.0, 0.0], [1.0, 0.0], [1.0, 1.0])
+    if not seg_t["intersect"] or float(np.max(np.abs(seg_t["point"] - np.array([1.0, 0.0])))) > 1e-12:
+        raise AssertionError(f"T 形端点落在另一线段内部时判定错误：{seg_t}")
+    seg_cross = segment_intersection([0.0, 0.0], [2.0, 2.0], [0.0, 2.0], [2.0, 0.0])
+    if float(np.max(np.abs(seg_cross["point"] - np.array([1.0, 1.0])))) > 1e-12:
+        raise AssertionError(f"交叉线段交点 {seg_cross['point']} 应为 (1.0, 1.0)")
+    seg_dis = segment_intersection([0.0, 0.0], [1.0, 0.0], [2.0, 1.0], [3.0, 0.0])
+
+    # 5) Voronoi 最近站点查询（暴力）：方形四角站点
+    vor = voronoi_nearest(square, np.array([[0.6, 0.6], [0.1, 0.1]]))
+    if [int(i) for i in vor["index"]] != [2, 0]:
+        raise AssertionError(f"最近站点下标 {[int(i) for i in vor['index']]} 应为 [2, 0]")
+    if abs(float(vor["distance"][0]) - math.hypot(0.4, 0.4)) > 1e-12:
+        raise AssertionError(f"最近距离 {vor['distance'][0]} 应为 {math.hypot(0.4, 0.4)}")
+
     return {
         "hull_size": len(hull),
         "hull_indices": sorted(int(i) for i in hull),
@@ -575,4 +1098,42 @@ def _self_test() -> dict:
         "krige_sill": round(float(vparams["sill"]), 6),
         "krige_vrange": round(float(vparams["vrange"]), 6),
         "krige_keys": sorted(krig.keys()),
+        "mec_triangle_radius": round(float(mec_tri["radius"]), 9),
+        "mec_triangle_center": [round(float(v), 9) for v in mec_tri["center"]],
+        "mec_square_radius": round(float(mec_sq["radius"]), 9),
+        "mec_square_center": [round(float(v), 9) for v in mec_sq["center"]],
+        "mec_square_covers_all": int(
+            bool(np.all(np.hypot(*(square - mec_sq["center"]).T) <= float(mec_sq["radius"]) + 1e-12))
+        ),
+        "mec_two_point_center": [round(float(v), 9) for v in mec_two["center"]],
+        "mec_two_point_radius": round(float(mec_two["radius"]), 9),
+        "pt_seg_outside_right": round(float(d_outside), 9),
+        "pt_seg_outside_left": round(float(d_before), 9),
+        "pt_seg_perp": round(float(point_to_segment_distance([0.5, 3.0], [0.0, 0.0], [1.0, 0.0])), 9),
+        "pt_seg_degenerate": round(
+            float(point_to_segment_distance([3.0, 4.0], [1.0, 1.0], [1.0, 1.0])), 9
+        ),
+        "centroid_square": [round(float(v), 12) for v in cent_sq["centroid"]],
+        "centroid_square_signed_area": round(float(cent_sq["signed_area"]), 12),
+        "centroid_triangle": [
+            round(float(v), 12)
+            for v in polygon_centroid(np.array([[0.0, 0.0], [4.0, 0.0], [0.0, 3.0]]))["centroid"]
+        ],
+        "centroid_triangle_signed_area": round(
+            float(polygon_centroid(np.array([[0.0, 0.0], [4.0, 0.0], [0.0, 3.0]]))["signed_area"]), 12
+        ),
+        "seg_parallel_intersect": int(seg_par["intersect"]),
+        "seg_parallel_flag": int(seg_par["parallel"]),
+        "seg_collinear_intersect": int(seg_col["intersect"]),
+        "seg_collinear_overlap": int(seg_col["collinear_overlap"]),
+        "seg_collinear_point": [round(float(v), 12) for v in seg_col["point"]],
+        "seg_touch_point_overlap": int(seg_touch["collinear_overlap"]),
+        "seg_touch_point": [round(float(v), 12) for v in seg_touch["point"]],
+        "seg_endpoint_intersect": int(seg_end["intersect"]),
+        "seg_endpoint_point": [round(float(v), 12) for v in seg_end["point"]],
+        "seg_t_junction_point": [round(float(v), 12) for v in seg_t["point"]],
+        "seg_cross_point": [round(float(v), 12) for v in seg_cross["point"]],
+        "seg_disjoint_intersect": int(seg_dis["intersect"]),
+        "voronoi_index": [int(i) for i in vor["index"]],
+        "voronoi_distance": [round(float(v), 9) for v in vor["distance"]],
     }

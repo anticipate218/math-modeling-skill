@@ -1,5 +1,14 @@
 """时间序列预测：移动平均、指数平滑、Holt、Holt-Winters、AR(Yule-Walker)、ACF/PACF、ADF、精度指标与回测切分。
 
+本模块共 19 个公开函数，按用途分成五组：
+- 平滑类：``moving_average`` / ``exponential_smoothing`` / ``holt_linear`` / ``holt_winters``
+  / ``holt_winters_multiplicative``；
+- 自回归与差分：``ar_model`` / ``difference``；
+- 自相关与平稳性检验：``acf`` / ``pacf`` / ``adf_test`` / ``mackinnon_crit``；
+- 精度指标：``mape`` / ``rmse`` / ``mae`` / ``theil_u``；
+- 基线、切分与分解：``naive_forecast`` / ``train_test_split_ts`` / ``rolling_origin_cv``
+  / ``seasonal_decompose``。
+
 本模块的共同约定
 ----------------
 - 输入 ``y`` 一律按**时间先后**排列（``y[0]`` 最早）。全模块**不做任何随机打乱**：
@@ -37,6 +46,9 @@ __all__ = [
     "theil_u",
     "train_test_split_ts",
     "rolling_origin_cv",
+    "naive_forecast",
+    "seasonal_decompose",
+    "holt_winters_multiplicative",
 ]
 
 # --------------------------------------------------------------------------
@@ -1112,6 +1124,396 @@ def rolling_origin_cv(
 
 
 # --------------------------------------------------------------------------
+# 朴素基线 / 经典分解 / 乘法 Holt-Winters
+# --------------------------------------------------------------------------
+
+#: ``naive_forecast`` 支持的基线方法。
+_NAIVE_METHODS = ("last", "mean", "drift", "seasonal")
+
+
+def _centered_moving_average(x: np.ndarray, period: int) -> np.ndarray:
+    """周期为 ``period`` 的居中移动平均（用于提取趋势），首尾无法计算处填 ``NaN``。
+
+    参数:
+        x: 一维序列（已过 ``as_vector`` 校验）。
+        period: 季节周期 m，必须与调用方的 ``period`` 一致。
+
+    返回:
+        与 ``x`` 等长的数组。``period`` 为奇数时是等权窗口 ``x[t-half..t+half]``；
+        为偶数时是 2×m 移动平均（端点权重 0.5、其余 1，再除以 m），
+        有效区间都是 ``[half, n-1-half]``（``half = period // 2``）。
+
+    算法:
+        奇数 m：``trend[t] = mean(x[t-half : t+half+1])``；
+        偶数 m：``trend[t] = (0.5*x[t-half] + x[t-half+1] + ... + x[t+half-1] + 0.5*x[t+half]) / m``。
+
+    复杂度:
+        时间 O(n * period) / 空间 O(period)。
+
+    陷阱:
+        偶数周期的 2×m 平均权重不对称地落在端点上（t-half 与 t+half 同相位、各占 0.5），
+        这正是经典分解的通行口径；它能把**线性趋势**逐点精确复现，但对二次以上的趋势有偏。
+
+    参考:
+        Hyndman & Athanasopoulos, "Forecasting: Principles and Practice", 3rd ed., §3.4。
+    """
+    n = x.size
+    trend = np.full(n, np.nan, dtype=float)
+    half = period // 2
+    if period % 2 == 1:
+        for t in range(half, n - half):
+            trend[t] = float(x[t - half: t + half + 1].mean())
+    else:
+        w = np.ones(period + 1, dtype=float)
+        w[0] = 0.5
+        w[-1] = 0.5
+        w /= float(period)
+        for t in range(half, n - half):
+            trend[t] = float(np.dot(w, x[t - half: t + half + 1]))
+    return trend
+
+
+def _decomposition_strength(resid: np.ndarray, component: np.ndarray) -> float:
+    """分解强度 ``max(0, 1 - Var(resid) / Var(component))``（只在两者都有限的位置上算）。
+
+    参数:
+        resid: 残差序列（可能含 ``NaN``）。
+        component: 对照分量（趋势强度用 ``x - trend``，季节强度用 ``x - seasonal``；
+            乘法模型下用对应的比值序列）。
+
+    返回:
+        float，落在 [0, 1]；``component`` 方差为 0 时返回 1.0（残差也为 0）或 0.0。
+
+    算法:
+        取 ``resid`` 与 ``component`` 都有限的位置，算两者的总体方差（分母 n）再套公式。
+
+    复杂度:
+        时间 O(n) / 空间 O(n)。
+
+    陷阱:
+        只在 ``[half, n-1-half]`` 上有值，若序列长度刚够 ``2*period``，可用点数很少，
+        强度估计极不稳定；这也是经典分解在短序列上不可信的原因。
+
+    参考:
+        Wang, Smith & Hyndman (2006) "Characteristic-based clustering for time series data",
+        Data Mining and Knowledge Discovery 13(3): 335-364（强度指标出处）。
+    """
+    mask = np.isfinite(resid) & np.isfinite(component)
+    if int(mask.sum()) < 2:
+        return 0.0
+    var_r = float(np.var(resid[mask]))
+    var_c = float(np.var(component[mask]))
+    if var_c <= 0.0:
+        return 1.0 if var_r <= 0.0 else 0.0
+    return max(0.0, 1.0 - var_r / var_c)
+
+
+def naive_forecast(
+    x: Sequence[float],
+    n_ahead: int = 1,
+    method: str = "last",
+    period: Optional[int] = None,
+) -> Dict[str, object]:
+    """朴素预测基线：最后一期 / 历史均值 / 线性漂移 / 上一周期。
+
+    参数:
+        x: 一维时间序列，按时间先后排列（长度 >= 1；``"drift"`` 需要 >= 2）。
+        n_ahead: 预测步数（>= 1）。
+        method: ``"last"``（用 ``x[-1]`` 平推）、``"mean"``（用 ``mean(x)`` 平推）、
+            ``"drift"``（从 ``x[0]`` 到 ``x[-1]`` 的直线外推）、
+            ``"seasonal"``（用上一周期的同相位观测，需要 ``period``）。
+        period: 季节周期 m，仅 ``method="seasonal"`` 时使用；``None`` 会抛 ``ValueError``。
+
+    返回:
+        dict，键为：
+        ``forecast``  长度 ``n_ahead`` 的预测数组，``forecast[h-1]`` 是未来第 h 期；
+        ``method``    实际使用的方法名（str）。
+
+    算法:
+        1. ``"last"``：``f_h = x_{n-1}``；
+        2. ``"mean"``：``f_h = mean(x)``；
+        3. ``"drift"``：``f_h = x_{n-1} + h * (x_{n-1} - x_0) / (n - 1)``；
+        4. ``"seasonal"``：``f_h = x_{n - m + ((h-1) % m)}``（下标对 n 取模的同相位观测，
+           例如 n=12、m=4 时 ``f_1 = x_8``）。
+        四种方法都只用历史数据，不含任何待估参数。
+
+    复杂度:
+        时间 O(n + n_ahead) / 空间 O(n_ahead)。
+
+    陷阱:
+        - 朴素方法在基准对比里是**及格线而不是模型**：一个复杂模型若打不赢
+          ``"last"``/``"seasonal"``，说明它的参数估计没有带来信息（Hyndman 的 MASE
+          正是用季节朴素法做分母）。论文里必须报告这条基线。
+        - ``"seasonal"`` 的相位对齐依赖 ``x`` 的起点：若序列被截断过（例如从某年 3 月开始），
+          ``period`` 的相位就错了，误差会凭空变大。截断数据要先按相位补齐或改用
+          ``seasonal_decompose`` 显式估季节因子。
+        - ``"drift"`` 把首末两点的噪声当成斜率，对首末点的异常值极其敏感；
+          外推步数越多，误差线性放大。
+        - 高估方法：``"mean"`` 对含趋势的序列系统性滞后；不要因为它"误差看起来平滑"就选用。
+
+    参考:
+        Hyndman & Athanasopoulos §5.2（naive / seasonal naive / drift methods）；
+        Hyndman & Koehler (2006)（MASE 以季节朴素法为基准）。
+    """
+    xv = as_vector(x, "x")
+    h = _validate_positive_int(n_ahead, "n_ahead")
+    if method not in _NAIVE_METHODS:
+        raise ValueError(
+            "method 只能是 {0} 之一，得到 {1!r}".format(", ".join(_NAIVE_METHODS), method)
+        )
+    n = xv.size
+    if method == "last":
+        fc = np.full(h, float(xv[-1]), dtype=float)
+    elif method == "mean":
+        fc = np.full(h, float(xv.mean()), dtype=float)
+    elif method == "drift":
+        if n < 2:
+            raise ValueError(f"method='drift' 至少需要 2 个观测，得到 {n}")
+        slope = float(xv[-1] - xv[0]) / float(n - 1)
+        fc = np.array([float(xv[-1]) + slope * k for k in range(1, h + 1)], dtype=float)
+    else:
+        m = _validate_positive_int(period, "period")
+        if n < m:
+            raise ValueError(f"method='seasonal' 需要至少 period = {m} 个观测，得到 {n}")
+        fc = np.array(
+            [float(xv[n - m + ((k - 1) % m)]) for k in range(1, h + 1)], dtype=float
+        )
+    return {"forecast": fc, "method": str(method)}
+
+
+def seasonal_decompose(
+    x: Sequence[float],
+    period: int,
+    model: str = "additive",
+    n_iter: int = 2,
+) -> Dict[str, object]:
+    """经典季节分解：居中移动平均取趋势 + 按相位平均取季节项 + 残差。
+
+    参数:
+        x: 一维时间序列，长度至少为 ``2 * period``。
+        period: 季节周期 m（如季度 m=4、月度 m=12）。
+        model: ``"additive"``（``x = trend + seasonal + resid``）或
+            ``"multiplicative"``（``x = trend * seasonal * resid``，要求 ``x`` 严格为正）。
+        n_iter: 分解迭代次数（>= 1）；第 1 轮用原始序列取趋势，之后每轮先用上一轮的
+            季节项把序列去季节再重估趋势，反复冲洗掉"季节项混进趋势"的污染。
+
+    返回:
+        dict，键为：
+        ``trend``     形状 (n,) 的居中移动平均，首尾 ``half = period // 2`` 个位置为 ``NaN``；
+        ``seasonal``  形状 (n,) 的周期延拓季节项（``seasonal[t]`` 对应相位 ``t % period``，
+                      因此 ``seasonal[:period]`` 就是一个完整周期的因子；加法模型下均值为 0，
+                      乘法模型下均值为 1）；
+        ``resid``     形状 (n,) 的残差，``trend`` 为 ``NaN`` 处同样为 ``NaN``；
+                      （加法：``x - trend - seasonal``；乘法：``x / (trend * seasonal)``）；
+        ``strength_trend``    float，``max(0, 1 - Var(resid) / Var(x - trend))``；
+        ``strength_seasonal`` float，``max(0, 1 - Var(resid) / Var(x - seasonal))``；
+                      两者的方差都只在 ``resid`` 与对照分量都有限的位置上计算（`_decomposition_strength`），
+                      乘法模型下这两个对照分量改为比值序列 ``x / trend``、``x / seasonal``。
+
+    算法:
+        1. 令 ``seasonal`` 初值为 0（加法）或 1（乘法），重复 ``n_iter`` 轮：
+           2. ``adjusted = x - seasonal``（加法）或 ``x / seasonal``（乘法）；
+              ``trend = _centered_moving_average(adjusted, period)``；
+           3. ``detrended = x - trend``（加法）或 ``x / trend``（乘法）；
+           4. 对每个相位 ``j = 0..period-1`` 取 ``detrended`` 在 ``t % period == j`` 上的
+              均值（忽略 ``NaN``）得原始季节因子；加法减去其均值、乘法除以其均值归一；
+           5. 把因子按相位延拓成长度 n 的 ``seasonal``。
+        6. 由最终的 ``trend`` 与 ``seasonal`` 算 ``resid``，再用 `_decomposition_strength` 算两个强度。
+        与 STL 不同，这里不做局部加权回归、不迭代内循环，季节项在全样本上是**常数**。
+
+    复杂度:
+        时间 O(n_iter * n * period) / 空间 O(n)。
+
+    陷阱:
+        - **移动平均趋势本身会被季节项污染**：序列长度不是周期的整数倍、或真正的季节形态
+          随时间变化（幅度增长/形状漂移）时，居中平均里残留的季节成分会被塞进趋势，
+          表现为趋势线出现周期性"波纹"。这正是要多迭代 ``n_iter`` 次的原因，但迭代不能
+          根治，只是减轻；形态漂移明显时应改用 STL 类方法。
+        - 首尾 ``half`` 个点没有趋势值，因此**残差与强度都只在中段计算**；若序列长度刚好
+          ``2*period``，可用点极少，强度会非常不稳定，不要据此下结论。
+        - 乘法模型要求 ``x``、趋势与初季节因子全为正，本实现对非正值直接抛 ``ValueError``，
+          而不是返回 ``NaN`` 让残差一路污染；含 0 的"某月销量为 0"应改加法模式或先平移/取对数。
+        - ``period`` 取错时季节项会把趋势吸收进去、残差看起来"变小"，强度指标反而变好看——
+          强度高不等于模型对，必须与 ACF 的周期证据、业务周期一起判断。
+        - 本函数的分解是**确定性描述**，不是概率模型，不提供预测；要预测请用
+          ``holt_winters`` / ``holt_winters_multiplicative``。
+
+    参考:
+        Hyndman & Athanasopoulos §3.4（classical decomposition）；
+        Wang, Smith & Hyndman (2006)（强度指标）。
+    """
+    xv = as_vector(x, "x")
+    m = _validate_positive_int(period, "period")
+    iters = _validate_positive_int(n_iter, "n_iter")
+    if model not in ("additive", "multiplicative"):
+        raise ValueError(f"model 只能是 'additive' 或 'multiplicative'，得到 {model!r}")
+    n = xv.size
+    if n < 2 * m:
+        raise ValueError(f"seasonal_decompose 至少需要 2*period = {2 * m} 个观测，得到 {n}")
+    if model == "multiplicative" and np.any(xv <= 0.0):
+        raise ValueError(
+            "乘法分解要求所有观测严格为正；含非正值时请改用加法模式或先做平移/对数变换"
+        )
+
+    seasonal_rep = (
+        np.ones(n, dtype=float) if model == "multiplicative" else np.zeros(n, dtype=float)
+    )
+    phase_index = np.arange(n) % m
+    trend = np.full(n, np.nan, dtype=float)
+    for _ in range(iters):
+        adjusted = xv - seasonal_rep if model == "additive" else xv / seasonal_rep
+        trend = _centered_moving_average(adjusted, m)
+        finite_trend = trend[np.isfinite(trend)]
+        if model == "multiplicative" and np.any(finite_trend <= 0.0):
+            raise ValueError("乘法分解的趋势项出现非正值，请改用加法模式")
+        detrended = xv - trend if model == "additive" else xv / trend
+
+        raw = np.full(m, np.nan, dtype=float)
+        for j in range(m):
+            vals = detrended[phase_index == j]
+            vals = vals[np.isfinite(vals)]
+            if vals.size == 0:
+                raise ValueError(f"季节相位 {j} 没有任何可用的去趋势观测，无法估计季节因子")
+            raw[j] = float(vals.mean())
+        if model == "additive":
+            raw = raw - raw.mean()
+        else:
+            if np.any(raw <= 0.0):
+                raise ValueError(
+                    "乘法分解的季节因子出现非正值（数据波动过大），请改用加法模式"
+                )
+            raw = raw / raw.mean()
+        seasonal_rep = raw[phase_index]
+
+    if model == "additive":
+        resid = xv - trend - seasonal_rep
+        detrended_all = xv - trend
+        deseasonalized_all = xv - seasonal_rep
+    else:
+        resid = xv / (trend * seasonal_rep)
+        detrended_all = xv / trend
+        deseasonalized_all = xv / seasonal_rep
+
+    return {
+        "trend": trend,
+        "seasonal": seasonal_rep,
+        "resid": resid,
+        "strength_trend": float(_decomposition_strength(resid, detrended_all)),
+        "strength_seasonal": float(_decomposition_strength(resid, deseasonalized_all)),
+    }
+
+
+def holt_winters_multiplicative(
+    x: Sequence[float],
+    period: int,
+    alpha: float,
+    beta: float,
+    gamma: float,
+    n_ahead: int = 1,
+) -> Dict[str, object]:
+    """乘法季节 Holt-Winters 三参数指数平滑（水平 × 趋势 × 季节因子）。
+
+    参数:
+        x: 一维时间序列，长度至少为 ``2 * period``，且**必须严格为正**。
+        period: 季节周期 m（如季度 m=4、月度 m=12）。
+        alpha / beta / gamma: 水平 / 趋势 / 季节的平滑系数，均落在 (0, 1)。
+        n_ahead: 样本外预测步数（>= 1），本函数不再限制为 period。
+
+    返回:
+        dict，键为：
+        ``fitted``    长度 n 的一步预测，前 ``2*period`` 个位置为 ``NaN``（初始化期无历史）；
+        ``forecast``  长度 ``n_ahead`` 的多步预测，``forecast[h-1]`` 是未来第 h 期；
+        ``level``     末期水平 l（标量）；
+        ``trend``     末期趋势 b（标量）；
+        ``seasonal``  末期季节因子，长度 period，下标 j 对应 ``t % period == j``，均值近似 1。
+
+    算法:
+        初始化与 ``holt_winters(mode="multiplicative")`` 完全一致：用前两个完整季节做经典分解
+        （``base = level0 + trend0 * t``，``detrended = y / base``，两个季节按相位平均后
+        除以其均值），水平初值取第一季均值、趋势初值取两季均值的平均斜率；随后对
+        ``t >= 2m``（``j = t % period``）迭代
+        ``yhat_t = (l_{t-1} + b_{t-1}) * s_{t-m}``；
+        ``l_t = alpha*(y_t / s_{t-m}) + (1-alpha)*(l_{t-1} + b_{t-1})``；
+        ``b_t = beta*(l_t - l_{t-1}) + (1-beta)*b_{t-1}``；
+        ``s_t = gamma*(y_t / l_t) + (1-gamma)*s_{t-m}``；
+        预测 ``f_h = (l + b*h) * s_{(n+h-1) % period}``。
+
+    复杂度:
+        时间 O(n + n_ahead) / 空间 O(n + period)。
+
+    陷阱:
+        - **乘法模式要求数据严格为正**：含 0 或负值时 ``y_t / s_{t-m}`` 无意义，本实现直接
+          抛 ``ValueError``（与 ``holt_winters`` 同口径），而不是返回 ``NaN``/``inf`` 污染后续指标。
+        - 季节因子若被数据波动推到 0 附近，递推里的除法会爆炸；本实现对退化的 ``s_prev`` 与
+          ``l_t`` 都显式抛 ``ValueError``。乘法模型的常见兜底是先取对数再套**加法**模式。
+        - 序列长度刚好 ``2*period`` 时递推循环一次都不执行，``fitted`` 全是 ``NaN``、只有
+          ``level``/``trend``/``seasonal`` 和 ``forecast`` 可用；这不是 bug 而是初始化代价。
+        - 乘法模型的 ``fitted`` 首 ``2*period`` 个位置是 ``NaN``，直接整段算 MAPE 会被污染，
+          请先用 ``np.isfinite`` 过滤（与 ``holt_winters`` 的说明一致）。
+        - 与 ``holt_winters`` 的差别只有两点：强制乘法、``forecast`` 长度由 ``n_ahead`` 决定。
+          两者在同一 ``(x, period, alpha, beta, gamma)`` 下的 ``fitted``、水平和前 period 步
+          预测必须逐点一致（``_self_test`` 里做了对拍）。
+
+    参考:
+        Winters (1960) "Forecasting sales by exponentially weighted moving averages",
+        Management Science 6(3): 324-342；Hyndman & Athanasopoulos §8.3。
+    """
+    xv = as_vector(x, "x")
+    m = _validate_positive_int(period, "period")
+    a = _check_unit_interval(alpha, "alpha")
+    b = _check_unit_interval(beta, "beta")
+    g = _check_unit_interval(gamma, "gamma")
+    h = _validate_positive_int(n_ahead, "n_ahead")
+    n = xv.size
+    if n < 2 * m:
+        raise ValueError(f"乘法 Holt-Winters 至少需要 2*period = {2 * m} 个观测，得到 {n}")
+    if np.any(xv <= 0.0):
+        raise ValueError(
+            "乘法 Holt-Winters 要求所有观测严格为正；数据含非正值时请改用 holt_winters "
+            "的加法模式或先做平移/对数变换"
+        )
+
+    # ---- 经典分解初始化（与 holt_winters 的乘法分支逐字一致）----
+    level0 = float(xv[:m].mean())
+    level1 = float(xv[m: 2 * m].mean())
+    trend0 = (level1 - level0) / m
+    base = level0 + trend0 * np.arange(2 * m, dtype=float)
+    if np.any(base <= 0.0):
+        raise ValueError("乘法模式的初始水平/趋势非正，无法做经典分解初始化")
+    raw = (xv[: 2 * m] / base).reshape(2, m).mean(axis=0)
+    if np.any(raw <= 0.0):
+        raise ValueError("乘法模式下初季节因子出现非正值（数据波动过大），请改用加法模式")
+    seas = raw / raw.mean()
+
+    lvl, trd = level0, trend0
+    fitted = np.full(n, np.nan, dtype=float)
+    for t in range(2 * m, n):
+        j = t % m
+        s_prev = float(seas[j])
+        if abs(s_prev) < 1e-12:
+            raise ValueError("乘法模式下季节因子退化为 0，无法继续递推")
+        fitted[t] = (lvl + trd) * s_prev
+        new_l = a * (float(xv[t]) / s_prev) + (1.0 - a) * (lvl + trd)
+        if not np.isfinite(new_l) or abs(new_l) < 1e-12:
+            raise ValueError("乘法模式下水平项退化为 0，无法继续递推")
+        new_b = b * (new_l - lvl) + (1.0 - b) * trd
+        new_s = g * (float(xv[t]) / new_l) + (1.0 - g) * s_prev
+        lvl, trd, seas[j] = new_l, new_b, new_s
+
+    fc = np.array(
+        [(lvl + trd * k) * float(seas[(n + k - 1) % m]) for k in range(1, h + 1)],
+        dtype=float,
+    )
+    return {
+        "fitted": fitted,
+        "forecast": fc,
+        "level": float(lvl),
+        "trend": float(trd),
+        "seasonal": seas.astype(float),
+    }
+
+
+# --------------------------------------------------------------------------
 # 自测
 # --------------------------------------------------------------------------
 
@@ -1249,4 +1651,117 @@ def _self_test() -> dict:
     out["cv_n_folds"] = len(folds)
     out["cv_first_fold"] = [int(v) for v in folds[0]]
     out["cv_last_fold"] = [int(v) for v in folds[-1]]
+
+    # 12) 朴素基线：纯周期序列上 seasonal 基线必须一步不差；drift 在线性序列上等于直线外推
+    cyc = np.tile(np.array([10.0, 20.0, 30.0, 40.0]), 3)
+    nf_sea = naive_forecast(cyc, n_ahead=4, method="seasonal", period=4)
+    sea_err = float(np.max(np.abs(np.asarray(nf_sea["forecast"]) - np.array([10.0, 20.0, 30.0, 40.0]))))
+    if sea_err > 1e-12:
+        raise AssertionError(f"naive_forecast(seasonal) 在纯周期序列上的最大误差应为 0，得到 {sea_err}")
+    if str(nf_sea["method"]) != "seasonal":
+        raise AssertionError(f"naive_forecast 的 method 回显错误：{nf_sea['method']!r}")
+    out["naive_seasonal_max_abs_err"] = round(sea_err, 12)
+    out["naive_seasonal_forecast"] = [round(float(v), 6) for v in nf_sea["forecast"]]
+    out["naive_seasonal_method"] = str(nf_sea["method"])
+
+    ramp10 = np.arange(1.0, 11.0)
+    nf_drift = naive_forecast(ramp10, n_ahead=3, method="drift")
+    if not np.allclose(np.asarray(nf_drift["forecast"]), np.array([11.0, 12.0, 13.0]), rtol=0.0, atol=1e-12):
+        raise AssertionError(f"drift 基线对线性序列应外推为 11,12,13，得到 {nf_drift['forecast']}")
+    out["naive_drift_head"] = [round(float(v), 6) for v in nf_drift["forecast"]]
+    out["naive_last_forecast"] = round(float(naive_forecast(ramp10, 2, "last")["forecast"][0]), 6)
+    out["naive_mean_forecast"] = round(float(naive_forecast(ramp10, 1, "mean")["forecast"][0]), 6)
+    try:
+        naive_forecast(cyc, 1, "seasonal")
+        out["naive_seasonal_needs_period"] = False
+    except ValueError:
+        out["naive_seasonal_needs_period"] = True
+
+    # 13) 经典分解：x = 线性趋势 + 周期季节项 + 0 时，残差必须恒为 0、季节强度必须为 1
+    t4 = np.arange(24, dtype=float)
+    se4 = np.array([-3.0, 1.0, 4.0, -2.0])  # 一个周期的季节项，和恰为 0
+    x4 = (5.0 + 0.5 * t4) + se4[np.arange(24) % 4]
+    sd = seasonal_decompose(x4, 4, model="additive", n_iter=2)
+    sd_resid = np.asarray(sd["resid"])
+    sd_finite = np.isfinite(sd_resid)
+    sd_max_resid = float(np.max(np.abs(sd_resid[sd_finite])))
+    # 阈值：无残差合成序列的残差应到浮点噪声量级（取 1e-9，实测为 0.0）
+    if sd_max_resid > 1e-9:
+        raise AssertionError(f"无残差合成序列的分解残差应约为 0，得到 {sd_max_resid}")
+    # 阈值：Var(resid)/Var(去季节序列) = 0，故强度应恰为 1；取 0.999 容忍浮点与窗口边界
+    if float(sd["strength_seasonal"]) < 0.999:
+        raise AssertionError(f"strength_seasonal 应接近 1，得到 {sd['strength_seasonal']}")
+    if float(sd["strength_trend"]) < 0.999:
+        raise AssertionError(f"strength_trend 应接近 1，得到 {sd['strength_trend']}")
+    sd_fac = np.asarray(sd["seasonal"])[:4]
+    if float(np.max(np.abs(sd_fac - se4))) > 1e-9:
+        raise AssertionError(f"分解出的季节因子应等于真值 {se4}，得到 {sd_fac}")
+    out["sdecomp_resid_max_abs"] = round(sd_max_resid, 12)
+    out["sdecomp_strength_seasonal"] = round(float(sd["strength_seasonal"]), 6)
+    out["sdecomp_strength_trend"] = round(float(sd["strength_trend"]), 6)
+    out["sdecomp_trend_mid"] = round(float(sd["trend"][12]), 6)
+    out["sdecomp_seasonal_factors"] = [round(float(v), 6) for v in sd_fac]
+    out["sdecomp_seasonal_mean"] = round(float(sd_fac.mean()), 9)
+    out["sdecomp_resid_nan_count"] = int(np.sum(~sd_finite))
+
+    # 乘法分解：x = 线性趋势 × (1 + 0.2 sin) 时季节因子应回到真值、残差应接近 1
+    xm = (5.0 + 0.5 * t4) * (1.0 + 0.2 * np.sin(2 * np.pi * t4 / 4.0))
+    sdm = seasonal_decompose(xm, 4, model="multiplicative", n_iter=5)
+    true_fac = 1.0 + 0.2 * np.sin(2 * np.pi * np.arange(4) / 4.0)
+    true_fac = true_fac / true_fac.mean()
+    mul_fac_err = float(np.max(np.abs(np.asarray(sdm["seasonal"])[:4] - true_fac)))
+    sdm_resid = np.asarray(sdm["resid"])
+    mul_resid_dev = float(np.max(np.abs(sdm_resid[np.isfinite(sdm_resid)] - 1.0)))
+    # 阈值：迭代 5 轮后实测 2.1e-9 / 9.2e-9，取 1e-6
+    if mul_fac_err > 1e-6:
+        raise AssertionError(f"乘法分解的季节因子应回到真值，最大偏差 {mul_fac_err}")
+    if mul_resid_dev > 1e-6:
+        raise AssertionError(f"乘法分解的残差应接近 1，最大偏差 {mul_resid_dev}")
+    out["sdecomp_mul_seasonal_max_err"] = round(mul_fac_err, 12)
+    out["sdecomp_mul_resid_max_dev"] = round(mul_resid_dev, 12)
+    try:
+        seasonal_decompose(x4, 4, model="log-additive")
+        out["sdecomp_bad_model_raises"] = False
+    except ValueError:
+        out["sdecomp_bad_model_raises"] = True
+
+    # 14) 乘法 Holt-Winters：常数水平 × 周期季节因子上，拟合值必须一步不差地复现原序列
+    xh = 50.0 * np.array([0.8, 1.1, 1.3, 0.8])[np.arange(12) % 4]
+    hwm = holt_winters_multiplicative(xh, 4, 0.4, 0.2, 0.3, n_ahead=5)
+    hwm_fit = np.asarray(hwm["fitted"])
+    hwm_ok = np.isfinite(hwm_fit)
+    hwm_rel = float(np.max(np.abs(hwm_fit[hwm_ok] - xh[hwm_ok]) / xh[hwm_ok]))
+    # 阈值：常数水平下递推是恒等映射，实测相对误差 0.0；取 1e-6
+    if hwm_rel > 1e-6:
+        raise AssertionError(f"常数水平×季节因子序列的乘法 HW 拟合相对误差应为 0，得到 {hwm_rel}")
+    if abs(float(hwm["trend"])) > 1e-9:
+        raise AssertionError(f"常数水平序列的趋势项应为 0，得到 {hwm['trend']}")
+    if abs(float(hwm["level"]) - 50.0) > 1e-9:
+        raise AssertionError(f"常数水平序列的末期水平应为 50，得到 {hwm['level']}")
+    # 独立实现互证：与已有的 holt_winters(mode="multiplicative") 逐点一致
+    hw_ref = holt_winters(xh, 4, 0.4, 0.2, 0.3, mode="multiplicative")
+    if not np.allclose(
+        np.asarray(hwm["forecast"])[:4], np.asarray(hw_ref["forecast"]), rtol=0.0, atol=1e-9
+    ):
+        raise AssertionError(
+            f"乘法 HW 的前 4 步预测应与 holt_winters 一致：{hwm['forecast']} vs {hw_ref['forecast']}"
+        )
+    if not np.allclose(
+        hwm_fit[hwm_ok], np.asarray(hw_ref["fitted"])[hwm_ok], rtol=0.0, atol=1e-12
+    ):
+        raise AssertionError("乘法 HW 的 fitted 应与 holt_winters(mode='multiplicative') 一致")
+    hwm_fc = np.asarray(hwm["forecast"])
+    out["hwm_fitted_max_rel_err"] = round(hwm_rel, 12)
+    out["hwm_forecast"] = [round(float(v), 6) for v in hwm_fc]
+    out["hwm_forecast_periodic"] = bool(abs(float(hwm_fc[4]) - float(hwm_fc[0])) <= 1e-9)
+    out["hwm_seasonal"] = [round(float(v), 6) for v in np.asarray(hwm["seasonal"])]
+    out["hwm_level"] = round(float(hwm["level"]), 6)
+    out["hwm_trend"] = round(float(hwm["trend"]), 9)
+    out["hwm_matches_holt_winters"] = True
+    try:
+        holt_winters_multiplicative([1.0] * 11 + [0.0], 4, 0.3, 0.1, 0.3)
+        out["hwm_nonpositive_raises"] = False
+    except ValueError:
+        out["hwm_nonpositive_raises"] = True
+
     return out

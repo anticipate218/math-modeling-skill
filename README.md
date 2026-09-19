@@ -19,8 +19,10 @@
 
 - [快速开始](#快速开始)
 - [为什么需要它](#为什么需要它)
-- [安装](#安装)
+- [下载与安装](#下载与安装)
 - [它会做什么](#它会做什么)
+- [算法与代码](#算法与代码)
+- [怎么做出创新点](#怎么做出创新点)
 - [质量保障](#质量保障)
 - [仓库结构](#仓库结构)
 - [AI 使用合规](#一个重要提醒ai-使用的合规)
@@ -33,13 +35,29 @@
 
 ## 快速开始
 
+**第 0 步：把它放到你的技能目录**（初次使用，详见[下载与安装](#下载与安装)）
+
 ```bash
-# 1. 生成论文骨架（选择你的竞赛）
+git clone https://github.com/anticipate218/math-modeling-skill.git ~/.agents/skills/math-modeling-skill
+```
+
+**第 1 步：生成论文骨架（选择你的竞赛）**
+
+```bash
 python scripts/check_paper.py --init --contest cumcm -o my_paper.md
+```
 
-# 2. 填写【占位符】提示的内容
+**第 2 步：拷出对应竞赛的 LaTeX 模板**（想用 LaTeX 排版的话）
 
-# 3. 边写边自检
+```bash
+python scripts/download_templates.py --contest cumcm --out my_paper
+```
+
+**第 3 步：填写【占位符】提示的内容**
+
+**第 4 步：边写边自检**
+
+```bash
 python scripts/check_paper.py my_paper.md --contest cumcm
 ```
 
@@ -56,6 +74,8 @@ python scripts/check_paper.py my_paper.md --contest cumcm
 [INFO] validation: 存在结果验证/误差分析
 ```
 
+> 以上脚本都**不需要安装任何依赖**（纯 Python 标准库），也不需要联网。唯一的外部依赖是可选的：想真的把 LaTeX 模板编译成 PDF，才需要本机有 TeX 发行版。
+
 ---
 
 ## 为什么需要它
@@ -71,24 +91,33 @@ python scripts/check_paper.py my_paper.md --contest cumcm
 
 ---
 
-## 安装
+## 下载与安装
 
 技能遵循 [Agent Skills 开放标准](https://agentskills.io/specification)：一个目录 + 一个 `SKILL.md`（含 YAML frontmatter）。目录名必须与 frontmatter 里的 `name` 一致（本仓库已满足）。
 
-**通用安装（把仓库克隆为技能目录）**
+### 1. 获取方式（三选一）
+
+| 方式 | 适合 | 做法 |
+|---|---|---|
+| **`git clone`（推荐）** | 想随时 `git pull` 拿到规则更新 | 见下面各宿主的命令 |
+| **下载 Release ZIP** | 机器上没装 git，或要给队友打包 | 到 [Releases](https://github.com/anticipate218/math-modeling-skill/releases) 下载最新一版的 `math-modeling-skill-vX.Y.Z.zip`（内含完整技能包 + 三套 LaTeX 模板）；**解压出来的顶层目录就叫 `math-modeling-skill/`**，整个目录丢进技能根目录即可，不用改名。核验完整性：解压后跑一次 `python scripts/validate_skill.py . --strict`，期望 0 错误 0 警告 |
+| **GitHub 网页下载** | 只想看几个文件 | 仓库页 `Code → Download ZIP`，解压后同样需要重命名为 `math-modeling-skill`（**目录名必须与 `SKILL.md` 里的 `name` 一致**，否则宿主可能拒绝加载） |
+
+### 2. 装到哪里
+
+**通用 Agent Skills 目录（跨工具）**
 
 ```bash
-# 通用 Agent Skills 目录（跨工具）
 git clone https://github.com/anticipate218/math-modeling-skill.git ~/.agents/skills/math-modeling-skill
 ```
 
 **DeepSeek Harness**
 
 ```powershell
-# 用户级技能目录
+# 用户级技能目录（所有项目可用）
 git clone https://github.com/anticipate218/math-modeling-skill.git "$env:USERPROFILE/.dsh/skills/math-modeling-skill"
 
-# 或项目级（对某个仓库生效）
+# 或项目级（只对当前仓库生效）
 git clone https://github.com/anticipate218/math-modeling-skill.git .dsh/skills/math-modeling-skill
 ```
 
@@ -99,6 +128,81 @@ git clone https://github.com/anticipate218/math-modeling-skill.git ~/.claude/ski
 ```
 
 **手动安装**：把整个仓库目录复制到你的技能根目录下，确保路径形如 `<技能根目录>/math-modeling-skill/SKILL.md`。
+
+### 3. 依赖
+
+| 用途 | 需要什么 |
+|---|---|
+| **文档、自检脚本**（`scripts/`、`references/`、`assets/`） | 只有 **Python 3.9+**，纯标准库 |
+| **运行自带算法**（`examples/algorithms/`） | 额外需要 **numpy**（`pip install numpy`），**不需要** scipy / sklearn / pandas / statsmodels |
+| **真编译 LaTeX 模板**（可选） | 本机装有 TeX 发行版（MiKTeX 或 TeX Live），并有 `xelatex`（中文模板）、`pdflatex`（美赛模板）与 `bibtex` |
+
+不需要联网，也没有任何交互式提示——所有脚本都可以在 CI 里非交互运行。
+
+### 4. 下载 LaTeX 论文模板
+
+仓库自带**三套可直接编译的自包含模板**（每套只有 `main.tex` + `refs.bib` 两个文件，不依赖任何私有宏包）：
+
+| 竞赛 | 模板 | 引擎 | 特点 |
+|---|---|---|---|
+| 国赛 CUMCM | `assets/latex/cumcm/` | `xelatex` | 中文；摘要页起排；AI 工具使用声明排在**参考文献之前** |
+| 研赛（华为杯） | `assets/latex/yjs/` | `xelatex` | 中文；摘要页即第 1 页；无承诺书/编号页；禁止页眉 |
+| 美赛 MCM/ICM | `assets/latex/mcm/` | `pdflatex` | 英文；Summary Sheet 独占第 1 页；含 `Report on Use of AI` |
+
+**用脚本一键拷出（推荐）**——它会连编译命令和注意事项一起打印给你：
+
+```bash
+# 拷出国赛模板到 my_paper/ 目录
+python scripts/download_templates.py --contest cumcm --out my_paper
+
+# 三套一起拷出，并额外打一个 zip 方便分享
+python scripts/download_templates.py --contest all --out papers --zip papers.zip
+
+# 只看清单，不拷文件
+python scripts/download_templates.py --list
+```
+
+`--contest` 可重复使用（`cumcm` / `yjs` / `mcm` / `all`）。目标文件已存在时脚本会**拒绝覆盖**，确认要覆盖再加 `--force`。
+
+**字体的坑，脚本会自动处理**：中文模板默认写的是 `fontset=windows`（调用 Windows 的宋体/黑体，Windows 上开箱即用）。在 Linux / macOS / Overleaf 上这项会因缺字体而失败，所以脚本默认 `--fontset auto`——**在非 Windows 平台自动改写成 `fontset=fandol`**（fandol 字体随 TeX Live 分发）。想手动控制：
+
+```bash
+python scripts/download_templates.py --contest cumcm --out my_paper --fontset fandol   # 强制 Fandol（Overleaf 推荐）
+python scripts/download_templates.py --contest cumcm --out my_paper --fontset keep     # 一个字都不改
+```
+
+**不想用脚本，直接从网页拿单个文件**（右键另存为即可）：
+
+- 国赛：`https://raw.githubusercontent.com/anticipate218/math-modeling-skill/main/assets/latex/cumcm/main.tex`（参考文献库 `refs.bib` 把文件名换掉即可）
+- 研赛：`.../main/assets/latex/yjs/main.tex`
+- 美赛：`.../main/assets/latex/mcm/main.tex`
+
+**拷出来之后怎么编译**（4 遍，顺序不能省，否则交叉引用和参考文献会显示成 `??`）：
+
+```bash
+xelatex -interaction=nonstopmode main.tex   # 美赛模板换成 pdflatex
+bibtex main
+xelatex -interaction=nonstopmode main.tex
+xelatex -interaction=nonstopmode main.tex
+```
+
+**排版细节、宏包依赖与常见报错**见 `assets/latex/README.md`；模板选择与答疑见 `references/templates.md`。写完之后可以跑一次编译体检：
+
+```bash
+python scripts/check_latex.py --require              # 需要本机有 TeX
+python scripts/check_latex.py --self-test            # 不需要 TeX，只验证检查逻辑本身
+```
+
+### 5. 装完先验证一下（30 秒）
+
+```bash
+cd math-modeling-skill
+python scripts/validate_skill.py . --strict    # 期望：0 个错误，0 个警告
+python scripts/check_paper.py --self-test      # 期望：全部 PASS
+python scripts/download_templates.py --list    # 期望：列出三套模板
+```
+
+`validate_skill.py` 报错通常意味着**目录名被改过**（必须叫 `math-modeling-skill`）或者文件没下全（Release ZIP 比单下几个文件可靠）。
 
 ---
 
@@ -128,7 +232,7 @@ git clone https://github.com/anticipate218/math-modeling-skill.git ~/.claude/ski
 
 **可直接用的成品件**：
 - [`assets/latex/`](assets/latex/)：国赛 / 研赛 / 美赛三套**单一自包含**的 LaTeX 模板（不 `\input` 外部文件、不依赖外部图片，图表用 TikZ/pgfplots 内联），`xelatex → bibtex → xelatex ×2` 即可编译；已内置各赛事硬规则（摘要页、页码、AI 声明位置、附录源程序）。三套模板**每次 CI 都会被真正编译一遍**（见下方「质量保障」），不是"文档里写着能编"。
-- [`examples/algorithms/`](examples/algorithms/)：11 个算法模块（优化/评价/聚类/微分方程/随机模拟/图论/几何/博弈/启发式/预测/统计），**仅依赖 numpy 与标准库**；每个函数都带 `_self_test()`，再用 [`examples/run_algorithms.py`](examples/run_algorithms.py) 跑黄金值回归与确定性复跑。
+- [`examples/algorithms/`](examples/algorithms/)：17 个算法模块、222 个公开函数（优化/图论/启发式/预测/时间序列/统计/评价/多准则/聚类/机器学习/微分方程/随机仿真/几何/空间与物理场/博弈/多目标/灵敏度），**仅依赖 numpy 与标准库**；每个模块都带 `_self_test()`，再用 [`examples/run_algorithms.py`](examples/run_algorithms.py) 跑黄金值回归与确定性复跑。逐函数的数学形式、步骤、参数表与陷阱见 [`references/algorithm-details.md`](references/algorithm-details.md)。
 - [`assets/gallery/`](assets/gallery/)：16 张**原创**论文配图（评价权重与敏感性、TOPSIS 排序、预测对比与残差诊断、SIR 机理与参数敏感性、Pareto 前沿、蒙特卡洛收敛、排队仿真、最短路、空间插值、相关矩阵等），由 [`scripts/make_figures.py`](scripts/make_figures.py) 固定种子生成——**逐字节可复现**，可当画图与图注范本。配色与排版经 [`scripts/check_palette.py`](scripts/check_palette.py) 做**可访问性体检**：Okabe-Ito 色相在该项体检里二色觉最差 ΔE 达 16.1，而常见的"论文风"配色 seaborn deep / ColorBrewer Set2 / tab10 分别只有 2.7 / 2.5 / 4.6；另有线型与标记点两条冗余通道兜住黑白打印，见 [`assets/gallery/README.md`](assets/gallery/README.md) §5.7–5.8。
 
 **为什么仓库里没有历年优秀论文的原图**：论文插图版权归作者/出版方，即使标注出处，未经许可把它们下载进仓库再分发通常也不构成合规使用，还会带来学术诚信风险。因此本仓库改为提供「原创可复现图库 + 官方与作者授权来源的链接索引」，见 [`references/paper-examples.md`](references/paper-examples.md)。
@@ -151,6 +255,61 @@ python scripts/check_paper.py --self-test                # 验证脚本自身可
 
 ---
 
+## 算法与代码
+
+技能不只是文档——`examples/algorithms/` 里有一整套**可以直接跑、可以贴进论文附录**的算法实现：
+
+- **依赖边界**：只用 `numpy` + Python 标准库。不含 scipy / sklearn / statsmodels / pandas / cvxpy / pulp / torch。CI 用 AST 静态扫描强制这条规则——所以你拿到的代码在任何只装了 numpy 的机器（包括评测机房）上都能跑。
+- **确定性**：所有随机算法统一走 `_common.rng(seed)`，默认种子 `20240101`，**同一份代码两次运行结果逐位一致**。论文里报的数字经得起复现。
+- **每个模块自带 `_self_test()`**，内含闭式解或独立实现的交叉验证（例如 PCA 与 `np.linalg.svd` 对拍、乘法 Holt-Winters 与已有实现逐点对拍、离线黄金值与闭式解对拍），并全部由 `examples/run_algorithms.py` 与黄金值基线比对，含确定性复跑。
+
+```bash
+python examples/run_algorithms.py                 # 全量自检 + 黄金值回归
+python examples/run_algorithms.py --list          # 看有哪些模块
+python examples/run_algorithms.py --module graphs --verbose   # 只跑一个模块
+```
+
+覆盖的算法族（按题目类型）：
+
+| 题目族 | 模块 | 你会拿到什么 |
+|---|---|---|
+| 优化与规划 | `optimization.py` | 单纯形、分支定界整数规划、背包 DP、匈牙利指派、Vogel 运输 |
+| 图论与网络 | `graphs.py` | 最短路、最小生成树、最大流/最小割、TSP、PageRank、连通性 |
+| 元启发式 | `heuristics.py` | 模拟退火、遗传算法、粒子群、蚁群 |
+| 时间序列与预测 | `forecasting.py`、`timeseries.py` | 平滑与 Holt-Winters、AR、平稳性检验、滚动回测、季节分解、进阶模型 |
+| 统计与回归 | `statistics.py` | 相关/检验/正态性、OLS 与诊断、岭回归/Lasso、逻辑与泊松回归、PCA/因子分析、Bootstrap 与置换检验 |
+| 评价与决策 | `evaluation.py`、`multicriteria.py` | AHP/熵权/CRITIC/组合赋权、TOPSIS、VIKOR、灰色关联、DEA、排序稳健性 |
+| 机器学习 | `ml.py` | KNN、决策树、随机森林、梯度提升、朴素贝叶斯、LDA、交叉验证、不平衡处理 |
+| 聚类 | `clustering.py` | K-means++、轮廓系数、层次聚类、DBSCAN |
+| 微分方程与机理 | `differential.py` | Euler/RK4、SIR 仿真与拟合、Logistic、Lotka-Volterra、收敛阶 |
+| 随机与仿真 | `stochastic.py` | 蒙特卡洛、排队论 M/M/1 与仿真、马尔可夫稳态/吸收 |
+| 几何与空间 | `geometry.py`、`spatial.py` | 凸包/点在多边形内/Haversine/IDW/克里金/泰森多边形；一维热传导、二维 Poisson 松弛、林火与交通流元胞自动机、量纲分析 |
+| 多目标与灵敏度 | `multiobjective.py`、`sensitivity.py` | Pareto 前沿与支配关系、单/多参数灵敏度与稳健性度量 |
+| 博弈与分配 | `game.py` | 零和博弈值、Nash 枚举、Shapley 值、稳定匹配、演化动力学 |
+
+**逐算法的细节（数学形式 → 步骤 → 复杂度 → 参数表 → 陷阱 → 怎么检验）见 `references/algorithm-details.md`；"该用哪个族、什么时候换成熟库"见 `references/algorithm-implementations.md`；"这题该用哪类模型"见 `references/model-library.md`。**
+
+> **诚实提醒**：这些实现是**教学透明版**，目的是"让论文能交代清楚每一步"，不是工业级数值库。规模上到几千个决策单元/样本时请换成熟库，并用本仓库实现做原理说明、用成熟库做交叉验证。`references/algorithm-implementations.md` 第 4 节给了替换建议。
+
+---
+
+## 怎么做出创新点
+
+"创新"是国赛/研赛/美赛评奖词里都出现的字眼，也是最容易被写成自嗨的部分。本技能把这件事拆成可执行的步骤，全在 `references/innovation-playbook.md`：
+
+- **创新的五个层级**（数据与假设层 → 模型结构层 → 求解算法层 → 理论层），以及"这道题该往哪层使力"的判断依据。
+- **参数创新总表**：按 **17 个算法族**逐条列出**哪些参数能动**、动了属于"调参"还是"结构化改造"，例如——
+  - 传播率 β 从常数改成 **β(t)**（干预强度随时间衰减）＝结构化创新；
+  - 目标函数权重改几个数 ＝ 只是调参，得配权重-解轨迹才算数；
+  - 时间序列的平滑系数手调 ＝ 调参；改成**逐折滚动交叉验证选参** ＝ 消除数据泄漏，算改进。
+- **四步法**：机制假设 → 可辨识化（多起点/剖面似然/断点检验）→ **消融实验**（逐个关掉你加的机制项）→ 结论边界。
+- **12 条伪创新反面模式**：换库不换模型、重命名式创新、无量纲叠加、只报最好的一次运行、用未来信息、虚假对比、相关当因果……
+- **定稿自查清单**：十项打勾，确保每个创新点都能填满"参数/机制 → 指标变化 → 机制解释 → 失效条件"这句话。
+
+配套的验证工具就在 `examples/algorithms/` 里：消融和灵敏度可以调 `sensitivity.py`，多目标权衡用 `multiobjective.py`，参数辨识的残差诊断用 `statistics.py`，启发式解质量用固定种子的多次运行分布。
+
+---
+
 ## 质量保障
 
 这个仓库不只有文档，还带多层可自动运行的检查（CI 每次提交都会跑）：
@@ -159,7 +318,7 @@ python scripts/check_paper.py --self-test                # 验证脚本自身可
 |---|---|---|
 | 结构 | `python scripts/validate_skill.py . --strict` | frontmatter 字段白名单、`name` 与目录一致、description/compatibility 长度、正文行数、**文件引用是否存在**、未索引文件、Windows 反斜杠路径 |
 | 自检工具 | `python scripts/check_paper.py --self-test` | 用「好稿/坏稿」固件验证检查逻辑本身没坏 |
-| 算法回归 | `python examples/run_algorithms.py` | 自带的 11 个算法模块、324 个断言键逐个跑数值自检，并与 `algorithms_golden.json` 黄金值比对（含确定性复跑） |
+| 算法回归 | `python examples/run_algorithms.py` | 自带的 **17 个算法模块、875 个断言键**逐个跑数值自检，并与 `algorithms_golden.json` 黄金值比对（含确定性复跑：每个模块跑两遍，结果必须逐位一致） |
 | 配图配色 | `python scripts/check_palette.py --quiet` | 直接读 `make_figures.py` 里的设计令牌，算二色觉仿真 CIELAB ΔE、灰度间隔与 WCAG 对比度；并断言「颜色之外还有线型/标记」这条冗余编码确实存在 |
 | 模板真编译 | `python scripts/check_latex.py --require`（CI）／`--self-test`（本机无需 TeX） | 在临时目录里真的编译 `assets/latex/` 三套模板（引擎 → bibtex → 引擎 ×2），核对硬错误、未解析引用、缺字体、页数下限，以及 **AI 声明与参考文献的先后顺序** |
 | 依赖边界 | 见 `.github/workflows/ci.yml` | AST 扫描 `examples/algorithms/*.py`，禁止引入 scipy/sklearn/pandas 等重型依赖 |
@@ -184,6 +343,8 @@ math-modeling-skill/
 │   ├── github-resources.md       # 已核验 GitHub 模型库与许可证/边界说明
 │   ├── model-implementations.md  # 按题目类别的基线、改进阶梯和验证协议
 │   ├── algorithm-implementations.md # 模型→算法→复杂度→本仓库实现→外部库→陷阱 对照索引
+│   ├── algorithm-details.md      # 逐算法详解：数学形式 → 步骤 → 复杂度 → 参数表 → 陷阱 → 怎么检验
+│   ├── innovation-playbook.md    # 怎么做创新：五个层级 / 参数创新总表 / 四步法 / 伪创新反面模式
 │   ├── paper-examples.md         # 优秀论文与官方来源索引（只给链接，不再分发他人图表）
 │   └── templates.md              # LaTeX 模板选择、编译与排版答疑
 ├── scripts/
@@ -191,6 +352,7 @@ math-modeling-skill/
 │   ├── validate_skill.py         # 技能结构校验（frontmatter / 篇幅 / 文件引用，支持 --strict）
 │   ├── check_palette.py          # 配图配色可访问性体检（二色觉 ΔE / 灰度间隔 / 对比度）
 │   ├── check_latex.py            # 真编译三套 LaTeX 模板并体检（引用/字体/页数/AI 声明顺序）
+│   ├── download_templates.py     # 按竞赛一键导出 LaTeX 模板目录（可打包成 zip，支持 --self-test）
 │   └── make_figures.py           # 生成 assets/gallery/ 原创论文配图（固定种子，可完整复现）
 ├── assets/
 │   ├── abstract-template.md      # 摘要模板：中文（国赛/研赛）+ 英文 Summary Sheet（美赛）
@@ -203,7 +365,7 @@ math-modeling-skill/
 │   └── gallery/                  # 16 张原创配图 + 画法、配色与图注说明
 ├── examples/
 │   ├── modeling_patterns.py      # 带注释的透明基线示例
-│   ├── algorithms/               # 11 个算法模块（仅依赖 numpy + 标准库）
+│   ├── algorithms/               # 17 个算法模块、222 个公开函数（仅依赖 numpy + 标准库）
 │   ├── run_algorithms.py         # 算法自检 + 黄金值回归（确定性复跑）
 │   └── algorithms_golden.json    # 黄金值基线（CI 比对用）
 ├── evals/                        # 触发评测与行为用例（含 near-miss 负例）

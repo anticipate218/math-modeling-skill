@@ -8,6 +8,7 @@
 - **黄金值合并是"纯新增"，不是"改数值"**：`changed=0，removed=0，added=551`。原有 324 个键一个都没动——这类操作最容易变成"用 `--update-golden` 把回归洗掉"，所以本版把 diff 结果写进验证记录，供任何人复核。
 - **"哪些参数能动"落成一张可查的表**：新增的 `references/innovation-playbook.md` 给 **17 个算法族**逐族列出参数、常规取值、创新方向与创新度分档（⚪调参 / 🔶结构化 / 🔴假设层），并明确"改数值 ≠ 创新"。
 - **LaTeX 模板从"仓库里有"变成"一条命令拿到手"**：`scripts/download_templates.py` 按竞赛一键导出（国赛/研赛/美赛/全部），在非 Windows 平台自动把 `fontset=windows` 换成 `fontset=fandol`，可选打包 zip；`--self-test` 26/26 通过，重复打出的 zip **逐字节一致**。
+- **下载与启动体验也当作交付物来做**：README 加「下载与安装」专章与「怎么『启动』它」小节（含"触发不灵时按顺序查四件事"），并给出命令行直接取 Release ZIP 的一行命令；本版**第一次把打包好的 `math-modeling-skill-v1.7.0.zip` 挂在 Release 附件上**（此前各版本都没有附件），README 里写的"下载 Release ZIP"因此真的能点。
 
 ### 新增
 
@@ -15,7 +16,8 @@
 - **`references/innovation-playbook.md`（371 行）**：三个误解的纠正、创新的五个层级、**17 族参数创新总表**、把"改参数"升级成"真创新"的四步法（机制假设 → 可辨识化 → 消融实验 → 结论边界）、实验设计速查、论文写法三件套、12 条伪创新反面模式、定稿自查清单。
 - **六个新算法模块**（均在 `examples/algorithms/`，只依赖 numpy + 标准库）：`timeseries.py`（12）、`ml.py`（23）、`multicriteria.py`（8）、`multiobjective.py`（9）、`sensitivity.py`（11）、`spatial.py`（7）。
 - **`scripts/download_templates.py`（612 行，纯标准库）**：`--contest {cumcm,yjs,mcm,all}` / `--out` / `--force` / `--fontset {auto,keep,fandol}` / `--zip` / `--list` / `--self-test`；默认不覆盖已存在文件，导完直接打印编译序列与注意事项。
-- **README 新增「下载与安装」专章**（5 小节）：三种获取方式（clone / Release ZIP / 网页 ZIP，并说明目录名必须等于 `SKILL.md` 的 `name`）、四个宿主的安装路径、依赖表、**下载 LaTeX 论文模板**（三套模板对照 + 脚本用法 + 字体坑 + 4 遍编译序列 + raw 链接）、装完 30 秒自检。
+- **README 新增「下载与安装」专章**（5 小节）：三种获取方式（clone / Release ZIP / 网页 ZIP，并说明目录名必须等于 `SKILL.md` 的 `name`）、**命令行直接下载 Release ZIP 的一行命令（PowerShell 与 bash 各一版）**、四个宿主的安装路径、依赖表、**下载 LaTeX 论文模板**（三套模板对照 + 脚本用法 + 字体坑 + 4 遍编译序列 + raw 链接）、装完 30 秒自检。本版同时把 **`math-modeling-skill-v1.7.0.zip` 作为 Release 附件发出**（此前各版本的 Release 都没有附件），README 里承诺的"下载 Release ZIP"因此真的可用。
+- **README 新增「怎么『启动』它」小节**：说明技能是**宿主扫描目录自动发现**、按 `description` 场景匹配触发的，不需要安装器也不需要在常驻进程；给出"确认装上了 / 强制指定 / 触发不灵时按顺序查四件事"的排查清单。
 
 ### 实现说明（几个真踩到的点）
 

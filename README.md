@@ -103,6 +103,25 @@ python scripts/check_paper.py my_paper.md --contest cumcm
 | **下载 Release ZIP** | 机器上没装 git，或要给队友打包 | 到 [Releases](https://github.com/anticipate218/math-modeling-skill/releases) 下载最新一版的 `math-modeling-skill-vX.Y.Z.zip`（内含完整技能包 + 三套 LaTeX 模板）；**解压出来的顶层目录就叫 `math-modeling-skill/`**，整个目录丢进技能根目录即可，不用改名。核验完整性：解压后跑一次 `python scripts/validate_skill.py . --strict`，期望 0 错误 0 警告 |
 | **GitHub 网页下载** | 只想看几个文件 | 仓库页 `Code → Download ZIP`，解压后同样需要重命名为 `math-modeling-skill`（**目录名必须与 `SKILL.md` 里的 `name` 一致**，否则宿主可能拒绝加载） |
 
+**命令行直接拿 Release ZIP（不用打开浏览器）**：
+
+```powershell
+# PowerShell / Windows
+$rel = Invoke-RestMethod https://api.github.com/repos/anticipate218/math-modeling-skill/releases/latest
+$zip = ($rel.assets | Where-Object name -like '*.zip' | Select-Object -First 1).browser_download_url
+Invoke-WebRequest $zip -OutFile math-modeling-skill.zip
+Expand-Archive math-modeling-skill.zip -DestinationPath "$env:USERPROFILE/.dsh/skills"   # 解压后即 .../skills/math-modeling-skill/
+```
+
+```bash
+# bash / macOS / Linux
+curl -L -o mms.zip "$(curl -s https://api.github.com/repos/anticipate218/math-modeling-skill/releases/latest \
+  | grep -o 'https://[^"]*\.zip' | head -1)"
+unzip -q mms.zip -d ~/.agents/skills/          # 解压后即 ~/.agents/skills/math-modeling-skill/
+```
+
+（`unzip` 换成 `python -m zipfile -e mms.zip ~/.agents/skills/` 也可以，不依赖 unzip 命令。）
+
 ### 2. 装到哪里
 
 **通用 Agent Skills 目录（跨工具）**
@@ -207,6 +226,14 @@ python scripts/download_templates.py --list    # 期望：列出三套模板
 ---
 
 ## 它会做什么
+
+### 怎么"启动"它
+
+技能不需要安装器、不需要常驻进程，也**不需要你记住任何命令**：宿主启动时扫描技能根目录，读到 `SKILL.md` 的 frontmatter 后，按其中 `description` 写明的场景（中英文触发词都覆盖了）自动决定要不要加载。所以最省事的用法就是**把任务用中文说清楚**。
+
+- **确认装上了**：让助手"列出当前可用的技能"，应该能看到 `math-modeling-skill`；或者直接在仓库目录跑 `python scripts/validate_skill.py . --strict`。
+- **想强制指定**：开头加一句"用 math-modeling-skill 来做…"，避免与别的技能抢触发。
+- **触发不灵时按顺序查四件事**：① 目录名是否正好叫 `math-modeling-skill`（必须等于 frontmatter 的 `name`）；② 路径是否形如 `<技能根目录>/math-modeling-skill/SKILL.md`（`SKILL.md` 必须在技能目录顶层，不能多套一层）；③ 宿主是否需要重启或重新扫描；④ 是否被别的技能同场景抢占——此时用上面的强制指定方式。
 
 安装后，直接对助手说这些话即可触发：
 

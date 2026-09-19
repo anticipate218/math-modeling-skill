@@ -1068,6 +1068,12 @@ def _self_test() -> dict:
     if float(np.max(g_vals)) > 1.05:
         raise AssertionError(f"ZDT1 前沿解的 g 应接近 1，最大值为 {float(np.max(g_vals))}")
     result["zdt1_front_size"] = int(zdt_front.size)
-    result["zdt1_dev"] = round(z_dev, 6)
-    result["zdt1_g_max"] = round(float(np.max(g_vals)), 6)
+    # 说明（设计取舍）：NSGA-II 跑 150 代是"离散选择 + 连续变异"的混沌过程，末位浮点
+    # 差异会被放大——同一个提交在本地 Windows 得 z_dev=0.005040，在 Linux CI 得
+    # 0.005923，而 front_size / history 完全一致。连续量因此**不适合当黄金值**：
+    # 它会在换平台时无意义地翻红。这里只记分档后的整数/布尔指纹，收敛精度由上面
+    # 两条断言把关（dev <= 0.05、g_max <= 1.05）。粗粒度指纹 + 严格断言，比一个会
+    # 随平台漂移的 6 位小数可靠得多。
+    result["zdt1_dev_le_2pct"] = int(1 if z_dev <= 0.02 else 0)
+    result["zdt1_g_le_2pct"] = int(1 if float(np.max(g_vals)) <= 1.02 else 0)
     return result

@@ -389,7 +389,10 @@ def _arma_cls(
             break
 
     n_eff = m - t0
-    sigma2 = float(np.dot(e[t0:], e[t0:]) / n_eff)
+    # 残差虽然有限，但量级可能极大（MA 系数接近发散边界时），点积会先溢出成 inf。
+    # 这属于"该阶数组合不可用"的正常情形，交由下面的有限性校验报错，故屏蔽溢出警告。
+    with np.errstate(over="ignore", invalid="ignore"):
+        sigma2 = float(np.dot(e[t0:], e[t0:]) / n_eff)
     if not np.isfinite(sigma2) or sigma2 <= 0.0:
         raise ValueError("条件最小二乘得到非正残差方差，模型不可用")
     return beta[:p], beta[p:], e, sigma2, n_eff, n_iter
@@ -2164,7 +2167,9 @@ def _self_test() -> Dict[str, object]:
                 Fi = np.linalg.matrix_power(F2, i - s_)
                 Fj = np.linalg.matrix_power(F2, j - s_)
                 cov2 = cov2 + Fi @ Q2 @ Fj.T
-            sig2[i, j] = float(H2 @ cov2 @ H2.T)
+            # 注意：H2 @ cov2 @ H2.T 是 (1, 1) 的二维数组，numpy >= 2.5 起
+            # float() 只接受 0 维数组，直接 float(...) 会 TypeError，故取值后再转。
+            sig2[i, j] = float((H2 @ cov2 @ H2.T)[0, 0])
     sig2 += float(R2[0, 0]) * np.eye(t_j)
     sign_2, ld_2 = np.linalg.slogdet(sig2)
     ll_direct2 = -0.5 * (

@@ -11,10 +11,10 @@
 
 ### 新增
 
-- **`references/algorithm-details.md`（2333 行，223 个条目）**：逐算法的**数学形式 → 步骤 → 复杂度 → 参数表 → 陷阱 → 怎么检验**。分节与 `algorithm-implementations.md` 完全对齐（§3.1–§3.17），条目顺序与该模块 `__all__` 一致；"怎么检验"一栏给的是**独立于本实现**的手段（闭式解、对拍、极限行为），可直接改写成论文的"模型检验"章节。
-- **`references/innovation-playbook.md`（372 行）**：三个误解的纠正、创新的五个层级、**17 族参数创新总表**、把"改参数"升级成"真创新"的四步法（机制假设 → 可辨识化 → 消融实验 → 结论边界）、实验设计速查、论文写法三件套、12 条伪创新反面模式、定稿自查清单。
+- **`references/algorithm-details.md`（2332 行，223 个条目）**：逐算法的**数学形式 → 步骤 → 复杂度 → 参数表 → 陷阱 → 怎么检验**。分节与 `algorithm-implementations.md` 完全对齐（§3.1–§3.17），条目顺序与该模块 `__all__` 一致；"怎么检验"一栏给的是**独立于本实现**的手段（闭式解、对拍、极限行为），可直接改写成论文的"模型检验"章节。
+- **`references/innovation-playbook.md`（371 行）**：三个误解的纠正、创新的五个层级、**17 族参数创新总表**、把"改参数"升级成"真创新"的四步法（机制假设 → 可辨识化 → 消融实验 → 结论边界）、实验设计速查、论文写法三件套、12 条伪创新反面模式、定稿自查清单。
 - **六个新算法模块**（均在 `examples/algorithms/`，只依赖 numpy + 标准库）：`timeseries.py`（12）、`ml.py`（23）、`multicriteria.py`（8）、`multiobjective.py`（9）、`sensitivity.py`（11）、`spatial.py`（7）。
-- **`scripts/download_templates.py`（613 行，纯标准库）**：`--contest {cumcm,yjs,mcm,all}` / `--out` / `--force` / `--fontset {auto,keep,fandol}` / `--zip` / `--list` / `--self-test`；默认不覆盖已存在文件，导完直接打印编译序列与注意事项。
+- **`scripts/download_templates.py`（612 行，纯标准库）**：`--contest {cumcm,yjs,mcm,all}` / `--out` / `--force` / `--fontset {auto,keep,fandol}` / `--zip` / `--list` / `--self-test`；默认不覆盖已存在文件，导完直接打印编译序列与注意事项。
 - **README 新增「下载与安装」专章**（5 小节）：三种获取方式（clone / Release ZIP / 网页 ZIP，并说明目录名必须等于 `SKILL.md` 的 `name`）、四个宿主的安装路径、依赖表、**下载 LaTeX 论文模板**（三套模板对照 + 脚本用法 + 字体坑 + 4 遍编译序列 + raw 链接）、装完 30 秒自检。
 
 ### 实现说明（几个真踩到的点）
@@ -23,6 +23,8 @@
 - **创新手册里每个反引号引用都能落到代码上**：同一套思路核对 `innovation-playbook.md` 的反引号标识符，允许集取"17 个模块的函数名 + 所有形参名"共 **795** 个，未解析项 0。这一步真的抓到过问题——初稿里有一处把参数名当函数名写。
 - **模块头 docstring 与 `__all__` 会对不上**：扩写算法时新增了函数，但模块开头的"本模块包含……"还停在旧清单（例如 `optimization.py` 的头只列了 5 个、实际 9 个）。本版把 **17/17** 个模块的头部清单补全为分组枚举并写明条数，用 `.dsh-tmp/check_headers.py` 断言"条数 = `len(__all__)`、无名称遗漏"。
 - **文档里的数字必须与实测一致**：`spatial.py` 里 Poisson 截断误差一处写 ≈2.8e-3、一处写 ≈2.9e-3。实际算过（n=16, h=1/17：实测最大误差 2.826e-3，解析量级 π²h²/12 = 2.846e-3），2.8e-3 才对，已统一。
+- **CI 抓到一个本机永远碰不到的 numpy 兼容性缺陷**：工作流装的是 `numpy>=1.24`（即最新版），本机是 2.1.3。`timeseries.py` 的卡尔曼平滑里写了 `float(H @ cov @ H.T)`，结果是 `(1, 1)` 数组；numpy 2.1 允许这种"单元素数组转标量"，numpy 2.5 **直接报 `TypeError: only 0-dimensional arrays can be converted to Python scalars`**，整个 `check` 作业在第 5 步就红了。改成显式取 `[0, 0]` 后，本机（2.1.3）与 CI 复现环境（2.5.3）双双全绿。同一轮里还把一处 ARIMA 定阶试探触发的 `overflow encountered in dot` 警告收进 `np.errstate`——那一步本来就会因非有限值被中文 `ValueError` 拒掉，警告只是噪声。**教训：本地跑通 ≠ CI 跑通，声明"依赖 numpy"就必须在最新 numpy 上跑一遍。**
+- **长程迭代的指标不能当黄金值，这是 CI 红出来的第二个问题**：`multiobjective.zdt1_dev`（NSGA-II 跑 150 代后与解析前沿的最大偏差）在本机是 0.005040、在 Linux CI 上是 0.005923，`zdt1_g_max` 同理（1.006226 vs 1.008497）。先把版本和随机性怀疑都排除了：本机用 numpy 2.1.3 与 2.5.3 跑出的结果**逐位相同**（`front_size 60`、`history_len 151`、偏差 0.005039580307475866），`rng(seed)` 的比特流也相同，代码里没有依赖字符串哈希的排序、`argsort` 用的是 `kind="stable"`。真正的原因是**混沌放大**：150 代里一次选择的名次只要被末位浮点差异改变，整条进化轨迹就分岔。所以这两个键改记"分档后的整数指纹"（`zdt1_dev_le_2pct` / `zdt1_g_le_2pct`，都是 1），精度仍由模块内 `< 0.05` 的断言保证；`front` 规模与 `history` 长度这类**整数**量照旧进黄金值（两边都稳定）。这条经验也写进了 `algorithm-details.md` 的 NSGA-II 条目。
 
 ### 变更
 
@@ -30,7 +32,9 @@
 - `SKILL.md`：版本升至 `1.7.0`；索引新增 `algorithm-details.md`、`innovation-playbook.md`、`download_templates.py` 三行；`compatibility` 补上 `download_templates.py` 与 `examples/algorithms/` 的依赖口径。
 - `CITATION.cff` 同步版本与日期（`1.7.0` / 2026-09-19）。
 - `examples/algorithms/` 的 11 个原模块扩写（公开名称 97 → 154）：优化 5→9、图论 10→20、启发式 4→8、预测 16→19、统计 16→23、评价 11→11（内部校订）、聚类 6→12、微分方程 8→15、随机仿真 8→16、几何 8→13、博弈 5→8。
-- `examples/algorithms_golden.json`：**只新增键**，由 `--update-golden` 重写，键数 324 → 875。
+- `examples/algorithms_golden.json`：相对 `v1.6.0` 是**只新增键**（见验证记录），由 `--update-golden` 重写，键数 324 → 875。开发中一度给 ZDT1 记了两个连续量（最大前沿偏差、最大约束违反度），因跨平台混沌放大被换成整数指纹（见「实现说明」），所以"只新增"这个结论是按 `v1.6.0` 与 1.7.0 两个**发布态**比对得出的，开发中间态不计。
+- `examples/algorithms/multiobjective.py`、`examples/algorithms/timeseries.py`、`examples/algorithms/spatial.py`：CI 逼出来的三处修正——ZDT1 黄金值改整数指纹、卡尔曼平滑 `float(1×1 数组)` 改显式下标（numpy ≥ 2.5 会报 `TypeError`）、`scaling_similarity` 的标量入参改 `reshape(-1)` + 显式长度校验。
+- `references/algorithm-details.md`：NSGA-II 条目的「怎么检验」补上"长程迭代混沌性"的说明——同一提交在不同平台上的 150 代连续指标不可比，黄金值只应记整数指纹。
 - `references/algorithm-implementations.md`：§2「一眼速查表」补 6 行新模块，§3 扩到 §3.17。
 
 ### 关键验证记录
@@ -38,7 +42,8 @@
 | 项目 | 方式 | 结果 |
 |---|---|---|
 | 全量算法回归 | `python examples/run_algorithms.py` | **17 个模块 / 875 个断言键，失败 0 个模块**；每个模块跑两遍比对确定性，无一条"数值不匹配" |
-| 黄金值合并是否夹带回归 | `.dsh-tmp/golden_diff.py before after` | **changed=0、removed=0、added=551**；模块 11 → 17，键 324 → 875 |
+| 跨 numpy 版本 | 本机 numpy 2.1.3 与隔离环境 numpy 2.5.3 各跑一遍全量回归 | **两边都是 17 模块 / 875 键 / 0 失败**；修掉的正是 2.5 才报的 `TypeError`（见「实现说明」） |
+| 黄金值合并是否夹带回归 | `.dsh-tmp/golden_diff_v160.py`（`v1.6.0` 提交态 vs 1.7.0） | **changed=0、removed=0、added=551**；模块 11 → 17，键 324 → 875 |
 | 逐算法文档覆盖 | `.dsh-tmp/check_details_full.py` | 公开名称 224 / 条目 223（含 1 个常量条目）；缺失 0、多余 0、重复标题 0；17 个模块逐族 OK |
 | 创新手册引用完整性 | `.dsh-tmp/check_playbook_refs.py` | 白名单 795 个函数名/形参名；未解析的反引号标识符 **0** |
 | 模块头清单与 `__all__` 对齐 | `.dsh-tmp/check_headers.py` | **17/17** 模块通过（条数一致、无名称遗漏） |
@@ -55,6 +60,7 @@
 - **"每个算法都有实现"的边界要说清**：这 222 个函数是**教学透明版**——网格小、格式简单、中间量全部显式返回，目的是让论文能写清每一步在算什么、以及结果怎么检验。真正的生产规模问题，各模块 docstring 都写明了该换哪个成熟库（OR-Tools、Pyomo、statsmodels、sklearn、SALib、PySAL 等）。把"能跑通并对照"说成"工业级性能"是不诚实的，本版没有这么写。
 - **自测断言是独立的，不是复读实现**：`_self_test()` 里用的是闭式解、独立实现（如 SOR 解与直接法解对拍）、极限行为与解析值（如 Sobol 的 S1 解析值 [0.8, 0.2]、GARCH 的方差递推），而不是"实现输出等于实现输出"。
 - **黄金值的作用是防回归，不是证明正确**：875 个键只保证"以后改动不会悄悄改变结果"。数值本身的正确性由那些独立断言负责——这也是为什么新增模块的黄金值是在断言全过之后才记录的。
+- **验证记录里带 `.dsh-tmp/` 前缀的脚本没有随仓库分发**（它们是发布时现写的临时工具，跑在仓库外的临时目录）。每个脚本的判定规则都在表格里写明白了，照着规则用几十行代码就能复现，不依赖这些文件本身。仓库里长期保留的校验器是 `scripts/validate_skill.py`、`scripts/check_paper.py`、`scripts/check_latex.py`、`scripts/check_palette.py`、`scripts/make_figures.py` 和 CI 里的 AST 扫描。
 
 ## [1.6.0] - 2026-09-18
 

@@ -783,8 +783,18 @@ def scaling_similarity(
     scaled: Dict[str, float] = {}
     rel_err: Dict[str, float] = {}
     for name in measurements:
-        m_val = float(np.asarray(measurements[name], dtype=float))
-        t_val = float(np.asarray(target[name], dtype=float))
+        # reshape(-1) + size 校验：既能接受标量和单元素序列，也能对多元素输入给出
+        # 明确报错。不能直接 float(np.asarray(x, dtype=float))——numpy >= 2.5 起
+        # float() 只接受 0 维数组，形状 (1,) 的数组会抛 TypeError。
+        m_arr = np.asarray(measurements[name], dtype=float).reshape(-1)
+        t_arr = np.asarray(target[name], dtype=float).reshape(-1)
+        if m_arr.size != 1 or t_arr.size != 1:
+            raise ValueError(
+                f"{name} 的测量值与参考值必须是单个数值，得到 "
+                f"{m_arr.size} 个与 {t_arr.size} 个元素"
+            )
+        m_val = float(m_arr[0])
+        t_val = float(t_arr[0])
         if not (math.isfinite(m_val) and math.isfinite(t_val)):
             raise ValueError(f"{name} 的测量值/参考值必须是有限数，得到 {m_val} / {t_val}")
         factor = float(lam ** exps[name])

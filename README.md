@@ -35,10 +35,23 @@
 
 ## 快速开始
 
-**第 0 步：把它放到你的技能目录**（初次使用，详见[下载与安装](#下载与安装)）
+**第 0 步：装上它**（初次使用，详见[下载与安装](#下载与安装)）
+
+最省事的方式是**把这句话发给你正在用的 AI 助手，让它自己装**：
+
+> 请阅读并按 <https://raw.githubusercontent.com/anticipate218/math-modeling-skill/main/INSTALL.md> 的说明，把 `math-modeling-skill` 这个技能安装到我当前使用的助手环境里；装完告诉我装到了哪个路径、是哪个版本、以及怎么开始用。
+
+想自己动手的话，一行命令也行：
 
 ```bash
 git clone https://github.com/anticipate218/math-modeling-skill.git ~/.agents/skills/math-modeling-skill
+```
+
+或者用技能包自带的安装器（会自动挑位置、丢掉 `.git/`、装完自校验）：
+
+```bash
+python scripts/install_skill.py --list-targets   # 先看装哪儿合适
+python scripts/install_skill.py --target auto
 ```
 
 **第 1 步：生成论文骨架（选择你的竞赛）**
@@ -95,22 +108,108 @@ python scripts/check_paper.py my_paper.md --contest cumcm
 
 技能遵循 [Agent Skills 开放标准](https://agentskills.io/specification)：一个目录 + 一个 `SKILL.md`（含 YAML frontmatter）。目录名必须与 frontmatter 里的 `name` 一致（本仓库已满足）。
 
-### 1. 获取方式（三选一）
+### 1. 最省事：一句话让你的 AI 助手自己装
 
-| 方式 | 适合 | 做法 |
+**不用记任何命令，也不用打开浏览器。** 把下面这句话（连同链接一起）发给你正在用的 AI 助手，它就会自己下载、找到技能目录、装好、再向你汇报：
+
+> 请阅读并按 <https://raw.githubusercontent.com/anticipate218/math-modeling-skill/main/INSTALL.md> 的说明，把 `math-modeling-skill` 这个技能安装到我当前使用的助手环境里；装完告诉我装到了哪个路径、是哪个版本、以及怎么开始用。
+
+English:
+
+> Read and follow <https://raw.githubusercontent.com/anticipate218/math-modeling-skill/main/INSTALL.md> to install the `math-modeling-skill` agent skill into the environment I'm using. When done, tell me the install path, the version, and how to start using it.
+
+[`INSTALL.md`](INSTALL.md) 是**专门写给 AI 助手看的**：里面写了怎么拿到技能包、怎么确定技能根目录、怎么校验，还有一张「不要做」的清单（不要改目录名、不要覆盖别人的技能、不要装错层级、不要为了验证去跑算法或下载模板）。这份文档对不熟悉本仓库的助手也是自解释的。
+
+**如果你的助手抓不了网页链接**，让它从 Release 包装：
+
+> 请到 <https://github.com/anticipate218/math-modeling-skill/releases/latest> 下载最新的 `math-modeling-skill-v*.zip`，解压后把里面的 `math-modeling-skill` 整个文件夹放到你（助手自己）的技能目录里——**目录名不要改**——然后告诉我放在哪了、怎么开始用。
+
+### 2. 装到哪里（各宿主的技能目录）
+
+| 宿主 / 约定 | 技能目录（安装后应形如 `<技能根>/math-modeling-skill/SKILL.md`） | 说明 |
 |---|---|---|
-| **`git clone`（推荐）** | 想随时 `git pull` 拿到规则更新 | 见下面各宿主的命令 |
-| **下载 Release ZIP** | 机器上没装 git，或要给队友打包 | 到 [Releases](https://github.com/anticipate218/math-modeling-skill/releases) 下载最新一版的 `math-modeling-skill-vX.Y.Z.zip`（内含完整技能包 + 三套 LaTeX 模板）；**解压出来的顶层目录就叫 `math-modeling-skill/`**，整个目录丢进技能根目录即可，不用改名。核验完整性：解压后跑一次 `python scripts/validate_skill.py . --strict`，期望 0 错误 0 警告 |
-| **GitHub 网页下载** | 只想看几个文件 | 仓库页 `Code → Download ZIP`，解压后同样需要重命名为 `math-modeling-skill`（**目录名必须与 `SKILL.md` 里的 `name` 一致**，否则宿主可能拒绝加载） |
+| **DSH**（项目级） | `<项目根>/.dsh/skills/math-modeling-skill` | DSH 技能根表里优先级最高；只对当前项目生效 |
+| **DSH**（用户级） | `~/.dsh/skills/math-modeling-skill` | 设置过 `$DSH_HOME` 时以它为准（`$DSH_HOME/skills`） |
+| **Agent Skills 通用约定**（项目级） | `<项目根>/.agents/skills/math-modeling-skill` | 跨宿主通用的开放标准位置 |
+| **Agent Skills 通用约定**（用户级） | `~/.agents/skills/math-modeling-skill` | 跨宿主通用的开放标准位置 |
+| **Claude Code**（项目级） | `<项目根>/.claude/skills/math-modeling-skill` | |
+| **Claude Code**（用户级） | `~/.claude/skills/math-modeling-skill` | |
 
-**命令行直接拿 Release ZIP（不用打开浏览器）**：
+`<项目根>` = 从当前目录向上找到的最近一个含 `.git` 的目录；找不到就用当前目录。
+
+> **上表只列了能核实的路径。** 其它宿主（Codex、Cursor、Gemini CLI、OpenCode……）的技能目录各不相同，本仓库**故意不写死猜测值**——猜错的代价是"装成功了但永远不被扫描"，比装不上更难查。请让助手去读它自己的文档，或问它"你之前装的技能放在哪个目录"，然后用 `--into` 指定。
+
+**不知道自己宿主的技能根在哪？** 先让助手跑一次探测（技能包自带，只用标准库）：
+
+```bash
+python scripts/install_skill.py --list-targets
+```
+
+它会打印每个候选根目录的**绝对路径**、**是否已存在**、以及**那里已经装的是哪个版本**。
+
+### 3. 用自带安装器装（推荐）
+
+技能包里带了一个只用标准库的安装器：它自己挑技能根、复制时丢掉 `.git/` 与各种缓存、并在覆盖前做安全校验。
+
+```bash
+python scripts/install_skill.py --list-targets            # 先看有哪些位置、哪个已存在、已装的是哪个版本
+python scripts/install_skill.py --target auto             # 装到自动挑出的位置
+python scripts/install_skill.py --target auto --dry-run   # 只看会做什么，不动磁盘
+python scripts/install_skill.py --target dsh-user         # 显式指定（--target agents-user / claude-user / ...）
+python scripts/install_skill.py --into "~/.agents/skills/math-modeling-skill"   # 精确指定目标目录本身
+python scripts/install_skill.py --from-zip math-modeling-skill-v1.8.0.zip       # 从发布包装
+python scripts/install_skill.py --download                # 拉最新 Release 的 ZIP 再装（唯一联网的动作）
+python scripts/install_skill.py --self-test               # 固件测试：不联网、不碰真实技能目录
+```
+
+`--target auto` 的挑选顺序是 **项目级 DSH → 项目级 Agent Skills → 用户级 DSH → 用户级 Agent Skills**，取第一个**已存在**的技能根；一个都不存在时落到 `~/.agents/skills`（跨宿主通用约定）。
+
+三条安全约定，值得知道：
+
+- **默认拒绝覆盖**已存在的技能目录（想覆盖得显式 `--force`）；
+- `--force` **只肯删"确实是本技能"的目录**——目标里必须有 `name: math-modeling-skill` 的 `SKILL.md`，这道闸门是防 `--into` 手滑指到家目录的；
+- 装完自动用包内的 `scripts/validate_skill.py --strict` 校验一遍，不通过就报错退出。
+
+### 4. 手工安装（`git clone` / Release ZIP）
+
+**`git clone`（推荐，方便日后 `git pull` 拿规则更新）**
+
+```bash
+# Agent Skills 通用约定（用户级，跨宿主）
+git clone https://github.com/anticipate218/math-modeling-skill.git ~/.agents/skills/math-modeling-skill
+```
+
+```powershell
+# DSH 用户级（所有项目可用）
+git clone https://github.com/anticipate218/math-modeling-skill.git "$env:USERPROFILE/.dsh/skills/math-modeling-skill"
+
+# DSH 项目级（只对当前仓库生效）
+git clone https://github.com/anticipate218/math-modeling-skill.git .dsh/skills/math-modeling-skill
+```
+
+```bash
+# Claude Code 用户级
+git clone https://github.com/anticipate218/math-modeling-skill.git ~/.claude/skills/math-modeling-skill
+```
+
+clone 进技能目录后**记得把 `.git/` 删掉**（几 MB 历史，技能本身用不到）：
+
+```bash
+rm -rf ~/.agents/skills/math-modeling-skill/.git
+```
+
+**下载 Release ZIP**（机器上没装 git，或要给队友打包）
+
+到 [Releases](https://github.com/anticipate218/math-modeling-skill/releases) 下载最新一版的 `math-modeling-skill-vX.Y.Z.zip`——内含完整技能包 + 三套 LaTeX 模板，**解压出来的顶层目录就叫 `math-modeling-skill/`**，整个目录丢进技能根目录即可，不用改名。
+
+命令行直接拿（不用打开浏览器）：
 
 ```powershell
 # PowerShell / Windows
 $rel = Invoke-RestMethod https://api.github.com/repos/anticipate218/math-modeling-skill/releases/latest
 $zip = ($rel.assets | Where-Object name -like '*.zip' | Select-Object -First 1).browser_download_url
 Invoke-WebRequest $zip -OutFile math-modeling-skill.zip
-Expand-Archive math-modeling-skill.zip -DestinationPath "$env:USERPROFILE/.dsh/skills"   # 解压后即 .../skills/math-modeling-skill/
+Expand-Archive math-modeling-skill.zip -DestinationPath "$env:USERPROFILE/.agents/skills"   # 解压后即 .../skills/math-modeling-skill/
 ```
 
 ```bash
@@ -122,33 +221,11 @@ unzip -q mms.zip -d ~/.agents/skills/          # 解压后即 ~/.agents/skills/m
 
 （`unzip` 换成 `python -m zipfile -e mms.zip ~/.agents/skills/` 也可以，不依赖 unzip 命令。）
 
-### 2. 装到哪里
+**GitHub 网页下载**（只想看几个文件）：仓库页 `Code → Download ZIP`，解压后**必须把目录重命名为 `math-modeling-skill`**——目录名与 `SKILL.md` 里的 `name` 不一致时宿主会静默忽略它。
 
-**通用 Agent Skills 目录（跨工具）**
+**纯手工复制**：把整个目录复制到技能根下，确保路径形如 `<技能根目录>/math-modeling-skill/SKILL.md`（`SKILL.md` 就在这一层，不要再套一层）。
 
-```bash
-git clone https://github.com/anticipate218/math-modeling-skill.git ~/.agents/skills/math-modeling-skill
-```
-
-**DeepSeek Harness**
-
-```powershell
-# 用户级技能目录（所有项目可用）
-git clone https://github.com/anticipate218/math-modeling-skill.git "$env:USERPROFILE/.dsh/skills/math-modeling-skill"
-
-# 或项目级（只对当前仓库生效）
-git clone https://github.com/anticipate218/math-modeling-skill.git .dsh/skills/math-modeling-skill
-```
-
-**Claude Code**
-
-```bash
-git clone https://github.com/anticipate218/math-modeling-skill.git ~/.claude/skills/math-modeling-skill
-```
-
-**手动安装**：把整个仓库目录复制到你的技能根目录下，确保路径形如 `<技能根目录>/math-modeling-skill/SKILL.md`。
-
-### 3. 依赖
+### 5. 依赖
 
 | 用途 | 需要什么 |
 |---|---|
@@ -156,9 +233,9 @@ git clone https://github.com/anticipate218/math-modeling-skill.git ~/.claude/ski
 | **运行自带算法**（`examples/algorithms/`） | 额外需要 **numpy**（`pip install numpy`），**不需要** scipy / sklearn / pandas / statsmodels |
 | **真编译 LaTeX 模板**（可选） | 本机装有 TeX 发行版（MiKTeX 或 TeX Live），并有 `xelatex`（中文模板）、`pdflatex`（美赛模板）与 `bibtex` |
 
-不需要联网，也没有任何交互式提示——所有脚本都可以在 CI 里非交互运行。
+除安装器的 `--download` 这一个开关外，所有脚本都不需要联网，也没有任何交互式提示——都能在 CI 里非交互运行。
 
-### 4. 下载 LaTeX 论文模板
+### 6. 下载 LaTeX 论文模板
 
 仓库自带**三套可直接编译的自包含模板**（每套只有 `main.tex` + `refs.bib` 两个文件，不依赖任何私有宏包）：
 
@@ -212,16 +289,40 @@ python scripts/check_latex.py --require              # 需要本机有 TeX
 python scripts/check_latex.py --self-test            # 不需要 TeX，只验证检查逻辑本身
 ```
 
-### 5. 装完先验证一下（30 秒）
+### 7. 装完先验证一下（30 秒）
 
 ```bash
 cd math-modeling-skill
 python scripts/validate_skill.py . --strict    # 期望：0 个错误，0 个警告
 python scripts/check_paper.py --self-test      # 期望：全部 PASS
 python scripts/download_templates.py --list    # 期望：列出三套模板
+python scripts/install_skill.py --self-test    # 期望：13/13 通过
 ```
 
 `validate_skill.py` 报错通常意味着**目录名被改过**（必须叫 `math-modeling-skill`）或者文件没下全（Release ZIP 比单下几个文件可靠）。
+
+### 8. 怎么更新、怎么卸载
+
+```bash
+# 更新：拿到新版（git pull 或换一个新 ZIP）后重装，加 --force 覆盖自己的旧版本
+git pull
+python scripts/install_skill.py --target auto --force
+
+# 卸载：技能就是一堆文件，没有后台进程、不写注册表、不改宿主配置
+rm -rf ~/.agents/skills/math-modeling-skill
+```
+
+`--force` 只覆盖**本技能的旧安装**，别的目录一律不动。
+
+### 9. 装完没生效？按这个顺序查
+
+1. **目录名**是否正好是 `math-modeling-skill`——改了名不会报错，只会静默失效。
+2. **层级**是否是 `<技能根>/math-modeling-skill/SKILL.md`（`SKILL.md` 必须在技能目录**顶层**，不要再套一层）。
+3. **位置**是否真的是宿主扫描的那个根目录——回到[第 2 节](#2-装到哪里各宿主的技能目录)对一下，或让助手读它自己的文档确认（别猜）。
+4. **是否要重启**：DSH 会持续监视技能根目录，**新增/改名/删除技能在下一个技能目录快照就会生效，不需要重启**；其它宿主以它自己的文档为准，不确定就重启一次试试。
+5. **是否被别的技能抢了触发**：把话说得更明确一点——开头加一句「用 math-modeling-skill 来做…」。
+
+确认技能有没有被读到，最直接的办法是让助手**列出当前可用的技能**，或直接说一句建模需求看它会不会用。
 
 ---
 
@@ -231,9 +332,9 @@ python scripts/download_templates.py --list    # 期望：列出三套模板
 
 技能不需要安装器、不需要常驻进程，也**不需要你记住任何命令**：宿主启动时扫描技能根目录，读到 `SKILL.md` 的 frontmatter 后，按其中 `description` 写明的场景（中英文触发词都覆盖了）自动决定要不要加载。所以最省事的用法就是**把任务用中文说清楚**。
 
-- **确认装上了**：让助手"列出当前可用的技能"，应该能看到 `math-modeling-skill`；或者直接在仓库目录跑 `python scripts/validate_skill.py . --strict`。
+- **确认装上了**：让助手"列出当前可用的技能"，应该能看到 `math-modeling-skill`；或者直接在技能目录里跑 `python scripts/validate_skill.py . --strict`。
 - **想强制指定**：开头加一句"用 math-modeling-skill 来做…"，避免与别的技能抢触发。
-- **触发不灵时按顺序查四件事**：① 目录名是否正好叫 `math-modeling-skill`（必须等于 frontmatter 的 `name`）；② 路径是否形如 `<技能根目录>/math-modeling-skill/SKILL.md`（`SKILL.md` 必须在技能目录顶层，不能多套一层）；③ 宿主是否需要重启或重新扫描；④ 是否被别的技能同场景抢占——此时用上面的强制指定方式。
+- **触发不灵时按顺序查四件事**：① 目录名是否正好叫 `math-modeling-skill`（必须等于 frontmatter 的 `name`）；② 路径是否形如 `<技能根目录>/math-modeling-skill/SKILL.md`（`SKILL.md` 必须在技能目录顶层，不能多套一层）；③ 装的位置是否真是宿主扫描的那个根目录（DSH 会持续监视技能根，**不需要重启**；其它宿主以各自文档为准）；④ 是否被别的技能同场景抢占——此时用上面的强制指定方式。完整排查步骤见[装完没生效？按这个顺序查](#9-装完没生效按这个顺序查)。
 
 安装后，直接对助手说这些话即可触发：
 
@@ -345,6 +446,7 @@ python examples/run_algorithms.py --module graphs --verbose   # 只跑一个模�
 |---|---|---|
 | 结构 | `python scripts/validate_skill.py . --strict` | frontmatter 字段白名单、`name` 与目录一致、description/compatibility 长度、正文行数、**文件引用是否存在**、未索引文件、Windows 反斜杠路径 |
 | 自检工具 | `python scripts/check_paper.py --self-test` | 用「好稿/坏稿」固件验证检查逻辑本身没坏 |
+| 安装器 | `python scripts/install_skill.py --self-test` | 13 项固件测试：复制时确实丢掉 `.git`/`__pycache__`、已存在时先拒绝再 `--force`、**非本技能的目录一律不删**、`--dry-run` 不写盘、带/不带顶层前缀的 ZIP 都能解、`auto` 挑选顺序、项目根向上查找——全程不联网、不碰真实技能目录 |
 | 算法回归 | `python examples/run_algorithms.py` | 自带的 **17 个算法模块、875 个断言键**逐个跑数值自检，并与 `algorithms_golden.json` 黄金值比对（含确定性复跑：每个模块跑两遍，结果必须逐位一致） |
 | 配图配色 | `python scripts/check_palette.py --quiet` | 直接读 `make_figures.py` 里的设计令牌，算二色觉仿真 CIELAB ΔE、灰度间隔与 WCAG 对比度；并断言「颜色之外还有线型/标记」这条冗余编码确实存在 |
 | 模板真编译 | `python scripts/check_latex.py --require`（CI）／`--self-test`（本机无需 TeX） | 在临时目录里真的编译 `assets/latex/` 三套模板（引擎 → bibtex → 引擎 ×2），核对硬错误、未解析引用、缺字体、页数下限，以及 **AI 声明与参考文献的先后顺序** |
@@ -380,6 +482,7 @@ math-modeling-skill/
 │   ├── check_palette.py          # 配图配色可访问性体检（二色觉 ΔE / 灰度间隔 / 对比度）
 │   ├── check_latex.py            # 真编译三套 LaTeX 模板并体检（引用/字体/页数/AI 声明顺序）
 │   ├── download_templates.py     # 按竞赛一键导出 LaTeX 模板目录（可打包成 zip，支持 --self-test）
+│   ├── install_skill.py          # 把技能装进宿主技能目录（自动定位 / 默认不覆盖 / 装完自校验）
 │   └── make_figures.py           # 生成 assets/gallery/ 原创论文配图（固定种子，可完整复现）
 ├── assets/
 │   ├── abstract-template.md      # 摘要模板：中文（国赛/研赛）+ 英文 Summary Sheet（美赛）
@@ -400,6 +503,7 @@ math-modeling-skill/
 │   ├── workflows/ci.yml          # 持续集成
 │   └── ISSUE_TEMPLATE/           # Issue 模板（规则更新 / Bug 报告）
 ├── CONTRIBUTING.md               # 贡献指南（规则追踪项目的特殊要求）
+├── INSTALL.md                    # 给 AI 助手看的安装说明（「一句话安装」链接的目标文档）
 ├── CITATION.cff                  # 引用元数据
 ├── README.md
 ├── CHANGELOG.md

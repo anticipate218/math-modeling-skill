@@ -7,9 +7,9 @@ description: >-
 license: MIT
 metadata:
   author: anticipate218
-  version: "1.7.0"
+  version: "1.8.0"
   language: zh-CN
-compatibility: 可选依赖 Python 3.9+；scripts/check_paper.py、scripts/check_latex.py 与 scripts/download_templates.py 仅用标准库（check_paper 读 PDF 需 pip install pypdf，check_latex 需本机 TeX 发行版提供 xelatex/pdflatex/bibtex）；scripts/make_figures.py 需 matplotlib，scripts/check_palette.py 与 examples/algorithms/ 需 numpy
+compatibility: 可选依赖 Python 3.9+；scripts/check_paper.py、scripts/check_latex.py、scripts/download_templates.py 与 scripts/install_skill.py 仅用标准库（check_paper 读 PDF 需 pip install pypdf，check_latex 需本机 TeX 发行版提供 xelatex/pdflatex/bibtex）；scripts/make_figures.py 需 matplotlib，scripts/check_palette.py 与 examples/algorithms/ 需 numpy
 ---
 
 # 数学建模竞赛助手
@@ -185,4 +185,5 @@ python scripts/check_paper.py paper.md --contest mcm       # 美赛
 | 可填空论文骨架（含占位符提示） | `assets/paper-outline.md` |
 | 生成论文骨架 + 机械检查论文草稿 | `scripts/check_paper.py --init` / `scripts/check_paper.py` |
 | 校验技能自身结构（frontmatter/篇幅/文件引用） | `scripts/validate_skill.py` |
+| 用户要装/更新/换宿主重装这个技能，或问"技能目录在哪" | `INSTALL.md`（给助手看的安装流程）、`scripts/install_skill.py`（`--list-targets` / `--target auto` / `--force` / `--dry-run` / `--self-test`） |
 | 了解本技能的触发评测方法 | `evals/README.md`、`evals/trigger-queries.json`、`evals/evals.json` |

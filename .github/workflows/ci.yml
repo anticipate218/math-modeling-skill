@@ -22,6 +22,21 @@ jobs:
       - name: 自检脚本固件测试
         run: python scripts/check_paper.py --self-test
 
+      # 安装器是用户碰到的第一个脚本，"装错地方 / 覆盖掉别人的技能" 这类事故
+      # 代价很高，所以它的安全约定必须有固件测试兜住。
+      # 这个自检全程不联网、也不碰真实的技能目录（在临时目录里造假的源包与目标）。
+      - name: 安装器固件测试（安全约定 / ZIP 解包 / 目标解析）
+        run: python scripts/install_skill.py --self-test
+
+      # README 里那句「一句话安装」把 raw 链接当作唯一入口；链接写错或文件没推上去，
+      # 用户复制过去就是一个 404。这里把这条契约钉死在 CI 里。
+      - name: 安装入口文档存在且被 README 引用
+        run: |
+          test -f INSTALL.md
+          grep -q 'raw.githubusercontent.com/anticipate218/math-modeling-skill/main/INSTALL.md' README.md
+          grep -q 'INSTALL.md' SKILL.md
+          echo "INSTALL.md 入口检查通过"
+
       - name: 算法模块依赖检查（只应依赖 numpy + 标准库）
         run: |
           python - <<'PY'

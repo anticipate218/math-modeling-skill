@@ -1,25 +1,36 @@
 ## [1.9.1] - 2026-09-21
 
-本版是 v1.9.0 的**补丁**：修红 CI、把两处"说得太满"的数字改成实测值、把 README 里
-Release 链接从钉死版本号改成 `latest`。**模板源码一个字节都没改。**
+本版是 v1.9.0 的**补丁**：修红 CI（两轮）、把两处"说得太满"的数字改成实测值、把 README
+里 Release 链接从钉死版本号改成 `latest`、修掉发布资产的出包口径。**模板源码一个字节都没改。**
 
 ### 为什么会有这一版
 
-v1.9.0 的 `latex` CI 作业在 GitHub 上是**红的**——不是模板坏，是 **Ubuntu 的 TeX Live 缺包**：
-`ulem.sty` 不在 `texlive-latex-base/-recommended/-extra` 里（它在 `texlive-plain-generic`，
-TDS 路径是 `tex/generic/` 而不是 `tex/latex/`），`berasans.sty` 也不在（它在
-`texlive-fonts-extra`）。本地 Windows + MiKTeX 是全量安装，所以
-`check_latex_full.py --require` 5/5 通过，**在本机一点都看不出来**。这恰好说明
-"CI 那一遍必须在 Linux 上真跑"是有价值的：它专抓"本机装得太全"造成的盲区。
+v1.9.0 的 `latex` CI 作业在 GitHub 上是**红的**，两轮才修完——两次都不是模板坏，
+是 **Ubuntu 的 TeX Live 缺包**：
+
+1. **第一轮**：`ulem.sty` 不在 `texlive-latex-base/-recommended/-extra` 里（它在
+   `texlive-plain-generic`，TDS 路径是 `tex/generic/` 而不是 `tex/latex/`），
+   `berasans.sty` 也不在（它在 `texlive-fonts-extra`）。
+2. **第二轮**：补完之后 5 条完整模板编译里只剩「美赛 原样」一条红，pdflatex 报
+   `! Font TS1/ntxtlf/m/n/12=ts1-qtmr at 12.0pt not loadable: Metric (TFM) file not found`。
+   `newtxtext` 把 TS1 编码映射到 TeX Gyre Termes 的度量上，所以需要 `ts1-qtmr.tfm`；
+   它由 Debian 的 `tex-gyre` 提供，而只装 OTF 的 `fonts-texgyre` 是**另一个互不
+   相干的包**——两个包名长得像，是最容易漏的一个。
+
+本地 Windows + MiKTeX 是全量安装，所以 `check_latex_full.py --require` 5/5 通过，
+**在本机一点都看不出来**。这恰好说明"CI 那一遍必须在 Linux 上真跑"是有价值的：
+它专抓"本机装得太全"造成的盲区。
 
 ### 变更
 
 - `.github/workflows/ci.yml`：`latex` 作业的 TeX Live 安装列表补 `texlive-plain-generic`、
-  `texlive-fonts-extra`、`fonts-texgyre`；装完后用 `kpsewhich` 逐个点名 `lmodern.sty` /
-  `ulem.sty` / `berasans.sty` / `texgyretermes-regular.otf`——**缺包立刻在安装这一步就失败**，
+  `texlive-fonts-extra`、`fonts-texgyre`、`tex-gyre`；装完后用 `kpsewhich` 逐个点名
+  `lmodern.sty` / `ulem.sty` / `berasans.sty` / `newtxtext.sty` /
+  `texgyretermes-regular.otf` / `ts1-qtmr.tfm`——**缺包立刻在安装这一步就失败**，
   不必再去编译日志里翻 `! LaTeX Error: File ... not found.`。
-  （提醒：TeX Gyre 字体在 Debian 上叫 `fonts-texgyre`，**不带** `texlive-` 前缀。）
-- `assets/latex/full/README.md`：新增「需要哪些 TeX 组件」一节，把上面四个"漏了就红"的包
+  （提醒：TeX Gyre 的 OTF 在 Debian 上叫 `fonts-texgyre`、度量文件叫 `tex-gyre`，
+  **都不带** `texlive-` 前缀，而且**两个都要装**。）
+- `assets/latex/full/README.md`：新增「需要哪些 TeX 组件」一节，把上面这些"漏了就红"的包
   和各自的用途列成表；第 5.3 节的 CI 说明同步。
 - **两处数字修正**（v1.9.0 写错了）：`gmcm` 回落路径实测 **391 120 B**（原写 391 121 B）；
   `cumcm` 原样实测 **452 165 B**（原写 452 166 B）。`full/gmcm/README.md` 与
@@ -35,6 +46,16 @@ TDS 路径是 `tex/generic/` 而不是 `tex/latex/`），`berasans.sty` 也不�
 - `INSTALL.md`：示例 ZIP 名从 `v1.9.0` 更新为 `v1.9.1`。
 - 删掉仓库根目录一个误建的 `NUL` 空文件（Windows 上给 OpenSSH 传
   `-o UserKnownHostsFile=NUL` 时被当成了真实文件名）。它从未进入版本库。
+- **发布资产改为严格"从 git blob 出包"。** 打 v1.9.0 的包时是在 Windows 上直接
+  `git archive`，而本机的 `core.autocrlf=true` 会顺手把包里的文本文件改写成 CRLF：
+  技能包 125 个文件里有 **97 个**中招，而当时只校验了 `.ttf` 的字节，完全看不出来
+  （仓库自己声明的却是 `* text=auto eol=lf`）。现在出包时显式关掉这个转换，并用
+  `--mtime` 把 ZIP 条目的时间戳钉在提交时间上（不钉的话，同一次提交连编两次字节都
+  不同）。判据也换成**全量**逐文件比对 git blob，不再是只看字体。因为修好了这个，
+  v1.9.1 的三个模板包虽然**模板源码没动**，包的字节与 v1.9.0 的并不全同：
+  除下文两处 README 数字外，差异只是行尾统一回 LF 与时间戳字段。
+  （资产自身的 SHA-256 记在 GitHub Release 说明里，**不写进本文件**——写进来就
+  改变了提交，提交变了资产又会变，成了自指的循环。）
 
 ### 验证记录
 
@@ -42,12 +63,14 @@ TDS 路径是 `tex/generic/` 而不是 `tex/latex/`），`berasans.sty` 也不�
 |---|---|---|
 | 完整模板真编译 | `check_latex_full.py --require`（Windows + MiKTeX 25.12） | **5/5 通过**，gmcm 8 页 / cumcm 12 页 / mcm 11 页，回落路径页数一致 |
 | 复查"与样张一致"的结论 | 逐字节比对刚编译出的 PDF 与仓库内样张 | `gmcm` / `mcm` 逐字节相同；`cumcm` 前 444 862 字节相同，末尾元数据对象流差 1 字节（已在文档中写明） |
-| Ubuntu 缺包定位 | 下载 `dists/noble/Contents-amd64.gz` 反查文件归属 | `ulem.sty` → `texlive-plain-generic`；`berasans.sty` → `texlive-fonts-extra`；`texgyretermes-regular.otf` → `fonts-texgyre` |
+| Ubuntu 缺包定位 | 下载 `dists/noble/Contents-amd64.gz`（51 301 092 B）反查文件归属 | `ulem.sty` → `texlive-plain-generic`；`berasans.sty` / `newtxtext.sty` → `texlive-fonts-extra`；`texgyretermes-regular.otf` → `fonts-texgyre`；`ts1-qtmr.tfm` → `tex-gyre`。**全部是反查出来的，不是猜的** |
+| 发布资产完整性 | 出包后把 ZIP 里**每一个**条目与 `git cat-file` 取出的 blob 逐字节比对，并连编两次比对 | 技能包 125/125 个条目与 git blob 相同，0 个被转成 CRLF；三个模板包条目清单与 `git ls-tree` 一致；连编两次字节完全相同 |
+| 资产可安装性 | 从最终 ZIP 走 `install_skill.py --from-zip` / `--into <技能根>` 完整装一遍 | 两条路径都装上并通过 `validate_skill --strict`，随包 5 个 `.ttf` 都在 |
 | CI | `.github/workflows/ci.yml` 两个作业 | 见本版所在提交：`check` 与 `latex` 全绿 |
 
 ### 如果你已经装了 1.9.0
 
-模板内容**完全没变**（`.cls` / `.tex` / 字体 / 图片都一致），本版只动文档数字与 CI 配置，
+模板内容**完全没变**（`.cls` / `.tex` / 字体 / 图片都一致），本版只动文档数字、CI 配置与出包口径，
 不更新不影响使用。要更新就 `git pull` 后重跑
 `python scripts/install_skill.py --target auto --force`。
 

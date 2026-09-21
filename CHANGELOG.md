@@ -1,3 +1,67 @@
+## [1.9.0] - 2026-09-21
+
+本版补上一整层**「完整文档类」LaTeX 模板**。此前仓库里的三套模板是**自包含轻量版**（单个 `main.tex` + `refs.bib`，不依赖私有宏包）——它便于"我自己掌控排版"，但真正参赛时评委认的是各赛事官方文档类的版式（封面、承诺书、编号页、摘要页、页眉页脚都由 `.cls` 决定，自己仿制很难一致）。本版把三套**官方文档类的完整可编译工程**收进来，并把"换一台没有 Windows 字体的机器（含 Overleaf）会不会崩"从"用户自己想办法"变成了 **CI 里真的会跑的一步**。
+
+### 关键结论（先说结果）
+
+- **新增 `assets/latex/full/`：三套完整文档类模板，直接能编。** 研赛（华为杯）`gmcmthesis.cls` v2.2、国赛 `cumcmthesis.cls` v2.9、美赛 `mcmthesis.cls` v6.3.3；每套都带完整正文骨架、图片与**预编译样例 PDF**（8 / 12 / 11 页）。国赛与研赛用 `xelatex`、美赛用 `pdflatex`，**各连跑三遍即可**——这套模板的参考文献是内联 `thebibliography`，**不需要 bibtex**。
+- **原有的轻量版一套都没动。** `assets/latex/{cumcm,yjs,mcm}/` 连一个字节都没改。两套并存是刻意的：轻量版适合自控排版与"由 Markdown 快速成稿"，完整版适合正式提交。选哪套见 `assets/latex/README.md` 顶部的对照表。
+- **"缺 Windows 字体就编不出来"这个坑被堵死了，而且是**验证过**的堵法。** 研赛文档类原本硬写 `\setmainfont{Times New Roman}` / `\setsansfont{Arial}` / `\setmonofont{Courier New}`，并且靠 `\ifx\lishu\undefined` 判断要不要绑定隶书——**这两个写法在 Linux / Overleaf 上都会出问题**（前者直接失败；后者因为 ctex 早就定义过 `\lishu`，判断恒为假，隶书永远绑不上、编译时报 `The font LiSu cannot be found`）。现在全部改用 `fontspec` 的 `\IfFontExistsTF` 探测：有 Windows 字体就用（字形与 Word 一致），没有就回落到 TeX Gyre 的度量兼容克隆（Termes / Heros / Cursor，随 TeX Live / MiKTeX 分发）；CJK 主字体缺了就保留 ctex 自动选定的字体集（Windows → windows，Linux / Overleaf → fandol）。**实测两条路径编出来的页数完全一致**（8 / 12 / 11），换字体只改字形与嵌入大小，不改版面。
+- **随附 5 个中文字体，让无网机器也能得到与 Word 一致的字形。** `full/gmcm/` 里带了 SimSun / SimHei / KaiTi / LiSu / STXinwei 五个 `.ttf`（合计约 43.7 MiB，占本版仓库体积的绝大部分）。**它们是商业字体，不在本仓库 MIT 授权范围内**，随包附上只为字形一致；**删掉即可**，上面的回落路径会接管。三处文档都写明了这一点，并特别警告：**不要把这几个 `.ttf` 挪进 `fonts/` 子目录**——文档类按裸文件名引用它们，挪走后编译仍会"成功"退出 0，但中文字会静默变成一片 `Missing character` 警告。
+- **三套模板每次 CI 都真的编译，而且各编两遍。** 一遍按原样编，一遍**模拟一台没有 Windows 字体的机器**（删掉随包 `.ttf` + 把 ctex 字体集钉成 `fandol` + 把西文字体探测的名字换成一定不存在的名字），两条路径都必须编过，模板才算真的能在 Overleaf / Linux 上用。这套"模拟"是**确定性的**，不依赖跑在哪个平台上。
+- **Release 里现在混着三种 ZIP，而安装器已经不会再下错。** 除技能包外还挂了 `gmcm-template.zip` / `cumcm-template.zip` / `mcm-template.zip`。旧版 `--download` 的实现是"取 Release 的第一个 `.zip` 资产"，而 GitHub 接口**不承诺资产顺序**——模板包一旦排在前面就会被当技能装下去。本版新增 `pick_release_asset()`：**只认文件名以 `math-modeling-skill` 开头的 ZIP**，一个都不匹配时**报错并列出实际资产名**，而不是随便挑一个。
+
+### 变更
+
+**新增**
+
+- `assets/latex/full/`（共 38 个文件）：
+  - `full/gmcm/`（12 个文件，46,540,342 字节）：`gmcmthesis.cls` v2.2 + `MathModel.tex` + 5 个 `.ttf` + `figures/` + 预编译 `MathModel.pdf`（8 页）。
+  - `full/cumcm/`（11 个文件，914,244 字节）：`cumcmthesis.cls` v2.9 + `cumcm2026.sty` + `example.tex` + `figures/` + 预编译 `example.pdf`（12 页）。
+  - `full/mcm/`（15 个文件，701,743 字节）：`mcmthesis.cls` v6.3.3 + `mcmthesis.dtx` + `mcmthesis.ins`（为满足 LPPL 再分发条款而保留）+ `LICENSE-mcmthesis` + `code/` + `figures/` + 预编译 `mcmthesis-demo.pdf`（11 页）。
+  - `full/README.md`（313 行）：两套模板怎么选、与原版的差异、字体与许可提示、逐目录清单、验证记录。
+  - `full/THIRD-PARTY.md`（131 行）：三套模板逐一的来源 / commit / 许可，以及随附 `.ttf` 的许可边界。
+- `scripts/check_latex_full.py`（544 行，仅标准库）：在系统临时目录的副本里真编译完整模板并体检。CLI：`--require` / `--only` / `--no-simulate` / `--keep` / `--tex-dir` / `--timeout` / `--self-test`。核心能力有三个——① 把 ctex 的字体集改写钉死（正则识别 `\LoadClass[...]{ctexart}` 与 `\RequirePackage[...]{ctex}`，加或替换 `fontset=`）；② 把 `\IfFontExistsTF` 的 Windows 字体名换成一定不存在的名字，从而在 Windows 上也能复现"没装这些字体"的分支；③ 核对"AI 声明 vs 参考文献"的顺序（模板给的正则，国赛要求**之前**、美赛要求**之后**）。
+
+**修改**
+
+- `assets/latex/full/gmcm/gmcmthesis.cls`（第 146–174 行）：三处西文字体加 `\IfFontExistsTF` 回落；CJK 主字体 / `zhli` / `xw` 改为探测随包 `.ttf`；`\lishu` 与 `\xinwei` 先 `\providecommand*` 兜底再 `\renewcommand*`（修掉上面那个恒假的 `\ifx` 判断）。
+- `assets/latex/full/cumcm/cumcmthesis.cls`（第 154–163 行）：`\setmainfont{Times New Roman}` 与 `\setsansfont{Arial}` 各加 `\IfFontExistsTF` 回落（`\setmonofont{Courier New}` 上游本就是注释状态，保持原样）。
+- `assets/latex/full/mcm/`：**与上游逐字节一致，未作任何修改**，只补了一份本仓库写的 `README.md`。
+- `.github/workflows/ci.yml`：`latex` 作业新增两步——`check_latex_full.py --self-test`（不需要 TeX，放在装 TeX 之前，便于区分"脚本坏"与"发行版缺宏包"）与 `check_latex_full.py --require`（真编译，含无 Windows 字体的回落路径）。
+- `scripts/install_skill.py`（1089 → 1164 行）：新增 `pick_release_asset(assets)`（含完整 docstring 与"为什么宁可报错也不猜"的说明）；`download_latest_zip()` 改为调用它；`--self-test` 由 **21 项扩到 25 项**（新增"模板包排在前面也认得技能包""无版本号后缀的技能包也认""只有模板包时拒绝乱猜并列出资产名""没有 .zip 时报错"）。
+- `assets/latex/README.md`：顶部加"完整版 vs 轻量版"决策表；新增 `full/` 一节。
+- `assets/latex/full/{gmcm,cumcm,mcm}/README.md`：编译步骤改为三遍（去掉 bibtex）、字体在新版本里是**可选**的、更新字体回落说明与来源链接。
+- `references/templates.md`（106 → 121 行）：第一节加两套模板的对照与上游谱系表；第二节补上 `check_latex_full.py` 的三条命令与"它多做的那一件事"。
+- `README.md`：第 6 节重写为两套模板的对照 + 完整版的下载方式（Release 直达链接 / 直接拷贝 / raw 单文件）+ 编译命令 + 字体与许可提示；「质量保障」表新增"完整模板真编译"一行、安装器一行由 21 项改 25 项；「仓库结构」树补上 `assets/latex/full/` 与 `check_latex_full.py`；「与同类项目的关系」改为**逐套标注上游与许可状态**（并写明研赛这一套是作者自制整理）。
+- `INSTALL.md`（304 → 326 行）：新增「附：LaTeX 论文模板怎么拿（与安装无关）」一节，明确 **Release 里只有 `math-modeling-skill-v*.zip` 是技能包**，另外三个是独立的 LaTeX 工程，以及 `.ttf` 的许可与删除办法。
+- `SKILL.md`（版本 → 1.9.0）：参考文件索引新增"要完整文档类模板"与 `check_latex_full.py` 两行；`compatibility` 补上 `check_latex_full.py`。
+- `CITATION.cff`：版本 → 1.9.0，日期 → 2026-09-21，关键词加 `latex-template`。
+
+### 关键验证记录
+
+| 项目 | 方式 | 结果 |
+|---|---|---|
+| 完整模板：原样编译 | `check_latex_full.py --require --tex-dir <MiKTeX 25.12>` | **5/5 通过**，退出码 0：gmcm 8 页 / cumcm 12 页 / mcm 11 页，硬错误 0、缺字 0、未解析引用 0 |
+| 完整模板：模拟无 Windows 字体 | 同上，删随包 `.ttf` + 钉 `fontset=fandol` + 屏蔽西文字体探测 | gmcm 8 页（391,121 字节，原样 395,954）、cumcm 12 页（538,970 字节，原样 452,165）——**页数与原样路径完全一致**，只有字形与嵌入体积不同 |
+| AI 声明顺序 | 同上，按模板各自的正则核对 | 国赛「AI 工具使用声明」在参考文献之前 ✓（正文含 2 处，按最后一处算）；美赛 `Report on Use of AI` 在参考文献之后 ✓ |
+| 完整模板改写逻辑 | `check_latex_full.py --self-test` | **26/26 通过**（不需要 TeX） |
+| 轻量模板未受影响 | `check_latex.py --self-test` / `--require` | **26/26 通过**；真编译 3 套仍全过 |
+| 安装器 | `install_skill.py --self-test` | **25/25 通过**（新增 4 项资产挑选用例；不联网、不碰真实技能目录） |
+| 结构与自检 | `validate_skill.py . --strict` / `check_paper.py --self-test` / `download_templates.py --self-test` | 0 错误 0 警告 / 全部通过 / 26/26 通过 |
+| 算法与配图 | `run_algorithms.py` / `check_palette.py --quiet` | 17 个模块 875 个断言键、失败 0；配色可访问性断言全部满足 |
+| Release 三个模板包 | 逐 ZIP 用 Python 核对条目名与数量 | `gmcm-template.zip` 12 条 / `cumcm-template.zip` 11 条 / `mcm-template.zip` 15 条，与目录文件数一一对应；条目分隔符全是正斜杠，解压后各自得到一个顶层目录 |
+
+### 字体与许可证（必读）
+
+- 随 `full/gmcm/` 附带的 5 个 `.ttf` 是 Windows / 中易（SinoType）的**商业字体**，**不属于本仓库的 MIT 授权范围**——MIT 只覆盖本仓库自己写的代码与文档。随包附上是为了"和 Word 版字形完全一致"；你完全可以删掉它们，模板会用 TeX Gyre + 系统可用字体照常编译（上表已验证）。
+- 三套模板的来源与许可状态**只作标注、不作法律判断**：美赛 `mcmthesis` 有明确的开源许可（**LPPL 1.3c 或更高**，因此保留了 `.dtx` / `.ins`），国赛 `CUMCMThesis` 上游**未附 LICENSE**、也**未上 CTAN**，研赛这一套是**本仓库作者在公开谱系上自制整理**的。逐条见 `assets/latex/full/THIRD-PARTY.md`。
+- 需要正式再分发模板时，请自行确认上游条款；本仓库只保证"来源可追溯、commit 已固定"。
+
+### 如果你已经装了 1.8.x
+
+技能内容（`references/`、`examples/`、`scripts/` 里的检查逻辑）向后兼容，重装不是必须的。但想拿到完整 LaTeX 模板，需要更新到本版：`git pull` 后 `python scripts/install_skill.py --target auto --force`，或从 Releases 直接下三个模板包。
+
 ## [1.8.3] - 2026-09-19
 
 本版修一个**只有真机才能撞见的可用性 bug**：`--download`（脚本里唯一联网的动作）没有重试，遇到 GitHub 的偶发 TLS 断流就整条命令失败，而报错给的出路是"改用 `--from-zip`"——可用户选 `--download` 恰恰是因为手上没有包。

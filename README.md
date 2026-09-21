@@ -240,7 +240,60 @@ unzip -q mms.zip -d ~/.agents/skills/          # 解压后即 ~/.agents/skills/m
 
 ### 6. 下载 LaTeX 论文模板
 
-仓库自带**三套可直接编译的自包含模板**（每套只有 `main.tex` + `refs.bib` 两个文件，不依赖任何私有宏包）：
+仓库自带**两套并行的 LaTeX 模板层**，按用途二选一：
+
+| 你想要 | 用哪套 | 在哪 | 形态 |
+|---|---|---|---|
+| **正式参赛提交**（要评委熟悉的官方版式，含封面/承诺书/编号页/摘要页等硬性版式） | **完整文档类版**（推荐） | `assets/latex/full/` | 官方 `.cls` + 完整正文骨架 + 预编译样例 PDF |
+| 想自己掌控排版、或用 AI 生成的论文 Markdown 快速成稿 | 轻量自包含版 | `assets/latex/{cumcm,yjs,mcm}/` | 单个 `main.tex` + `refs.bib`，不依赖私有宏包 |
+
+完整文档类版的取舍、改了什么、字体怎么处理，见 [`assets/latex/full/README.md`](assets/latex/full/README.md)；两套模板的完整对照见 [`assets/latex/README.md`](assets/latex/README.md)。
+
+#### 6.1 完整文档类版（`assets/latex/full/`，推荐提交用）
+
+三套模板各自上游官方文档类的**完整可编译工程**，目录内已含所有图片与预编译样例 PDF：
+
+| 竞赛 | 目录 | 文档类 | 引擎 | 预编译样例 |
+|---|---|---|---|---|
+| 国赛 CUMCM | [`assets/latex/full/cumcm/`](assets/latex/full/cumcm/) | `cumcmthesis.cls` v2.9 | `xelatex` ×3 | `example.pdf`（12 页） |
+| 研赛（华为杯） | [`assets/latex/full/gmcm/`](assets/latex/full/gmcm/) | `gmcmthesis.cls` v2.2 | `xelatex` ×3 | `MathModel.pdf`（8 页） |
+| 美赛 MCM/ICM | [`assets/latex/full/mcm/`](assets/latex/full/mcm/) | `mcmthesis.cls` v6.3.3 | `pdflatex` ×3 | `mcmthesis-demo.pdf`（11 页） |
+
+**下载（三选一）**：
+
+```bash
+# ① 从 Release 直接下整套（含全部字体与图片，最省事）
+#    https://github.com/anticipate218/math-modeling-skill/releases/latest
+#    资产：gmcm-template.zip / cumcm-template.zip / mcm-template.zip
+
+# ② 已经在技能目录里：直接拷出来
+cp -r assets/latex/full/cumcm my_paper
+
+# ③ 只想下单个文件：GitHub 网页进目录逐个另存，或走 raw
+#    https://raw.githubusercontent.com/anticipate218/math-modeling-skill/main/assets/latex/full/cumcm/example.tex
+```
+
+Release 资产的直达链接（`v1.9.0` 起）：
+
+- 研赛（华为杯）完整模板：<https://github.com/anticipate218/math-modeling-skill/releases/download/v1.9.0/gmcm-template.zip>
+- 国赛完整模板：<https://github.com/anticipate218/math-modeling-skill/releases/download/v1.9.0/cumcm-template.zip>
+- 美赛完整模板：<https://github.com/anticipate218/math-modeling-skill/releases/download/v1.9.0/mcm-template.zip>
+
+**编译**（三套都不需要 `bibtex`——参考文献是内联 `thebibliography`，跑三遍引擎即可）：
+
+```bash
+xelatex -interaction=nonstopmode example.tex   # 国赛；研赛换成 MathModel.tex，美赛换成 pdflatex + mcmthesis-demo.tex
+xelatex -interaction=nonstopmode example.tex
+xelatex -interaction=nonstopmode example.tex
+```
+
+**字体**：研赛模板（`gmcmthesis.cls`）默认调用 Windows 的宋体/黑体/楷体/隶书，仓库里**已附带这 5 个 `.ttf`**（约 44 MB，见下方许可提示），Windows 上开箱即用；**非 Windows 平台（含 Overleaf）会自动回落到 TeX Gyre + 系统可用字体**，不需要改任何配置——这条回落路径由 `scripts/check_latex_full.py` 在 CI 里真实编译验证。**这些 `.ttf` 必须留在模板目录根部，不要挪进 `fonts/` 子目录**（文档类按裸文件名引用它们，挪走会静默丢字）。
+
+> **字体许可提示**：这 5 个 `.ttf` 是 Windows/中易（SinoType）的商业字体，**不属于本仓库的 MIT 授权范围**，随模板附上仅为保证与 Word 版式字形一致。若你不便使用，直接删掉它们即可——上面的回落路径会接管。详见 [`assets/latex/full/THIRD-PARTY.md`](assets/latex/full/THIRD-PARTY.md)。
+
+#### 6.2 轻量自包含版（`assets/latex/`）
+
+每套只有 `main.tex` + `refs.bib` 两个文件，不依赖任何私有宏包：
 
 | 竞赛 | 模板 | 引擎 | 特点 |
 |---|---|---|---|
@@ -290,6 +343,9 @@ xelatex -interaction=nonstopmode main.tex
 ```bash
 python scripts/check_latex.py --require              # 需要本机有 TeX
 python scripts/check_latex.py --self-test            # 不需要 TeX，只验证检查逻辑本身
+
+python scripts/check_latex_full.py --require         # 完整文档类版：真编译三套（含"本机无 Windows 字体"的回落路径）
+python scripts/check_latex_full.py --self-test       # 不需要 TeX，只验证检查逻辑本身
 ```
 
 ### 7. 装完先验证一下（30 秒）
@@ -299,7 +355,8 @@ cd math-modeling-skill
 python scripts/validate_skill.py . --strict    # 期望：0 个错误，0 个警告
 python scripts/check_paper.py --self-test      # 期望：全部 PASS
 python scripts/download_templates.py --list    # 期望：列出三套模板
-python scripts/install_skill.py --self-test    # 期望：21/21 通过
+python scripts/check_latex_full.py --self-test # 期望：26/26 通过（不需要装 TeX）
+python scripts/install_skill.py --self-test    # 期望：全部通过
 ```
 
 `validate_skill.py` 报错通常意味着**目录名被改过**（必须叫 `math-modeling-skill`）或者文件没下全（Release ZIP 比单下几个文件可靠）。
@@ -351,7 +408,7 @@ rm -rf ~/.agents/skills/math-modeling-skill
 | "这个模型够不够" | 按官方四维标准（假设合理性/建模创造性/结果正确性/表述清晰度）逐项挑问题 |
 | "提交前帮我检查一遍" | 跑自检脚本 + 逐项过对应竞赛的合规清单（含 AI 声明、匿名、页数、查重提示） |
 | "美赛和国赛有什么区别" | 给三大赛事的规则/格式/评审差异对照 |
-| "给我一套能直接编译的 LaTeX 论文模板" | 指向对应的自包含模板，给编译序列；提醒页数/memo 等可变项以当年官方文件为准 |
+| "给我一套能直接编译的 LaTeX 论文模板" | 先问是"提交用"还是"自控排版"：默认给**完整文档类版**（官方 `.cls` + 完整骨架 + 预编译样例），或给轻量自包含版；附编译序列；提醒页数/memo 等可变项以当年官方文件为准 |
 | "要 AHP/熵权/TOPSIS/灰色关联的实现" | 给自带的可运行实现 + 自检与黄金值回归，点明正向化、一致性检验等真实陷阱 |
 | "帮我找几张优秀论文的图当素材" | 说明不能再分发他人图表，改用自带原创图库当画图范本，并给官方可引用来源索引 |
 
@@ -362,7 +419,7 @@ rm -rf ~/.agents/skills/math-modeling-skill
 - [`examples/modeling_patterns.py`](examples/modeling_patterns.py)：带详细注释的 TOPSIS、滚动均值/MAE、Dijkstra、蒙特卡洛基线；只使用示例数据，不冒充完整解题器。
 
 **可直接用的成品件**：
-- [`assets/latex/`](assets/latex/)：国赛 / 研赛 / 美赛三套**单一自包含**的 LaTeX 模板（不 `\input` 外部文件、不依赖外部图片，图表用 TikZ/pgfplots 内联），`xelatex → bibtex → xelatex ×2` 即可编译；已内置各赛事硬规则（摘要页、页码、AI 声明位置、附录源程序）。三套模板**每次 CI 都会被真正编译一遍**（见下方「质量保障」），不是"文档里写着能编"。
+- [`assets/latex/`](assets/latex/)：**两套并行的三赛事 LaTeX 模板**。① [`full/`](assets/latex/full/)＝**完整文档类版（推荐参赛提交用）**，基于各赛事官方 `.cls`，内含完整正文骨架、图片与预编译样例 PDF，`xelatex`/`pdflatex` 连跑三遍即可；研赛模板默认调用 Windows 字体，仓库已附带 `.ttf`，缺字体时**自动回落到 TeX Gyre + fandol**。② [`cumcm/`](assets/latex/cumcm/)、[`yjs/`](assets/latex/yjs/)、[`mcm/`](assets/latex/mcm/)＝**轻量自包含版**，单个 `main.tex`（不 `\input` 外部文件、图表用 TikZ/pgfplots 内联）+ `refs.bib`，走 `xelatex → bibtex → xelatex ×2`。两套都已内置各赛事硬规则（摘要页、页码、AI 声明位置、附录源程序），且**每次 CI 都会被真正编译一遍**（见下方「质量保障」），不是"文档里写着能编"。
 - [`examples/algorithms/`](examples/algorithms/)：17 个算法模块、222 个公开函数（优化/图论/启发式/预测/时间序列/统计/评价/多准则/聚类/机器学习/微分方程/随机仿真/几何/空间与物理场/博弈/多目标/灵敏度），**仅依赖 numpy 与标准库**；每个模块都带 `_self_test()`，再用 [`examples/run_algorithms.py`](examples/run_algorithms.py) 跑黄金值回归与确定性复跑。逐函数的数学形式、步骤、参数表与陷阱见 [`references/algorithm-details.md`](references/algorithm-details.md)。
 - [`assets/gallery/`](assets/gallery/)：16 张**原创**论文配图（评价权重与敏感性、TOPSIS 排序、预测对比与残差诊断、SIR 机理与参数敏感性、Pareto 前沿、蒙特卡洛收敛、排队仿真、最短路、空间插值、相关矩阵等），由 [`scripts/make_figures.py`](scripts/make_figures.py) 固定种子生成——**逐字节可复现**，可当画图与图注范本。配色与排版经 [`scripts/check_palette.py`](scripts/check_palette.py) 做**可访问性体检**：Okabe-Ito 色相在该项体检里二色觉最差 ΔE 达 16.1，而常见的"论文风"配色 seaborn deep / ColorBrewer Set2 / tab10 分别只有 2.7 / 2.5 / 4.6；另有线型与标记点两条冗余通道兜住黑白打印，见 [`assets/gallery/README.md`](assets/gallery/README.md) §5.7–5.8。
 
@@ -449,10 +506,11 @@ python examples/run_algorithms.py --module graphs --verbose   # 只跑一个模�
 |---|---|---|
 | 结构 | `python scripts/validate_skill.py . --strict` | frontmatter 字段白名单、`name` 与目录一致、description/compatibility 长度、正文行数、**文件引用是否存在**、未索引文件、Windows 反斜杠路径 |
 | 自检工具 | `python scripts/check_paper.py --self-test` | 用「好稿/坏稿」固件验证检查逻辑本身没坏 |
-| 安装器 | `python scripts/install_skill.py --self-test` | 21 项固件测试：复制时确实丢掉 `.git`/`__pycache__`、已存在时先拒绝再 `--force`、**非本技能的目录一律不删**、`--dry-run` 不写盘、带/不带顶层前缀的 ZIP 都能解、`auto` 挑选顺序、项目根向上查找、**`--into` 给技能根会自动补一层 / 给技能目录则原样使用 / 指向别人的技能目录时拒绝**、**带 UTF-8 BOM 的 `SKILL.md` 仍可识别**、**联网动作会退避重试且失败时给出可执行的出路**——全程不联网、不碰真实技能目录 |
+| 安装器 | `python scripts/install_skill.py --self-test` | 25 项固件测试：复制时确实丢掉 `.git`/`__pycache__`、已存在时先拒绝再 `--force`、**非本技能的目录一律不删**、`--dry-run` 不写盘、带/不带顶层前缀的 ZIP 都能解、`auto` 挑选顺序、项目根向上查找、**`--into` 给技能根会自动补一层 / 给技能目录则原样使用 / 指向别人的技能目录时拒绝**、**带 UTF-8 BOM 的 `SKILL.md` 仍可识别**、**联网动作会退避重试且失败时给出可执行的出路**、**Release 资产里混着 LaTeX 模板包时仍只认技能包**——全程不联网、不碰真实技能目录 |
 | 算法回归 | `python examples/run_algorithms.py` | 自带的 **17 个算法模块、875 个断言键**逐个跑数值自检，并与 `algorithms_golden.json` 黄金值比对（含确定性复跑：每个模块跑两遍，结果必须逐位一致） |
 | 配图配色 | `python scripts/check_palette.py --quiet` | 直接读 `make_figures.py` 里的设计令牌，算二色觉仿真 CIELAB ΔE、灰度间隔与 WCAG 对比度；并断言「颜色之外还有线型/标记」这条冗余编码确实存在 |
-| 模板真编译 | `python scripts/check_latex.py --require`（CI）／`--self-test`（本机无需 TeX） | 在临时目录里真的编译 `assets/latex/` 三套模板（引擎 → bibtex → 引擎 ×2），核对硬错误、未解析引用、缺字体、页数下限，以及 **AI 声明与参考文献的先后顺序** |
+| 模板真编译 | `python scripts/check_latex.py --require`（CI）／`--self-test`（本机无需 TeX） | 在临时目录里真的编译 `assets/latex/` 三套轻量模板（引擎 → bibtex → 引擎 ×2），核对硬错误、未解析引用、缺字体、页数下限，以及 **AI 声明与参考文献的先后顺序** |
+| 完整模板真编译 | `python scripts/check_latex_full.py --require`（CI）／`--self-test`（本机无需 TeX） | 真的编译 `assets/latex/full/` 三套**完整文档类**模板（各 3 遍），核对硬错误、缺字、未解析引用、页数下限，并**删掉随附的 `.ttf` + 强制 `fontset=fandol` 再编一遍**，验证"没有 Windows 字体也能编过、页数不变"这条回落路径 |
 | 依赖边界 | 见 `.github/workflows/ci.yml` | AST 扫描 `examples/algorithms/*.py`，禁止引入 scipy/sklearn/pandas 等重型依赖 |
 | 触发评测 | 见 `evals/` | 22 条查询（11 正例 + 11 个 near-miss 负例）测 description 触发率；14 条行为用例含**反幻觉断言**（如"不得编造官方评分权重""不得编造 star 数与性能基准""不得再分发他人论文图表"） |
 | 持续集成 | `.github/workflows/ci.yml` | 上述全部 + JSON 合法性 + 路径风格 |
@@ -483,7 +541,8 @@ math-modeling-skill/
 │   ├── check_paper.py            # 论文自检工具（纯标准库，非交互，支持 --json/--self-test/--init）
 │   ├── validate_skill.py         # 技能结构校验（frontmatter / 篇幅 / 文件引用，支持 --strict）
 │   ├── check_palette.py          # 配图配色可访问性体检（二色觉 ΔE / 灰度间隔 / 对比度）
-│   ├── check_latex.py            # 真编译三套 LaTeX 模板并体检（引用/字体/页数/AI 声明顺序）
+│   ├── check_latex.py            # 真编译 assets/latex/ 三套轻量模板并体检（引用/字体/页数/AI 声明顺序）
+│   ├── check_latex_full.py       # 真编译 assets/latex/full/ 三套完整文档类模板（含无 Windows 字体的回落路径）
 │   ├── download_templates.py     # 按竞赛一键导出 LaTeX 模板目录（可打包成 zip，支持 --self-test）
 │   ├── install_skill.py          # 把技能装进宿主技能目录（自动定位 / 默认不覆盖 / 装完自校验）
 │   └── make_figures.py           # 生成 assets/gallery/ 原创论文配图（固定种子，可完整复现）
@@ -491,10 +550,17 @@ math-modeling-skill/
 │   ├── abstract-template.md      # 摘要模板：中文（国赛/研赛）+ 英文 Summary Sheet（美赛）
 │   ├── cheatsheet.md             # 一页纸红线清单（可打印，提交前 30 分钟核对）
 │   ├── paper-outline.md          # 可填空论文骨架（三赛事，含占位符提示）
-│   ├── latex/                    # 三套可直接编译的自包含 LaTeX 论文模板
-│   │   ├── cumcm/main.tex        # 国赛（中文，ctexart + bibtex）
-│   │   ├── yjs/main.tex          # 研赛（中文）
-│   │   └── mcm/main.tex          # 美赛（英文 Summary Sheet + Report on Use of AI）
+│   ├── latex/                    # 两套并行的 LaTeX 模板层
+│   │   ├── README.md             # 两套模板的取舍与对照（先读这个）
+│   │   ├── cumcm/main.tex        # 【轻量版】国赛（中文，ctexart + bibtex）
+│   │   ├── yjs/main.tex          # 【轻量版】研赛（中文）
+│   │   ├── mcm/main.tex          # 【轻量版】美赛（英文 Summary Sheet + Report on Use of AI）
+│   │   └── full/                 # 【完整文档类版，推荐提交用】官方 .cls + 完整骨架 + 预编译样例 PDF + 来源与许可说明
+│   │       ├── README.md         # 用法、与原版的差异、字体说明、验证记录
+│   │       ├── THIRD-PARTY.md    # 三套模板的来源/commit/许可，以及随附 .ttf 的许可提示
+│   │       ├── cumcm/            # cumcmthesis.cls v2.9（example.tex，12 页样例）
+│   │       ├── gmcm/             # gmcmthesis.cls v2.2 + 5 个 .ttf（MathModel.tex，8 页样例）
+│   │       └── mcm/              # mcmthesis.cls v6.3.3（mcmthesis-demo.tex，11 页样例）
 │   └── gallery/                  # 16 张原创配图 + 画法、配色与图注说明
 ├── examples/
 │   ├── modeling_patterns.py      # 带注释的透明基线示例
@@ -552,14 +618,16 @@ math-modeling-skill/
 
 ## 与同类项目的关系
 
-写作本技能时参考并致谢以下公开项目与资料（各自版权归原作者）：
+写作本技能时参考并致谢以下公开项目与资料（各自版权归原作者）。**完整文档类模板（`assets/latex/full/`）的上游来源、固定 commit 与许可条款见 [`assets/latex/full/THIRD-PARTY.md`](assets/latex/full/THIRD-PARTY.md)**：
 
-- [latexstudio/CUMCMThesis](https://github.com/latexstudio/CUMCMThesis) —— 国赛 LaTeX 论文模板（已适配 2026 年格式，含 AI 声明书）。
-- [redefine0130/GMCMthesis-LaTeX-Template](https://github.com/redefine0130/GMCMthesis-LaTeX-Template) —— 研赛 LaTeX 模板。
-- [latexstudio-org/mcmthesis](https://github.com/latexstudio-org/mcmthesis) —— 美赛 LaTeX 模板（CTAN 事实标准）。
+- [latexstudio/CUMCMThesis](https://github.com/latexstudio/CUMCMThesis) —— [`full/cumcm/`](assets/latex/full/cumcm/) 的上游（`cumcmthesis.cls` v2.9，commit `38d1f21`，2026-08-26，已适配 2026 年格式，含 AI 声明书）。上游**未附 LICENSE**，也**未上 CTAN**；本仓库按原样收录并标注来源。
+- **研赛（华为杯）模板 [`full/gmcm/`](assets/latex/full/gmcm/) 由本仓库作者自制整理**（文档类 `gmcmthesis.cls` v2.2，谱系可追溯到公开的 `springli07/GMCM_LaTeX_overleaf` 与 [`zhanwen/MathModel`](https://github.com/zhanwen/MathModel)，两者均未附 LICENSE）。作者在此基础上补了字体回落分支与说明文档。
+- [latexstudio-org/mcmthesis](https://github.com/latexstudio-org/mcmthesis) —— [`full/mcm/`](assets/latex/full/mcm/) 的上游（`mcmthesis.cls` v6.3.3，commit `8ac05e2`，**LPPL 1.3c 或更高**；CTAN 事实标准），同时保留了 `mcmthesis.dtx` / `mcmthesis.ins` 以满足再分发条款。文件内容与上游一致，未作修改。
 - [handsomeZR-netizen/mathmodel-skill](https://github.com/handsomeZR-netizen/mathmodel-skill)、[LiXiang106991/MathModelAgent](https://github.com/LiXiang106991/MathModelAgent) —— 面向数学建模的 AI 技能/Agent 实践，本项目的参考资料之一（未复制其内容）。
 - [agentskills.io](https://agentskills.io/specification) —— Agent Skills 开放标准（格式规范与写作方法论的依据）。
 - 各竞赛官方文件：全国大学生数学建模竞赛官网、中国研究生创新实践系列大赛平台、COMAP 官方竞赛规则。
+
+> **关于模板授权**：本仓库只**标注来源**，不对上游授权状态作法律判断（其中仅 `mcmthesis` 有明确的开源许可，另外两套上游未附 LICENSE）。若你在正式场合再分发这些模板，请自行确认上游条款；随 `full/gmcm/` 附带的 5 个 `.ttf` 是商业字体，**不在本仓库 MIT 授权范围内**，删除即可（回落路径会自动接管）。
 
 语料统计参考：[yuanchen-home/cumcm-step-review](https://github.com/yuanchen-home/cumcm-step-review) 的 64 篇国赛获奖论文结构分析。
 

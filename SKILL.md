@@ -7,9 +7,9 @@ description: >-
 license: MIT
 metadata:
   author: anticipate218
-  version: "1.8.3"
+  version: "1.9.0"
   language: zh-CN
-compatibility: 可选依赖 Python 3.9+；scripts/check_paper.py、scripts/check_latex.py、scripts/download_templates.py 与 scripts/install_skill.py 仅用标准库（check_paper 读 PDF 需 pip install pypdf，check_latex 需本机 TeX 发行版提供 xelatex/pdflatex/bibtex）；scripts/make_figures.py 需 matplotlib，scripts/check_palette.py 与 examples/algorithms/ 需 numpy
+compatibility: 可选依赖 Python 3.9+；scripts/check_paper.py、scripts/check_latex.py、scripts/check_latex_full.py、scripts/download_templates.py 与 scripts/install_skill.py 仅用标准库（check_paper 读 PDF 需 pip install pypdf，check_latex 与 check_latex_full 需本机 TeX 发行版提供 xelatex/pdflatex）；scripts/make_figures.py 需 matplotlib，scripts/check_palette.py 与 examples/algorithms/ 需 numpy
 ---
 
 # 数学建模竞赛助手
@@ -175,8 +175,10 @@ python scripts/check_paper.py paper.md --contest mcm       # 美赛
 | 提交前逐项自查 | `references/checklists.md` |
 | 选 LaTeX 模板、编译报错、图表与参考文献排版 | `references/templates.md` |
 | 要一份可直接编译的论文模板（国赛/研赛/美赛） | `assets/latex/`（先读 `assets/latex/README.md`） |
+| 要**竞赛官方文档类**的完整模板（真正提交用这套，含预编译样例 PDF） | `assets/latex/full/`（先读 `assets/latex/full/README.md`） |
 | 要把模板按竞赛一键拷到工作目录、或打包成 zip 分发 | `scripts/download_templates.py`（`--contest` / `--out` / `--zip` / `--list` / `--fontset`） |
 | 模板改完后想确认还能不能编过、引用是否解析、AI 声明位置对不对 | `scripts/check_latex.py`（`--require` / `--self-test`） |
+| 改了完整文档类模板的 `.cls`/字体设置，要确认 Windows 字体缺失时还能编过 | `scripts/check_latex_full.py`（`--require` / `--only` / `--self-test`） |
 | 要论文配图范本、图注写法与绘图规范 | `assets/gallery/`（先读 `assets/gallery/README.md`） |
 | 重新生成配图库或跑配图数值自检 | `scripts/make_figures.py`（`--dpi` / `--only` / `--self-test`） |
 | 检查配图配色是否对色觉障碍友好、灰度下是否还分得开 | `scripts/check_palette.py`（`--quiet` / `--self-test`） |

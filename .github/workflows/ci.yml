@@ -109,6 +109,11 @@ jobs:
       - name: 日志解析/字体替换/顺序核对 固件测试（不需要 TeX）
         run: python scripts/check_latex.py --self-test
 
+      # 完整文档类模板的改写逻辑固件测试（钉字体集 / 屏蔽 Windows 字体探测 /
+      # 顺序核对），同样不依赖 TeX。
+      - name: 完整模板改写逻辑 固件测试（不需要 TeX）
+        run: python scripts/check_latex_full.py --self-test
+
       # 三个模板用到的宏包：ctex+fandol、geometry/fancyhdr/hyperref、
       # booktabs/multirow/tabularx/caption/subcaption、tikz/pgfplots、
       # algorithm/algpseudocode、listings、natbib/lastpage、lmodern。
@@ -140,3 +145,14 @@ jobs:
       # 以及"AI 声明 vs 参考文献"的合规顺序。
       - name: 编译三个模板并体检
         run: python scripts/check_latex.py --require
+
+      # 完整文档类模板（带 .cls / .sty / figures / 随包字体）再编一遍。
+      # 这一跑同时覆盖两条字体路径：一遍按原样编，一遍「模拟一台没有 Windows
+      # 字体的机器」（删掉随包 .ttf、把 ctex 字体集钉成 fandol、把西文字体探测
+      # 的名字换成一定不存在的名字）。两条都必须编得过，模板才算真的能在
+      # Overleaf / Linux 上用。
+      #
+      # 注意：这一步会把随包的中文字体一起拷进临时目录，本仓库主检出里带有
+      # 5 个 Windows 字体（约 46 MB），checkout 会稍慢。
+      - name: 编译完整文档类模板并体检（含无 Windows 字体的回落路径）
+        run: python scripts/check_latex_full.py --require

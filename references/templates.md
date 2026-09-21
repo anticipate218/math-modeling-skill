@@ -6,11 +6,20 @@
 
 ## 一、论文模板选型
 
+**本仓库自带两套模板，按用途二选一**（对照见 `assets/latex/README.md`，取舍理由见 `assets/latex/full/README.md`）：
+
+| 用途 | 位置 | 形态 |
+|---|---|---|
+| **正式参赛提交**（推荐） | `assets/latex/full/{cumcm,gmcm,mcm}/` | 官方 `.cls` + 完整正文骨架 + 图片 + 预编译样例 PDF；国赛/研赛 `xelatex ×3`，美赛 `pdflatex ×3`（参考文献内联，不需要 bibtex） |
+| 自控排版 / 由 Markdown 快速成稿 | `assets/latex/{cumcm,yjs,mcm}/` | 单个 `main.tex` + `refs.bib`，不依赖私有宏包；`xelatex → bibtex → xelatex ×2` |
+
+上游模板谱系（各自版权归原作者，详见 `assets/latex/full/THIRD-PARTY.md`）：
+
 | 竞赛 | 推荐模板 | 说明 |
 |---|---|---|
-| 国赛 CUMCM | **CUMCMThesis**（社区维护，已适配 2026 格式） | LaTeX；2026 版已加入 AI 使用声明书结构 |
-| 研赛 华为杯 | **GMCMthesis**（社区） | 摘要页即第 1 页 |
-| 美赛 MCM/ICM | **mcmthesis**（CTAN，LPPL 许可） | 事实标准；COMAP 官方另提供 Summary Sheet 的 Word/LaTeX 模板 |
+| 国赛 CUMCM | **CUMCMThesis**（社区维护，已适配 2026 格式） | LaTeX；2026 版已加入 AI 使用声明书结构；上游未附 LICENSE |
+| 研赛 华为杯 | **GMCMthesis** | 摘要页即第 1 页；本仓库这一份是作者在公开谱系上自制整理的 |
+| 美赛 MCM/ICM | **mcmthesis**（CTAN，LPPL 1.3c+ 许可） | 事实标准；COMAP 官方另提供 Summary Sheet 的 Word/LaTeX 模板 |
 
 - 链接见 `contests.md` 的"官方链接"表末尾。
 - **官方模板优先**：美赛官方提供 Summary Sheet 模板，研赛竞赛系统内提供论文模板附件——能用官方就用官方。
@@ -36,11 +45,17 @@ latexmk -pdf main.tex
 
 ```bash
 python scripts/check_latex.py --self-test       # 不装 TeX 也能跑：测日志解析/字体替换/顺序核对
-python scripts/check_latex.py --require         # 真编三套模板，核对引用/字体/页数/AI 声明顺序
+python scripts/check_latex.py --require         # 真编 assets/latex/ 三套轻量模板，核对引用/字体/页数/AI 声明顺序
 python scripts/check_latex.py --keep-fontset    # 逐字验证仓库里这一份（本机有 Windows 字体时）
+
+python scripts/check_latex_full.py --self-test  # 不装 TeX：测字体回落改写/顺序核对/固件自洽（26 项）
+python scripts/check_latex_full.py --require    # 真编 assets/latex/full/ 三套完整文档类模板（各 3 遍）
+python scripts/check_latex_full.py --only gmcm  # 只编一套，改单个模板时用
 ```
 
   它会在**系统临时目录的副本**里编译，仓库内不留任何产物；`fontset=windows` 只在临时副本里被换成 `fandol`（CI 在 Linux 上跑），日志里出现 `Font "…" cannot be found` 即判失败。三套模板的这一检查已接入 CI。
+
+  `check_latex_full.py` 额外做一件 `check_latex.py` 做不到的事：把随附的中文字体 `.ttf` **删掉**、并强制 `fontset=fandol`，再编一遍——验证**"换一台没有 Windows 字体的机器（含 Overleaf）也能编过、页数不变"**。改动文档类里的字体设置后务必跑它。
 
 ---
 

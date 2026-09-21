@@ -491,8 +491,45 @@ def _retry_network(what: str, action, *, attempts: int = RETRY_ATTEMPTS,
     )
 
 
+def pick_release_asset(assets: list) -> dict:
+    """从 Release 资产列表里挑出**技能包**那一个。
+
+    参数:
+        assets: `releases/latest` 接口返回的 `assets` 列表（每项是含 `name` 与
+            `browser_download_url` 的字典）。
+
+    返回:
+        选中的资产字典（一定 `.zip` 且文件名以 `SKILL_NAME` 开头）。
+
+    算法:
+        先过滤出 `.zip`；再取文件名以 `math-modeling-skill` 开头的第一个。
+
+    复杂度:
+        时间 O(n)（n = 资产个数） / 空间 O(1)。
+
+    陷阱:
+        v1.9.0 起同一个 Release 里还挂着 `cumcm-template.zip` / `gmcm-template.zip` /
+        `mcm-template.zip` 三个 LaTeX 模板包。早期实现是"取第一个 `.zip`"，而
+        GitHub 接口**不承诺资产顺序**——模板包一旦排在前面，`--download` 就会把
+        一个 LaTeX 工程当技能装下去，报错还很难懂（缺 `SKILL.md`）。所以必须按
+        文件名认包，并且**宁可报错也不猜**：一个都不匹配时明确告诉用户现有资产
+        叫什么，而不是随便挑一个。
+    """
+    zips = [a for a in assets if str(a.get("name", "")).endswith(".zip")]
+    if not zips:
+        raise InstallError("最新 Release 里没有 .zip 资产；请到仓库 Releases 页面手工下载后用 --from-zip")
+    for asset in zips:
+        if str(asset.get("name", "")).startswith(SKILL_NAME):
+            return asset
+    names = "、".join(str(a.get("name", "?")) for a in zips)
+    raise InstallError(
+        f"最新 Release 里没有以 {SKILL_NAME} 开头的 ZIP 资产（现有：{names}）。"
+        f"请到 https://github.com/{REPO}/releases 手工下载技能包后用 --from-zip 指定"
+    )
+
+
 def download_latest_zip(workdir: pathlib.Path) -> pathlib.Path:
-    """从 GitHub 拉最新 Release 里的 ZIP 资产到临时目录。
+    """从 GitHub 拉最新 Release 里的技能包 ZIP 到临时目录。
 
     参数:
         workdir: 临时目录。
@@ -501,8 +538,8 @@ def download_latest_zip(workdir: pathlib.Path) -> pathlib.Path:
         下载好的 ZIP 路径。
 
     算法:
-        查 `releases/latest` 接口，取第一个 `.zip` 资产，按 `browser_download_url`
-        下载。**两步都带指数退避重试**（见 `_retry_network`）。
+        查 `releases/latest` 接口，用 `pick_release_asset` 挑出技能包，按
+        `browser_download_url` 下载。**两步都带指数退避重试**（见 `_retry_network`）。
 
     复杂度:
         时间 O(包大小) 受网速限制 / 空间 同。
@@ -514,6 +551,7 @@ def download_latest_zip(workdir: pathlib.Path) -> pathlib.Path:
         GitHub 偶发 TLS 中断（`UNEXPECTED_EOF_WHILE_READING`）在实测中很常见，
         所以**读响应体、写盘**也在重试范围内：中断后重来一遍，而不是留个半截
         ZIP 让后面的解包报"不是合法 ZIP"。
+        同页还挂着三个 LaTeX 模板包，**只能按文件名认技能包**（见 `pick_release_asset`）。
     """
     import json  # 只在联网分支里用，保持顶层依赖最小
 
@@ -532,10 +570,7 @@ def download_latest_zip(workdir: pathlib.Path) -> pathlib.Path:
     except (OSError, ValueError) as exc:  # 响应不是合法 JSON 等
         raise InstallError(f"查询最新 Release 失败（{exc}）；可以改用 --from-zip 指定本地 ZIP") from exc
 
-    assets = [a for a in meta.get("assets", []) if str(a.get("name", "")).endswith(".zip")]
-    if not assets:
-        raise InstallError("最新 Release 里没有 .zip 资产；请到仓库 Releases 页面手工下载后用 --from-zip")
-    asset = assets[0]
+    asset = pick_release_asset(list(meta.get("assets", [])))
     target = workdir / str(asset["name"])
 
     def fetch_zip():
@@ -983,6 +1018,42 @@ def self_test() -> int:
             else:
                 raise AssertionError("attempts=0 应当报 ValueError")
 
+        def t_asset_picker_ignores_templates() -> None:
+            # 模板包排在前面时，绝不能把 LaTeX 工程当技能包下回来。
+            assets = [
+                {"name": "gmcm-template.zip", "browser_download_url": "u1"},
+                {"name": "cumcm-template.zip", "browser_download_url": "u2"},
+                {"name": "mcm-template.zip", "browser_download_url": "u3"},
+                {"name": f"{SKILL_NAME}-v9.9.9.zip", "browser_download_url": "u4"},
+            ]
+            assert pick_release_asset(assets)["name"] == f"{SKILL_NAME}-v9.9.9.zip", \
+                "必须按文件名认技能包，而不是取第一个 .zip"
+
+        def t_asset_picker_no_version_suffix() -> None:
+            assets = [{"name": "notes.txt", "browser_download_url": "u0"},
+                      {"name": f"{SKILL_NAME}.zip", "browser_download_url": "u1"}]
+            assert pick_release_asset(assets)["name"] == f"{SKILL_NAME}.zip", \
+                "不带版本号的技能包名也应被认出来"
+
+        def t_asset_picker_refuses_to_guess() -> None:
+            # 只有模板包时宁可报错，也不要随便挑一个装下去。
+            assets = [{"name": "gmcm-template.zip", "browser_download_url": "u1"}]
+            try:
+                pick_release_asset(assets)
+            except InstallError as exc:
+                assert "gmcm-template.zip" in str(exc), f"报错应列出实际资产名：{exc}"
+                assert "--from-zip" in str(exc), f"报错应给出兜底出路：{exc}"
+            else:
+                raise AssertionError("没有技能包时必须报错，而不是挑一个别的包")
+
+        def t_asset_picker_rejects_empty() -> None:
+            try:
+                pick_release_asset([])
+            except InstallError:
+                pass
+            else:
+                raise AssertionError("没有 .zip 资产时应当报错")
+
         def t_list_targets_runs() -> None:
             rc = cmd_list_targets(pathlib.Path.cwd(), pathlib.Path.home(), dsh_home())
             assert rc == 0, f"cmd_list_targets 返回 {rc}"
@@ -1008,6 +1079,10 @@ def self_test() -> int:
             ("联网动作会重试并最终成功", t_retry_succeeds_after_transient_failure),
             ("联网一直失败时报可执行的错", t_retry_gives_up_with_actionable_error),
             ("重试次数必须为正", t_retry_attempts_must_be_positive),
+            ("Release 资产：模板包在前也认得技能包", t_asset_picker_ignores_templates),
+            ("Release 资产：无版本号后缀的技能包也认", t_asset_picker_no_version_suffix),
+            ("Release 资产：只有模板包时拒绝乱猜", t_asset_picker_refuses_to_guess),
+            ("Release 资产：没有 .zip 时报错", t_asset_picker_rejects_empty),
             ("--list-targets 可运行", t_list_targets_runs),
         ]:
             check(label, fn)

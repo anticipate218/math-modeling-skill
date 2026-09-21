@@ -1,0 +1,24 @@
+% mcmthesis.ins -- docstrip driver for mcmthesis
+%
+% 用法（在 mcm/ 目录下执行）：
+%     pdflatex mcmthesis.ins
+% 或用 plain TeX：
+%     tex mcmthesis.ins
+%
+% 生成 mcmthesis.cls 与 mcmthesis-demo.tex。
+% 这两个文件由 mcmthesis.dtx 中带 `class' / `demo' 选项的代码块切出。
+%
+% 说明：上游 mcmthesis.dtx 自带一个 driver，但那个 driver 会先排版整份
+% 使用手册（需要 ctex + CJK 字体），在缺少中文字体的环境里会中途失败，
+% 导致 \generate 根本没被执行到。这个精简 driver 只做文件切分。
+
+\input docstrip.tex
+\keepsilent
+\askforoverwritefalse
+
+\generate{%
+  \file{mcmthesis.cls}{\from{mcmthesis.dtx}{class}}%
+  \file{mcmthesis-demo.tex}{\from{mcmthesis.dtx}{demo}}%
+}
+
+\endbatchfile

@@ -1,5 +1,14 @@
 # LaTeX 论文模板（国赛 CUMCM / 研赛华为杯 / 美赛 MCM-ICM）
 
+> **先看这里，选你要的那一层：**
+>
+> | 你要什么 | 用哪个 |
+> |---|---|
+> | **正式投稿的成品排版**（第三方完整文档类：封面、页眉、编号页都由 `.cls` 管） | **[`full/`](full/README.md)** —— `full/gmcm/`（华为杯）、`full/cumcm/`（国赛）、`full/mcm/`（美赛） |
+> | 章节骨架 + 合规检查 + 能直接喂给 `check_paper.py` 的极简样板 | **本目录**（下面这套自写精简模板，一个 `main.tex` + 一个 `refs.bib`） |
+>
+> 两层都保留：**精简版管"结构与合规"，完整版管"成品排版"**。
+
 三套**开箱即用、已在 Windows + MiKTeX 上实际编译通过**的论文模板：
 
 | 目录 | 适用赛事 | 语言 | 编译器 |
@@ -216,6 +225,7 @@ python scripts/check_latex.py --self-test     # 不需要装 TeX，只测日志�
 
 ## 七、相关文档
 
+- **完整文档类模板（正式投稿用）**：[`full/README.md`](full/README.md) —— 华为杯 / 国赛 / 美赛三套成套模板，含 Release 下载、字体说明与溯源；体检脚本 `scripts/check_latex_full.py`
 - 三赛事规则对照（含官方链接、AI 政策、页数与匿名要求）：`references/contests.md`
 - 章节骨架与每章“必须出现什么”：`references/paper-structure.md`
 - Markdown 版论文骨架（可与 LaTeX 模板对照填写）：`assets/paper-outline.md`

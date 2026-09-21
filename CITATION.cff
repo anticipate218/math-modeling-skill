@@ -9,8 +9,8 @@ authors:
     affiliation: "DeepSeek Harness"
 repository-code: "https://github.com/anticipate218/math-modeling-skill"
 license: MIT
-version: "1.8.3"
-date-released: 2026-09-19
+version: "1.9.0"
+date-released: 2026-09-21
 keywords:
   - mathematical-modeling
   - agent-skills
@@ -18,3 +18,4 @@ keywords:
   - mcm-icm
   - competition
   - paper-writing
+  - latex-template

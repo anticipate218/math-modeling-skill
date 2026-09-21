@@ -116,26 +116,46 @@ jobs:
 
       # 三个模板用到的宏包：ctex+fandol、geometry/fancyhdr/hyperref、
       # booktabs/multirow/tabularx/caption/subcaption、tikz/pgfplots、
-      # algorithm/algpseudocode、listings、natbib/lastpage、lmodern。
+      # algorithm/algpseudocode、listings、natbib/lastpage、ulem、berasans、lmodern。
       #
-      # ⚠️ `lmodern.sty` 不在任何 texlive-* 包里，由 Debian 顶层包 `lmodern`
-      # 提供。漏了它，美赛模板会以 `! LaTeX Error: File `lmodern.sty' not found.`
-      # 直接中止（本仓库第一次跑这个作业就是这么红的，已修）。
+      # ⚠️ 下面四个依赖**不在** texlive-latex-base/-recommended/-extra 里，
+      #    Ubuntu 上必须单独点名，漏一个这个作业就红（都是实测踩过的）：
+      #
+      #    * `lmodern.sty` —— 由 Debian 顶层包 `lmodern` 提供（不属于任何 texlive-*）。
+      #      漏了它美赛会 `! LaTeX Error: File `lmodern.sty' not found.` 直接中止。
+      #    * `ulem.sty` —— 在 `texlive-plain-generic` 里。它的 TDS 路径是
+      #      tex/generic/ 而不是 tex/latex/，所以 latex-recommended/-extra 都不含它。
+      #      研赛 `gmcmthesis.cls` 和国赛 `cumcmthesis.cls` 都 `\RequirePackage{ulem}`
+      #      （队员名单的下划线）。
+      #    * `berasans.sty` —— 在 `texlive-fonts-extra` 里（`bera` 字体族）。
+      #      美赛 `mcmthesis.cls` 有 `\RequirePackage[scaled]{berasans}`。
+      #    * TeX Gyre（Debian 包名 `fonts-texgyre`）—— 本仓库给三个 `.cls` 加的
+      #      西文回落目标 `TeX Gyre Termes / Heros / Cursor`。runner 上没有
+      #      Times New Roman / Arial / Courier New，所以这一条在 CI 上是**必经分支**，
+      #      不是备选。
       - name: 安装 TeX Live（xelatex / pdflatex / bibtex）
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq --no-install-recommends \
             lmodern \
+            fonts-texgyre \
             texlive-latex-base \
             texlive-latex-recommended \
             texlive-latex-extra \
+            texlive-plain-generic \
             texlive-fonts-recommended \
+            texlive-fonts-extra \
             texlive-pictures \
             texlive-science \
             texlive-xetex \
             texlive-lang-chinese \
             texlive-bibtex-extra
+          # 逐个点名把"缺宏包"钉在安装这一步：kpsewhich 找不到就立刻失败，
+          # 不必等编译日志里翻 `! LaTeX Error: File ... not found.`
           kpsewhich lmodern.sty
+          kpsewhich ulem.sty
+          kpsewhich berasans.sty
+          kpsewhich texgyretermes-regular.otf
           xelatex --version | head -n 1
           pdflatex --version | head -n 1
           bibtex --version | head -n 1

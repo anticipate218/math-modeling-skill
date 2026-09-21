@@ -1,3 +1,56 @@
+## [1.9.1] - 2026-09-21
+
+本版是 v1.9.0 的**补丁**：修红 CI、把两处"说得太满"的数字改成实测值、把 README 里
+Release 链接从钉死版本号改成 `latest`。**模板源码一个字节都没改。**
+
+### 为什么会有这一版
+
+v1.9.0 的 `latex` CI 作业在 GitHub 上是**红的**——不是模板坏，是 **Ubuntu 的 TeX Live 缺包**：
+`ulem.sty` 不在 `texlive-latex-base/-recommended/-extra` 里（它在 `texlive-plain-generic`，
+TDS 路径是 `tex/generic/` 而不是 `tex/latex/`），`berasans.sty` 也不在（它在
+`texlive-fonts-extra`）。本地 Windows + MiKTeX 是全量安装，所以
+`check_latex_full.py --require` 5/5 通过，**在本机一点都看不出来**。这恰好说明
+"CI 那一遍必须在 Linux 上真跑"是有价值的：它专抓"本机装得太全"造成的盲区。
+
+### 变更
+
+- `.github/workflows/ci.yml`：`latex` 作业的 TeX Live 安装列表补 `texlive-plain-generic`、
+  `texlive-fonts-extra`、`fonts-texgyre`；装完后用 `kpsewhich` 逐个点名 `lmodern.sty` /
+  `ulem.sty` / `berasans.sty` / `texgyretermes-regular.otf`——**缺包立刻在安装这一步就失败**，
+  不必再去编译日志里翻 `! LaTeX Error: File ... not found.`。
+  （提醒：TeX Gyre 字体在 Debian 上叫 `fonts-texgyre`，**不带** `texlive-` 前缀。）
+- `assets/latex/full/README.md`：新增「需要哪些 TeX 组件」一节，把上面四个"漏了就红"的包
+  和各自的用途列成表；第 5.3 节的 CI 说明同步。
+- **两处数字修正**（v1.9.0 写错了）：`gmcm` 回落路径实测 **391 120 B**（原写 391 121 B）；
+  `cumcm` 原样实测 **452 165 B**（原写 452 166 B）。`full/gmcm/README.md` 与
+  `full/cumcm/README.md` 里的同一组数字同步。
+- **`cumcm` 不再宣称"与随仓库样张逐字节相同"。** v1.9.0 的 README 说三份预编译 PDF 都
+  逐字节一致，实测 `cumcm` 差 1 字节：**前 444 862 字节（占 98.4%）完全相同**，差异只在
+  文件末尾那个 Flate 压缩对象流（`/Length 3866` vs `3867`，装的是 XMP / Info 元数据，
+  也就是 PDF 文档 ID 与生成时间戳）。现在文档明确写成"`gmcm` / `mcm` 逐字节相同，
+  `cumcm` 页数与版面一致、差异仅在元数据"，不再含糊。
+- `README.md`：三个模板包的直达链接改用 `releases/latest/download/...`（原来钉死在
+  `v1.9.0`，一发行新版就过期）；技能包那条不再给带版本号的文件名，改为指向
+  `scripts/install_skill.py --download`（它自己会认版本）。
+- `INSTALL.md`：示例 ZIP 名从 `v1.9.0` 更新为 `v1.9.1`。
+- 删掉仓库根目录一个误建的 `NUL` 空文件（Windows 上给 OpenSSH 传
+  `-o UserKnownHostsFile=NUL` 时被当成了真实文件名）。它从未进入版本库。
+
+### 验证记录
+
+| 项目 | 方式 | 结果 |
+|---|---|---|
+| 完整模板真编译 | `check_latex_full.py --require`（Windows + MiKTeX 25.12） | **5/5 通过**，gmcm 8 页 / cumcm 12 页 / mcm 11 页，回落路径页数一致 |
+| 复查"与样张一致"的结论 | 逐字节比对刚编译出的 PDF 与仓库内样张 | `gmcm` / `mcm` 逐字节相同；`cumcm` 前 444 862 字节相同，末尾元数据对象流差 1 字节（已在文档中写明） |
+| Ubuntu 缺包定位 | 下载 `dists/noble/Contents-amd64.gz` 反查文件归属 | `ulem.sty` → `texlive-plain-generic`；`berasans.sty` → `texlive-fonts-extra`；`texgyretermes-regular.otf` → `fonts-texgyre` |
+| CI | `.github/workflows/ci.yml` 两个作业 | 见本版所在提交：`check` 与 `latex` 全绿 |
+
+### 如果你已经装了 1.9.0
+
+模板内容**完全没变**（`.cls` / `.tex` / 字体 / 图片都一致），本版只动文档数字与 CI 配置，
+不更新不影响使用。要更新就 `git pull` 后重跑
+`python scripts/install_skill.py --target auto --force`。
+
 ## [1.9.0] - 2026-09-21
 
 本版补上一整层**「完整文档类」LaTeX 模板**。此前仓库里的三套模板是**自包含轻量版**（单个 `main.tex` + `refs.bib`，不依赖私有宏包）——它便于"我自己掌控排版"，但真正参赛时评委认的是各赛事官方文档类的版式（封面、承诺书、编号页、摘要页、页眉页脚都由 `.cls` 决定，自己仿制很难一致）。本版把三套**官方文档类的完整可编译工程**收进来，并把"换一台没有 Windows 字体的机器（含 Overleaf）会不会崩"从"用户自己想办法"变成了 **CI 里真的会跑的一步**。
@@ -43,7 +96,7 @@
 | 项目 | 方式 | 结果 |
 |---|---|---|
 | 完整模板：原样编译 | `check_latex_full.py --require --tex-dir <MiKTeX 25.12>` | **5/5 通过**，退出码 0：gmcm 8 页 / cumcm 12 页 / mcm 11 页，硬错误 0、缺字 0、未解析引用 0 |
-| 完整模板：模拟无 Windows 字体 | 同上，删随包 `.ttf` + 钉 `fontset=fandol` + 屏蔽西文字体探测 | gmcm 8 页（391,121 字节，原样 395,954）、cumcm 12 页（538,970 字节，原样 452,165）——**页数与原样路径完全一致**，只有字形与嵌入体积不同 |
+| 完整模板：模拟无 Windows 字体 | 同上，删随包 `.ttf` + 钉 `fontset=fandol` + 屏蔽西文字体探测 | gmcm 8 页（391,120 字节，原样 395,954）、cumcm 12 页（538,970 字节，原样 452,165）——**页数与原样路径完全一致**，只有字形与嵌入体积不同 |
 | AI 声明顺序 | 同上，按模板各自的正则核对 | 国赛「AI 工具使用声明」在参考文献之前 ✓（正文含 2 处，按最后一处算）；美赛 `Report on Use of AI` 在参考文献之后 ✓ |
 | 完整模板改写逻辑 | `check_latex_full.py --self-test` | **26/26 通过**（不需要 TeX） |
 | 轻量模板未受影响 | `check_latex.py --self-test` / `--require` | **26/26 通过**；真编译 3 套仍全过 |

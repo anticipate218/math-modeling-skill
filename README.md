@@ -273,11 +273,14 @@ cp -r assets/latex/full/cumcm my_paper
 #    https://raw.githubusercontent.com/anticipate218/math-modeling-skill/main/assets/latex/full/cumcm/example.tex
 ```
 
-Release 资产的直达链接（`v1.9.0` 起）：
+Release 资产的直达链接（用 `latest`，永远指向最新一版）：
 
-- 研赛（华为杯）完整模板：<https://github.com/anticipate218/math-modeling-skill/releases/download/v1.9.0/gmcm-template.zip>
-- 国赛完整模板：<https://github.com/anticipate218/math-modeling-skill/releases/download/v1.9.0/cumcm-template.zip>
-- 美赛完整模板：<https://github.com/anticipate218/math-modeling-skill/releases/download/v1.9.0/mcm-template.zip>
+- 研赛（华为杯）完整模板：<https://github.com/anticipate218/math-modeling-skill/releases/latest/download/gmcm-template.zip>
+- 国赛完整模板：<https://github.com/anticipate218/math-modeling-skill/releases/latest/download/cumcm-template.zip>
+- 美赛完整模板：<https://github.com/anticipate218/math-modeling-skill/releases/latest/download/mcm-template.zip>
+
+整套技能包（文件名带版本号，所以用安装器自动认版本最省事）：
+`python scripts/install_skill.py --download`。
 
 **编译**（三套都不需要 `bibtex`——参考文献是内联 `thebibliography`，跑三遍引擎即可）：
 

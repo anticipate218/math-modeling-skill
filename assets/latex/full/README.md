@@ -78,6 +78,23 @@ pdflatex -interaction=nonstopmode mcmthesis-demo.tex
 3. 研赛模板可以**原样编译**——`.cls` 已经做了字体回落，缺 Windows 字体时自动
    改用 TeX 发行版自带的字体（见第 3 节）。国赛同理。
 
+### 需要哪些 TeX 组件
+
+用到的宏包都是 TeX Live 的标准件，**完整安装**（TeX Live full / MiKTeX / Overleaf）
+一律自带，不用管。容易踩的只有一种情况：**在 Debian / Ubuntu 上手装 `texlive-*`**，
+因为有几个文件不在 `texlive-latex-base|recommended|extra` 里，得单独点名——
+本仓库 CI 就把这四个"漏了就红"的包钉死在安装步骤里了：
+
+| 缺的文件 | Ubuntu 包名 | 谁在用 |
+|---|---|---|
+| `lmodern.sty` | `lmodern`（Debian 顶层包，不在任何 `texlive-*` 里） | 美赛 |
+| `ulem.sty` | `texlive-plain-generic`（TDS 路径是 `tex/generic/`，所以 `latex-*` 包里没有） | 研赛、国赛（队员名单下划线） |
+| `berasans.sty` | `texlive-fonts-extra` | 美赛（`\RequirePackage[scaled]{berasans}`） |
+| `texgyretermes-regular.otf` 等 | `fonts-texgyre`（**不是** `texlive-` 前缀） | 研赛、国赛的西文回落字体 |
+
+外加 `texlive-lang-chinese`（提供 `ctexart.cls` 与 fandol 字体）、`texlive-xetex`、
+`texlive-pictures`、`texlive-science`、`texlive-bibtex-extra`。
+
 ---
 
 ## 二、本仓库对上游做了什么改动
@@ -239,8 +256,8 @@ python scripts/check_latex_full.py --self-test     # 不需要装 TeX，只测�
 
 | 模板 | 引擎 | 原样（随包字体 / 系统 Windows 字体） | 模拟无 Windows 字体（fandol + TeX Gyre） |
 |---|---|---|---|
-| `gmcm` | `xelatex` | **8 页**，395 954 B | **8 页**，391 121 B |
-| `cumcm` | `xelatex` | **12 页**，452 166 B | **12 页**，538 970 B |
+| `gmcm` | `xelatex` | **8 页**，395 954 B | **8 页**，391 120 B |
+| `cumcm` | `xelatex` | **12 页**，452 165 B | **12 页**，538 970 B |
 | `mcm` | `pdflatex` | **11 页**，279 394 B | 不适用（不含中文，不调 Windows 字体） |
 
 **5/5 通过**：每次都是退出码 0、0 条硬错误、0 个缺字形、0 处未解析引用。
@@ -250,19 +267,24 @@ python scripts/check_latex_full.py --self-test     # 不需要装 TeX，只测�
 > 里的 ctex 字体集**钉成 `fandol`**、把西文字体探测的名字**换成一定不存在的名字**
 > （`\IfFontExistsTF{Times New Roman}` → `\IfFontExistsTF{NoSuchWindowsFontZZZ}`），
 > 并把随包 `.ttf` 删掉——所以在任何平台上这一遍走的都是真实的回落分支。
-> 顺带一个佐证：`cumcm` 两列体积差了 86 804 B，正是 TeX Gyre 替掉 Times New
+> 顺带一个佐证：`cumcm` 两列体积差了 86 805 B，正是 TeX Gyre 替掉 Times New
 > Roman / Arial 之后嵌入字体变大的量。
 
 ### 5.2 编译产物与随仓库提交的样张一致
 
-| 模板 | 本次编译 | 仓库里的 `*.pdf` |
-|---|---|---|
-| `gmcm` | 395 954 B | `MathModel.pdf` 395 954 B |
-| `cumcm` | 452 166 B | `example.pdf` 452 166 B |
-| `mcm` | 279 394 B | `mcmthesis-demo.pdf` 279 394 B |
+| 模板 | 本次编译 | 仓库里的 `*.pdf` | |
+|---|---|---|---|
+| `gmcm` | 395 954 B | `MathModel.pdf` 395 954 B | ✅ 逐字节相同 |
+| `cumcm` | 452 165 B | `example.pdf` 452 166 B | ⚠️ 差 1 字节 |
+| `mcm` | 279 394 B | `mcmthesis-demo.pdf` 279 394 B | ✅ 逐字节相同 |
 
-三个都**逐字节相同**——说明仓库里那份样张就是这些源码在当前工具链下真实编出来的，
-不是别处拷来的。
+说明仓库里那两份样张就是这些源码在当前工具链下真实编出来的，不是别处拷来的。
+
+`cumcm` 这 1 字节必须说清楚，**不能宣称逐字节相同**：差异出现在文件末尾——前
+444 862 字节完全一致（占全文件 98.4%），不同的只有最后一个 Flate 压缩对象流
+（`/Length 3866` vs `3867`，装的是 XMP / Info 元数据，也就是 PDF 文档 ID 与生成
+时间戳）。**版面内容没有任何差别**：都是 12 页、同样的字体嵌入、同样的交叉引用。
+`gmcm` / `mcm` 两份则是真正的逐字节相同。
 
 ### 5.3 CI
 

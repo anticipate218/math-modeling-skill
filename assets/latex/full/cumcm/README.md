@@ -52,7 +52,7 @@ Overleaf：把本目录**整体**上传，Menu → Compiler 选 **XeLaTeX**。�
 
 `TeX Gyre Termes / Heros` 是 Times / Arial 的**度量兼容克隆**，随 TeX Live / MiKTeX
 分发，任何平台都有；**换字体只改字形与 PDF 嵌入体积，不改分页**——两种字体下
-都是 12 页（有 Windows 字体 452 166 B，回落 TeX Gyre 后 538 970 B）。
+都是 12 页（有 Windows 字体 452 165 B，回落 TeX Gyre 后 538 970 B）。
 `\setmonofont` 上游本来就是注释掉的，保持原样未动。
 
 `example.tex`、`cumcm2026.sty`、`figures/*` 与上游**逐字节一致**。

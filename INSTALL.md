@@ -273,7 +273,7 @@ python scripts/install_skill.py --target auto --force
 或者下载新版 Release ZIP 后：
 
 ```bash
-python scripts/install_skill.py --from-zip /path/to/math-modeling-skill-v1.9.0.zip --target auto --force
+python scripts/install_skill.py --from-zip /path/to/math-modeling-skill-v1.9.1.zip --target auto --force
 ```
 
 `--force` 只会覆盖**本技能的旧安装**（目标目录里必须有 `name: math-modeling-skill`

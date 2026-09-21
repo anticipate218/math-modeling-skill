@@ -108,8 +108,8 @@ The font "SimSun" cannot be found ...
 `TeX Gyre` 系列是 Times / Arial / Courier 的度量兼容克隆，随 TeX Live / MiKTeX
 分发，任何平台都有；**换字体只改字形，不改分页**（两种字体下都是 8 页）。
 
-修正后连编 3 遍全部退出码 0、0 条硬错误、0 个丢失字形（带字体 395 954 B，
-删掉字体回落 `fandol` 后 391 121 B）。完整的溯源与授权信息见
+修正后连编 3 遍全部退出码 0、0 条硬错误、0 个丢失字形（带随包字体 395 954 B，
+走 `fandol` + TeX Gyre 回落路径 391 120 B）。完整的溯源与授权信息见
 [`../THIRD-PARTY.md`](../THIRD-PARTY.md)。
 
 ## 已知的无害警告

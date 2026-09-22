@@ -138,6 +138,16 @@ jobs:
       #      美赛 `newtxtext` 把 TS1 编码映射到 TeX Gyre Termes 的度量上，缺了它
       #      pdflatex 报 `Font TS1/ntxtlf/m/n/12=ts1-qtmr ... Metric (TFM) file not
       #      found` 并退出码 1。这两个包名长得像，是最容易漏的一个。
+      #
+      #    * `fonts-noto-cjk` + `fonts-liberation` —— 华为杯 2026 严格格式版
+      #      `hwcup2026.cls` 的回落目标。它把 `SimSun`/`SimHei` 落到 **Noto Serif /
+      #      Sans CJK SC**，把 `Times New Roman` 落到 **Liberation Serif**。
+      #      这套模板不带随包字体，所以 CI 上没有这两个包时，无字体回归那一跑会
+      #      直接 `! Package fontspec Error: The font "Noto Serif CJK SC" cannot be
+      #      found` 中止。国赛/研赛的回落目标是 TeX Gyre + ctex 自带的 fandol，
+      #      不需要这两个包；**只有华为杯 2026 这一套需要**。
+      #      注意 `fonts-noto-cjk` 的 Debian 包名里没有 `texlive-` 前缀，也不是
+      #      任何 texlive-* 的依赖，必须单独点名。
       - name: 安装 TeX Live（xelatex / pdflatex / bibtex）
         run: |
           sudo apt-get update -qq
@@ -145,6 +155,8 @@ jobs:
             lmodern \
             fonts-texgyre \
             tex-gyre \
+            fonts-noto-cjk \
+            fonts-liberation \
             texlive-latex-base \
             texlive-latex-recommended \
             texlive-latex-extra \
@@ -164,6 +176,11 @@ jobs:
           kpsewhich newtxtext.sty
           kpsewhich texgyretermes-regular.otf
           kpsewhich ts1-qtmr.tfm
+          # 系统字体不进 kpsewhich，用 fontconfig 点名：华为杯 2026 的回落分支
+          # 依赖这两个家族，缺了就让安装这一步先红，而不是等编译日志。
+          fc-list | grep -qi 'Noto Serif CJK SC' || { echo "缺少 Noto Serif CJK SC"; exit 1; }
+          fc-list | grep -qi 'Noto Sans CJK SC' || { echo "缺少 Noto Sans CJK SC"; exit 1; }
+          fc-list | grep -qi 'Liberation Serif' || { echo "缺少 Liberation Serif"; exit 1; }
           xelatex --version | head -n 1
           pdflatex --version | head -n 1
           bibtex --version | head -n 1
@@ -180,7 +197,11 @@ jobs:
       # 的名字换成一定不存在的名字）。两条都必须编得过，模板才算真的能在
       # Overleaf / Linux 上用。
       #
+      # 四套模板的回落目标分两类：
+      #   * 国赛 cumcm / 研赛 gmcm → ctex 的 fandol + TeX Gyre（见上面的安装步骤）
+      #   * 华为杯 2026 hwcup2026 → Noto Serif/Sans CJK SC + Liberation Serif
+      #
       # 注意：这一步会把随包的中文字体一起拷进临时目录，本仓库主检出里带有
-      # 5 个 Windows 字体（约 46 MB），checkout 会稍慢。
+      # 5 个 Windows 字体（约 44 MB），checkout 会稍慢。
       - name: 编译完整文档类模板并体检（含无 Windows 字体的回落路径）
         run: python scripts/check_latex_full.py --require

@@ -273,7 +273,7 @@ python scripts/install_skill.py --target auto --force
 或者下载新版 Release ZIP 后：
 
 ```bash
-python scripts/install_skill.py --from-zip /path/to/math-modeling-skill-v1.9.1.zip --target auto --force
+python scripts/install_skill.py --from-zip /path/to/math-modeling-skill-v1.10.0.zip --target auto --force
 ```
 
 `--force` 只会覆盖**本技能的旧安装**（目标目录里必须有 `name: math-modeling-skill`
@@ -303,19 +303,24 @@ Remove-Item -Recurse -Force "<技能根>\math-modeling-skill"
 
 | 用途 | 位置 | 拿走的方式 |
 |---|---|---|
+| **2026 研赛·华为杯正式提交**（推荐） | `<技能根>/math-modeling-skill/assets/latex/full/hwcup2026/` | ① 整个目录拷走；② 从 Release 下 `hwcup2026-template.zip` |
 | **正式参赛提交**（推荐） | `<技能根>/math-modeling-skill/assets/latex/full/{cumcm,gmcm,mcm}/` | ① 直接整个目录拷走；② 从 Release 下单独的 `cumcm-template.zip` / `gmcm-template.zip` / `mcm-template.zip` |
 | 自控排版 / 快速成稿 | `<技能根>/math-modeling-skill/assets/latex/{cumcm,yjs,mcm}/` | `python scripts/download_templates.py --contest cumcm --out my_paper` |
 
 Release 页面：<https://github.com/anticipate218/math-modeling-skill/releases/latest>
 
-> **注意别下错包。** Release 里同时挂着技能包 `math-modeling-skill-v*.zip` 和三个模板包
-> `*-template.zip`。**只有 `math-modeling-skill-v*.zip` 是技能包**，其余三个是独立的
-> LaTeX 工程（体积大，因为研赛那套装了中文字体），装进技能目录没有意义。
+> **注意别下错包。** Release 里同时挂着技能包 `math-modeling-skill-v*.zip` 和四个模板包
+> `*-template.zip`。**只有 `math-modeling-skill-v*.zip` 是技能包**，其余四个是独立的
+> LaTeX 工程（体积大，因为研赛通用版那套装了中文字体），装进技能目录没有意义。
 > `--download` 开关已经只会挑 `math-modeling-skill-v*` 开头的资产。
 
-> 研赛（`gmcm`）模板自带 5 个 `.ttf`（约 44 MB，商业字体，不在本仓库 MIT 授权内）。
+> 研赛通用版（`gmcm`）模板自带 5 个 `.ttf`（约 44 MB，商业字体，不在本仓库 MIT 授权内）。
 > 不想使用就删掉它们，文档类会自动回落到 TeX Gyre + 系统字体；**不要把它们挪进子目录**。
 > 细节见 `<技能根>/math-modeling-skill/assets/latex/full/README.md`。
+
+> **2026 华为杯两套并存**：投 2026 年研赛用 `full/hwcup2026/`（逐条复刻官方附件3，
+> 封面即附件3 渲染图，**不带字体**，无 Windows 字体时回落 Noto CJK + Liberation）；
+> `full/gmcm/` 是通用排版版，保留供参考写法。
 
 ---
 

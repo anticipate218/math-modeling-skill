@@ -508,12 +508,14 @@ def pick_release_asset(assets: list) -> dict:
         时间 O(n)（n = 资产个数） / 空间 O(1)。
 
     陷阱:
-        v1.9.0 起同一个 Release 里还挂着 `cumcm-template.zip` / `gmcm-template.zip` /
-        `mcm-template.zip` 三个 LaTeX 模板包。早期实现是"取第一个 `.zip`"，而
+        v1.9.0 起同一个 Release 里还挂着 LaTeX 模板包（v1.10.0 起是四个：
+        `hwcup2026-template.zip` / `gmcm-template.zip` / `cumcm-template.zip` /
+        `mcm-template.zip`）。早期实现是"取第一个 `.zip`"，而
         GitHub 接口**不承诺资产顺序**——模板包一旦排在前面，`--download` 就会把
         一个 LaTeX 工程当技能装下去，报错还很难懂（缺 `SKILL.md`）。所以必须按
         文件名认包，并且**宁可报错也不猜**：一个都不匹配时明确告诉用户现有资产
-        叫什么，而不是随便挑一个。
+        叫什么，而不是随便挑一个。模板包以后还会增加，所以这里的判据只能是
+        "前缀匹配"，不能依赖具体有几个模板包。
     """
     zips = [a for a in assets if str(a.get("name", "")).endswith(".zip")]
     if not zips:
@@ -1020,7 +1022,9 @@ def self_test() -> int:
 
         def t_asset_picker_ignores_templates() -> None:
             # 模板包排在前面时，绝不能把 LaTeX 工程当技能包下回来。
+            # 模板包的数量会随版本增加（v1.10.0 起是四个），所以这里按"数量不设上限"来测。
             assets = [
+                {"name": "hwcup2026-template.zip", "browser_download_url": "u0"},
                 {"name": "gmcm-template.zip", "browser_download_url": "u1"},
                 {"name": "cumcm-template.zip", "browser_download_url": "u2"},
                 {"name": "mcm-template.zip", "browser_download_url": "u3"},

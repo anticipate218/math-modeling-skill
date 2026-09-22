@@ -1,3 +1,98 @@
+## [1.10.0] - 2026-09-22
+
+本版加入**第四套完整文档类模板**：`assets/latex/full/hwcup2026/`——2026 年华为杯
+（第二十三届中国研究生数学建模竞赛）的**严格格式版**，由本仓库作者自制，
+逐条复刻 2026-09-16 官方《论文格式规范》与官方**附件3 Word 模板**。
+它与已有的 `full/gmcm/` **并存、互不替代**。
+
+### 为什么要有这一套
+
+2026 年研赛官方明确要求「**必须按附件3 模板进行编写**」，但组委会**只发 Word 版、
+没有发 LaTeX 版**。此前仓库里的 `full/gmcm/` 是社区沿用的 `gmcmthesis.cls` 通用排版版，
+它版面漂亮、章节与算法环境齐全，但**和附件3 不是同一套版式**——页边距、字号、
+摘要页固定文字的位置都对不上。想在 LaTeX 里交一份"和官方 Word 模板一致"的论文，
+只能自己照着附件3 复刻。
+
+### 新增
+
+- **`assets/latex/full/hwcup2026/`（9 个文件）**：
+  `hwcup2026.cls`（7 663 B，`\LoadClass[UTF8,zihao=-4,a4paper,fontset=none]{ctexart}`）、
+  `main.tex`（2 219 B）、`preview.pdf`（652 699 B，3 页样张）、`README.md`，
+  以及 `assets/` 下 5 张 PNG（官方附件3 封面底图 477 265 B、摘要页顶部赛事标题
+  92 546 B、「题目/摘要/关键词」三个固定标签 3 441 + 4 689 + 6 969 B）。
+  全部文件与作者提供的 `华为杯2026_严格格式_LaTeX模板.zip`
+  （1 143 969 B，SHA-256 `ec625a49…`）**逐字节一致**，本仓库未作任何修改
+  （`README.md` 只在末尾追加了一节"在本仓库里的位置"）。
+- 复刻的官方口径逐条落在 `.cls` 里：A4 纵向，页边距上 30.02 mm / 下 18.49 mm /
+  左 22.51 mm / 右 22.47 mm；首页保留官方封皮与 4 个 Logo；摘要页起阿拉伯数字从 1
+  连续编号、页码居中页脚；不设页眉；题目三号黑体、一级标题四号黑体居中、其余小四
+  宋体；单倍行距；`\ClassError` 兜住非 XeTeX 引擎。
+- **所有这些模板共用的"固定文字"是图片，不是排出来的字。** 封面、4 个 Logo、摘要页
+  顶部赛事标题与三个固定标签全部直接取自官方附件3 的渲染结果（`assets/*.png`），
+  因此不受「华文新魏 / 隶书」等字体缺失的影响，也与 Word 版逐像素一致。
+- **Release 新增第 5 个资产 `hwcup2026-template.zip`**（解压出顶层目录 `hwcup2026/`）。
+  发布脚本同时把它挂上去，README / INSTALL / `full/README.md` 的直达链接与资产清单
+  全部同步——注意 `install_skill.py --download` **只认 `math-modeling-skill` 开头的
+  ZIP**，模板包变多不会让它下错（这条约定 v1.9.0 就钉在自检里了）。
+
+### 字体：这套刻意**不带**任何 `.ttf`
+
+`hwcup2026.cls` 走**双回落**：`\IfFontExistsTF{SimSun}`/`{SimHei}` 有就用（**2026 规范
+点名的就是宋体/黑体**，也是官方 Word 附件3 用的），没有就落 **Noto Serif CJK SC /
+Noto Sans CJK SC**；`\IfFontExistsTF{Times New Roman}` 有就用，没有就落
+**Liberation Serif**。
+
+这套回落目标和另外三套**不是一回事**，必须写清楚，否则 CI 一定红：
+
+| 模板 | 中文回落 | 西文回落 |
+|---|---|---|
+| `hwcup2026` | **Noto Serif / Sans CJK SC** | **Liberation Serif** |
+| `gmcm` / `cumcm` | `ctex` 自带的 **fandol** | **TeX Gyre** |
+
+### 变更
+
+- `.github/workflows/ci.yml`：`latex` 作业的 apt 列表补 **`fonts-noto-cjk`** 与
+  **`fonts-liberation`**（华为杯 2026 回落分支的必需字体，不是 `texlive-*` 的依赖，
+  必须单独点名），安装后用 `fc-list` 断言 `Noto Serif CJK SC` / `Noto Sans CJK SC` /
+  `Liberation Serif` 三个家族都在——**系统字体不进 `kpsewhich`，只能用 fontconfig 点名**，
+  缺了就让安装这一步先红，不必等编译日志里翻 `fontspec Error`。
+- `scripts/check_latex_full.py`：模板表由 3 套扩到 4 套（`hwcup2026` 排在第一，
+  `simulate_linux=True`、`order=None`、不带随包字体），`TEMPLATES` 的既有断言、
+  模拟清单、`--only` 帮助文本同步。固件自检 **26 项 → 29 项**：
+  - 新增「模板表覆盖 `full/` 下的全部模板目录」——直接和文件系统对账，以后再加模板
+    忘了登记就会自检失败，而不是悄悄漏编；
+  - 模拟编译清单从 `[True, True, False]` 改为 `[True, True, True, False]`；
+  - 新增两条"屏蔽 Windows 字体探测"的断言：`SimSun` / `SimHei` 必须被拦住，
+    而 `\IfFontExistsTF{SimSun.ttf}`（研赛那种带扩展名的写法）**必须不被误伤**——
+    所以探测针改成**花括号锚定**的 `\IfFontExistsTF{SimSun}`，不是裸字符串替换。
+- 文档同步到"四套"口径并写清两套华为杯的关系：
+  `assets/latex/full/README.md`（选型表、ZIP 表、编译命令、Ubuntu 依赖表新增
+  `fonts-noto-cjk` / `fonts-liberation` 两行、回落目标分类、目录清单、验证记录、
+  溯源速查）、`assets/latex/full/THIRD-PARTY.md`（**新增第 1 节**，原第 1–4 节顺延为
+  2–5；写明官方附件3 渲染图**版权属组委会、不在 MIT 覆盖内**）、
+  `assets/latex/full/hwcup2026/README.md`（追加"在本仓库里的位置"对照表）、
+  `assets/latex/README.md`、`references/templates.md`、`README.md`、`INSTALL.md`。
+- 版本号 `1.9.1` → `1.10.0`（`SKILL.md` 的 `metadata.version`、`CITATION.cff`）；
+  `INSTALL.md` 的示例 ZIP 名同步。
+
+### 验证记录
+
+| 项目 | 方式 | 结果 |
+|---|---|---|
+| 新模板随仓库副本 | 与作者提供的 ZIP 逐文件比对 | 9/9 个文件字节完全相同（`hwcup2026.cls` 7 663 B / `main.tex` 2 219 B / `preview.pdf` 652 699 B / 5 张 PNG / `README.md`） |
+| 完整模板真编译（全量） | `check_latex_full.py --require`（Windows + MiKTeX 25.12） | **7/7 通过**：hwcup2026 3 页（原样 662 371 B / 回落 652 715 B）、gmcm 8 页、cumcm 12 页、mcm 11 页；0 条硬错误、0 个缺字形、0 处未解析引用；hwcup2026 **0 个 Overfull / Underfull** |
+| 改写逻辑固件自检 | `check_latex_full.py --self-test`（不需要 TeX） | **29/29 通过**（本版新增 3 项） |
+| 回落路径不是"碰运气" | 本机原无 Noto CJK / Liberation，第一次模拟编译实测报 `! Package fontspec Error: The font "Noto Serif CJK SC" cannot be found` | 确认这是一条**真实分支**；下载 noble 的 `fonts-noto-cjk` / `fonts-liberation` 两个 `.deb`，解析 `.ttc`/`.ttf` 名称表确认家族名后装上，再跑即通过（652 715 B / 3 页） |
+| 已发布三套无回归 | 同一跑里的 gmcm / cumcm / mcm | 页数与体积与 v1.9.1 记录一致（gmcm 395 954 / 391 121，cumcm 452 166 / 538 968，mcm 279 394） |
+| Release 五个资产 | 出包后下载回来逐个 sha256 | 见本版 Release 说明（**哈希不写进本文件**，理由同 v1.9.1） |
+
+### 已知的无害警告
+
+`hwcup2026` 在 MiKTeX 25.12 上每遍报 4 次
+`LaTeX Warning: You have requested release '2026/06/01' of LaTeX, but only release '2025-11-01' is available.`
+——`ctexart` 请求比本机更新的 LaTeX 内核，属发行版版本提示，模板侧无法消除，不影响排版。
+**除这一条外，这套模板的日志是干净的。**
+
 ## [1.9.1] - 2026-09-21
 
 本版是 v1.9.0 的**补丁**：修红 CI（两轮）、把两处"说得太满"的数字改成实测值、把 README

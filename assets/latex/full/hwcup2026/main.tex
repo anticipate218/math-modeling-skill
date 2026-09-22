@@ -1,0 +1,64 @@
+% !TeX program = xelatex
+\documentclass{hwcup2026}
+
+% ==================== 只需修改这里 ====================
+\school{学校名称}
+\teamno{26000010001}
+\memberone{队员一}
+\membertwo{队员二}
+\memberthree{队员三}
+\papertitle{这里填写论文题目}
+\keywords{关键词1；关键词2；关键词3；关键词4}
+% =====================================================
+
+\begin{document}
+
+% 官方附件3封面：4个Logo、固定文字、横线和版式均来自官方Word模板。
+\makehwcover
+
+% 摘要页从第1页开始编号。
+\begin{hwabstract}
+本文针对赛题中的问题建立数学模型。这里填写摘要正文。摘要应简明概括建模思路、主要方法、所建模型、关键结果与结论，并说明主要创新点。根据2026年竞赛格式规范，摘要一般不超过两页且无需英文摘要。
+
+建议直接在此处替换为你的正式摘要。若摘要超过一页，文本会自动延续到下一页；关键词紧跟摘要正文，之后正文自动另起一页。
+\end{hwabstract}
+
+\section{问题重述}
+这里开始正文。正文中文统一为小四号宋体，单倍行距；一级标题为四号黑体并居中。
+
+\section{问题分析}
+\subsection{问题一分析}
+二级标题仍属于“其他汉字”，本模板采用小四号宋体加粗区分层级，不改变字号和字体类别。
+
+\section{模型假设}
+\begin{enumerate}
+  \item 假设一；
+  \item 假设二。
+\end{enumerate}
+
+\section{符号说明}
+\begin{notation}
+$x$ & 示例变量\\
+$y$ & 示例变量\\
+\end{notation}
+
+\section{模型建立与求解}
+例如：
+\begin{equation}
+  y = ax+b.
+\end{equation}
+
+\section{模型检验与评价}
+这里填写检验、敏感性分析、优缺点与推广等内容。
+
+\begin{thebibliography}{99}
+\bibitem{ref1} 作者，书名，出版地：出版社，起止页码，出版年。
+\bibitem{ref2} 作者，论文名，杂志名，卷期号：起止页码，出版年。
+\bibitem{ref3} 作者，资源标题，网址，访问时间（年月日）。
+\end{thebibliography}
+
+\appendix
+\section{附录}
+如赛题要求，可在此给出必要的补充说明；需单独上传的程序或结果文件按竞赛系统要求提交。
+
+\end{document}

@@ -10,15 +10,21 @@
 
 | 用途 | 位置 | 形态 |
 |---|---|---|
-| **正式参赛提交**（推荐） | `assets/latex/full/{cumcm,gmcm,mcm}/` | 官方 `.cls` + 完整正文骨架 + 图片 + 预编译样例 PDF；国赛/研赛 `xelatex ×3`，美赛 `pdflatex ×3`（参考文献内联，不需要 bibtex） |
+| **2026 研赛·华为杯正式提交**（推荐） | `assets/latex/full/hwcup2026/` | 作者自制的 `hwcup2026.cls`，逐条复刻 2026 官方《论文格式规范》与附件3 Word 模板；封面直接用官方附件3 渲染图；`xelatex ×3`（参考文献内联，不需要 bibtex） |
+| **正式参赛提交**（推荐） | `assets/latex/full/{cumcm,gmcm,mcm}/` | 完整文档类 + 完整正文骨架 + 图片 + 预编译样例 PDF；国赛/研赛 `xelatex ×3`，美赛 `pdflatex ×3`（参考文献内联，不需要 bibtex） |
 | 自控排版 / 由 Markdown 快速成稿 | `assets/latex/{cumcm,yjs,mcm}/` | 单个 `main.tex` + `refs.bib`，不依赖私有宏包；`xelatex → bibtex → xelatex ×2` |
+
+> **华为杯有两套**：投 **2026 年** 用 `full/hwcup2026/`（严格格式版，封面即附件3）；
+> `full/gmcm/` 是社区沿用的 `gmcmthesis.cls` 通用排版版，**两套并存**，后者章节/
+> 图表/算法环境更全，适合参考写法。
 
 上游模板谱系（各自版权归原作者，详见 `assets/latex/full/THIRD-PARTY.md`）：
 
 | 竞赛 | 推荐模板 | 说明 |
 |---|---|---|
 | 国赛 CUMCM | **CUMCMThesis**（社区维护，已适配 2026 格式） | LaTeX；2026 版已加入 AI 使用声明书结构；上游未附 LICENSE |
-| 研赛 华为杯 | **GMCMthesis** | 摘要页即第 1 页；本仓库这一份是作者在公开谱系上自制整理的 |
+| 研赛 华为杯（2026） | **`hwcup2026.cls`**（本仓库作者自制） | 严格复刻 2026 官方附件3；封面/固定标签取自官方渲染图；不含随包字体 |
+| 研赛 华为杯（通用） | **GMCMthesis** | 摘要页即第 1 页；本仓库这一份是作者在公开谱系上自制整理的 |
 | 美赛 MCM/ICM | **mcmthesis**（CTAN，LPPL 1.3c+ 许可） | 事实标准；COMAP 官方另提供 Summary Sheet 的 Word/LaTeX 模板 |
 
 - 链接见 `contests.md` 的"官方链接"表末尾。
@@ -48,14 +54,19 @@ python scripts/check_latex.py --self-test       # 不装 TeX 也能跑：测日�
 python scripts/check_latex.py --require         # 真编 assets/latex/ 三套轻量模板，核对引用/字体/页数/AI 声明顺序
 python scripts/check_latex.py --keep-fontset    # 逐字验证仓库里这一份（本机有 Windows 字体时）
 
-python scripts/check_latex_full.py --self-test  # 不装 TeX：测字体回落改写/顺序核对/固件自洽（26 项）
-python scripts/check_latex_full.py --require    # 真编 assets/latex/full/ 三套完整文档类模板（各 3 遍）
-python scripts/check_latex_full.py --only gmcm  # 只编一套，改单个模板时用
+python scripts/check_latex_full.py --self-test        # 不装 TeX：测字体回落改写/顺序核对/固件自洽（29 项）
+python scripts/check_latex_full.py --require          # 真编 assets/latex/full/ 四套完整文档类模板（各 3 遍，共 7 跑）
+python scripts/check_latex_full.py --only hwcup2026   # 只编 2026 华为杯严格格式版
+python scripts/check_latex_full.py --only gmcm        # 只编一套，改单个模板时用
 ```
 
-  它会在**系统临时目录的副本**里编译，仓库内不留任何产物；`fontset=windows` 只在临时副本里被换成 `fandol`（CI 在 Linux 上跑），日志里出现 `Font "…" cannot be found` 即判失败。三套模板的这一检查已接入 CI。
+  它会在**系统临时目录的副本**里编译，仓库内不留任何产物；`fontset=windows` 只在临时副本里被换成 `fandol`（CI 在 Linux 上跑），日志里出现 `Font "…" cannot be found` 即判失败。四套模板的这一检查已接入 CI。
 
   `check_latex_full.py` 额外做一件 `check_latex.py` 做不到的事：把随附的中文字体 `.ttf` **删掉**、并强制 `fontset=fandol`，再编一遍——验证**"换一台没有 Windows 字体的机器（含 Overleaf）也能编过、页数不变"**。改动文档类里的字体设置后务必跑它。
+
+  ⚠️ **两套回落目标不同**：`cumcm` / `gmcm` 回落 **fandol + TeX Gyre**；`hwcup2026`
+  回落 **Noto Serif/Sans CJK SC + Liberation Serif**（Debian/Ubuntu 上是
+  `fonts-noto-cjk` + `fonts-liberation`，本仓库 CI 已点名并有 `fc-list` 断言）。
 
 ---
 

@@ -80,6 +80,6 @@ pdflatex mcmthesis.ins
 来源：[latexstudio-org/mcmthesis](https://github.com/latexstudio-org/mcmthesis)
 提交 `8ac05e2c3a9ef5880a15e3a3a18762a546c10b69`，
 对应 CTAN 发行版 **6.3.3（2024-01-22）**。本目录下的全部文件与上游**逐字节一致，
-本仓库未做任何改动**（它是三套里唯一有明确自由许可证的）。
+本仓库未做任何改动**（它是 `full/` 下**唯一**一套有明确上游自由许可证的第三方模板）。
 
 详见 [`../THIRD-PARTY.md`](../THIRD-PARTY.md)。

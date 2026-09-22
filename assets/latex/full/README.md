@@ -1,19 +1,27 @@
-# 完整文档类模板（国赛 / 华为杯·研赛 / 美赛）
+# 完整文档类模板（华为杯 2026 / 国赛 / 华为杯·研赛 / 美赛）
 
-这里是三套**直接拿去投稿的完整 LaTeX 模板**，每套都是一个**独立可编译的目录**
+这里是四套**直接拿去投稿的完整 LaTeX 模板**，每套都是一个**独立可编译的目录**
 （文档类 `.cls`、补充宏包 `.sty`、`figures/` 插图、示例主文件都在里面）。
 
 | 目录 | 赛事 | 入口主文件 | 文档类 | 引擎 | 示例成品 |
 |---|---|---|---|---|---|
+| `hwcup2026/` | 2026 华为杯（第二十三届中国研究生数学建模竞赛）**严格格式版** | `main.tex` | `hwcup2026.cls`（本仓库自制） | **XeLaTeX** | 3 页 |
 | `gmcm/` | 中国研究生数学建模竞赛（**华为杯** / 研赛） | `MathModel.tex` | `gmcmthesis.cls` v2.2 | **XeLaTeX** | 8 页 |
 | `cumcm/` | 全国大学生数学建模竞赛（**国赛**） | `example.tex` | `cumcmthesis.cls` v2.9（2026/08/26） | **XeLaTeX** | 12 页 |
 | `mcm/` | 美赛 MCM / ICM（COMAP） | `mcmthesis-demo.tex` | `mcmthesis.cls` v6.3.3（2024/01/22） | **pdfLaTeX** | 11 页 |
+
+> **`hwcup2026/` 和 `gmcm/` 都是华为杯，选哪个？**
+> 投 **2026 年** 研赛用 **`hwcup2026/`**——它逐条复刻了 2026-09-16 官方《论文格式规范》
+> 与附件3 Word 模板（页边距、字号、编号、封面都对齐），封面直接取官方附件3 渲染图。
+> `gmcm/` 是社区沿用的 `gmcmthesis.cls` 通用排版版，**两套并存、互不替代**；
+> `gmcm/` 保留下来是因为它的章节/图表/算法环境自定义更全，适合参考写法。
+> 详细对照见 [`hwcup2026/README.md`](hwcup2026/README.md)。
 
 > **和上一层的 `assets/latex/{cumcm,yjs,mcm}/main.tex` 什么关系？**
 > 上一层的三份是**本仓库自写的精简模板**：一个 `main.tex` + 一个 `refs.bib`，
 > 没有文档类、没有 `.cls` 依赖，拿来当"章节骨架 + 合规检查"的样板最省事，
 > 也可以直接喂给 `scripts/check_paper.py` 做提交前自检。
-> 这一层的三份是**完整的第三方文档类版本**，排版与官方样张一致（封面/页眉/
+> 这一层的四份是**完整的文档类版本**，排版与官方样张一致（封面/页眉/
 > 字号/编号页都由 `.cls` 管），**正式投稿建议用这一层**。
 > 两层都保留：精简版负责"结构与合规"，完整版负责"成品排版"。
 
@@ -27,14 +35,22 @@
 
 | 压缩包 | 解压出的目录 | 大小 |
 |---|---|---|
-| `gmcm-template.zip` | `gmcm/` | ≈ 44 MB（含 5 个中文字体） |
+| `hwcup2026-template.zip` | `hwcup2026/` | ≈ 1.2 MB（封面底图占大头） |
+| `gmcm-template.zip` | `gmcm/` | ≈ 24 MB（含 5 个中文字体） |
 | `cumcm-template.zip` | `cumcm/` | ≈ 0.9 MB |
 | `mcm-template.zip` | `mcm/` | ≈ 0.7 MB |
 
 > ⚠️ 这些 ZIP **不是**技能安装包。技能安装包（名字以 `math-modeling-skill` 开头）
 > 请按 [`INSTALL.md`](../../../INSTALL.md) 里的方式装，不要混用。
 
-解压后**进入该目录**再编译（`figures/` 与字体都是相对主文件查找的）：
+解压后**进入该目录**再编译（`figures/`、`assets/` 与字体都是相对主文件查找的）：
+
+```bash
+cd hwcup2026
+xelatex -interaction=nonstopmode main.tex
+xelatex -interaction=nonstopmode main.tex
+xelatex -interaction=nonstopmode main.tex
+```
 
 ```bash
 cd gmcm
@@ -57,33 +73,38 @@ pdflatex -interaction=nonstopmode mcmthesis-demo.tex
 pdflatex -interaction=nonstopmode mcmthesis-demo.tex
 ```
 
-**为什么正好三遍？** 三套模板的参考文献都写在正文里的 `thebibliography` 环境里
+**为什么正好三遍？** 四套模板的参考文献都写在正文里的 `thebibliography` 环境里
 （行内条目），**不需要跑 `bibtex`**；但交叉引用和页码（美赛页眉的 `Page X of Y`）
-要跑满三遍才收敛。想省事也可以用 `latexmk -xelatex example.tex`（需要 Perl）。
+要跑满三遍才收敛。想省事也可以用 `latexmk -xelatex main.tex`（需要 Perl）。
 
 ### 方式 B：直接把目录拷进你的工作目录
 
-每套目录都是自包含的。**整目录**拷贝即可，注意两点：
+每套目录都是自包含的。**整目录**拷贝即可，注意三点：
 
-1. **不要只拷主文件**。`cumcmthesis.cls` / `gmcmthesis.cls` / `mcmthesis.cls`
-   必须在主文件同一层；`cumcm2026.sty` 也是。
-2. **研赛的 5 个 `.ttf` 必须留在主文件同一层**（不要挪进 `fonts/` 之类子目录），
-   原因见下面第 3 节。
+1. **不要只拷主文件**。`cumcmthesis.cls` / `gmcmthesis.cls` / `mcmthesis.cls` /
+   `hwcup2026.cls` 必须在主文件同一层；`cumcm2026.sty` 也是。
+2. **研赛 `gmcm/` 的 5 个 `.ttf` 必须留在主文件同一层**（不要挪进 `fonts/` 之类
+   子目录），原因见下面第 3 节。
+3. **`hwcup2026/` 的 `assets/` 子目录要一起拷**（封面底图与 4 个固定标签图），
+   缺了封面页就出不来。
 
 ### 方式 C：在 Overleaf 上编译
 
 1. 新建项目 → 上传**整个目录**（Overleaf 支持拖拽文件夹，或用 “New Project →
    Upload Project” 上传 ZIP）。
-2. `Menu → Compiler`：研赛/国赛选 **XeLaTeX**，美赛选 **pdfLaTeX**。
-3. 研赛模板可以**原样编译**——`.cls` 已经做了字体回落，缺 Windows 字体时自动
-   改用 TeX 发行版自带的字体（见第 3 节）。国赛同理。
+2. `Menu → Compiler`：华为杯两台模板与国赛选 **XeLaTeX**，美赛选 **pdfLaTeX**。
+3. `gmcm/`、`cumcm/` 可以**原样编译**——`.cls` 已经做了字体回落，缺 Windows 字体时
+   自动改用 TeX 发行版自带的字体（见第 3 节）。
+4. `hwcup2026/` 在 Overleaf 上**能编过**，但会走 Noto CJK 回落（Overleaf 的
+   `fonts-noto-cjk` 一般已装），字形与 Windows 的宋体/黑体略有差别。**最终提交版
+   仍建议在 Windows 上编**，理由见第 3 节。
 
 ### 需要哪些 TeX 组件
 
 用到的宏包都是 TeX Live 的标准件，**完整安装**（TeX Live full / MiKTeX / Overleaf）
 一律自带，不用管。容易踩的只有一种情况：**在 Debian / Ubuntu 上手装 `texlive-*`**，
 因为有几个文件不在 `texlive-latex-base|recommended|extra` 里，得单独点名——
-本仓库 CI 就把这四个"漏了就红"的包钉死在安装步骤里了：
+本仓库 CI 就把这几个"漏了就红"的包钉死在安装步骤里了：
 
 | 缺的文件 | Ubuntu 包名 | 谁在用 |
 |---|---|---|
@@ -91,6 +112,9 @@ pdflatex -interaction=nonstopmode mcmthesis-demo.tex
 | `ulem.sty` | `texlive-plain-generic`（TDS 路径是 `tex/generic/`，所以 `latex-*` 包里没有） | 研赛、国赛（队员名单下划线） |
 | `berasans.sty` | `texlive-fonts-extra` | 美赛（`\RequirePackage[scaled]{berasans}`） |
 | `texgyretermes-regular.otf` 等 | `fonts-texgyre`（**不是** `texlive-` 前缀） | 研赛、国赛的西文回落字体 |
+| `ts1-qtmr.tfm` 等 TeX Gyre 度量 | `tex-gyre`（**和上面是两个互不相干的包**） | 美赛（`newtxtext` 的 TS1 映射） |
+| `Noto Serif/Sans CJK SC` | `fonts-noto-cjk`（**不是** `texlive-` 前缀） | **华为杯 2026** 的中文回落字体 |
+| `Liberation Serif` | `fonts-liberation` | **华为杯 2026** 的西文回落字体 |
 
 外加 `texlive-lang-chinese`（提供 `ctexart.cls` 与 fandol 字体）、`texlive-xetex`、
 `texlive-pictures`、`texlive-science`、`texlive-bibtex-extra`。
@@ -99,9 +123,9 @@ pdflatex -interaction=nonstopmode mcmthesis-demo.tex
 
 ## 二、本仓库对上游做了什么改动
 
-三套模板都**逐字节保留了上游的排版逻辑**，只改了字体加载，目的是让它们在
-**没有 Windows 字体的机器（Overleaf / Linux / macOS）上也能编过**。改动一共两处，
-都写在 `.cls` 的注释里：
+`cumcm` / `gmcm` / `mcm` 三套**逐字节保留了上游的排版逻辑**，只改了字体加载，
+目的是让它们在**没有 Windows 字体的机器（Overleaf / Linux / macOS）上也能编过**。
+改动一共两处，都写在 `.cls` 的注释里：
 
 ### 1. `gmcm/gmcmthesis.cls` —— 修一个必然触发的字体 bug
 
@@ -142,9 +166,20 @@ PDF 嵌入体积，不改分页**——两套模板在两种字体下页数完�
 **除这两处外没有任何改动。** `example.tex`、`mcmthesis-demo.tex`、`mcmthesis.dtx`、
 `cumcm2026.sty`、`figures/*` 均与上游一致。
 
+### 3. `hwcup2026/` 不是"改上游"，是自制的严格复刻
+
+`hwcup2026.cls` 是**本仓库作者新写的**文档类（`\LoadClass{ctexart}` 为基础），
+不是从任何上游 `.cls` 改来的，所以上面那两条改动都不适用。它的字体策略是
+**双回落**：
+
+| 目标字体 | 有就用 | 没有就回落 |
+|---|---|---|
+| 中文 | `SimSun` / `SimHei`（Windows 宋体 / 黑体） | `Noto Serif CJK SC` / `Noto Sans CJK SC` |
+| 西文 | `Times New Roman` | `Liberation Serif` |
+
 ---
 
-## 三、字体：随包携带的 5 个 `.ttf`（研赛）
+## 三、字体：随包携带的 5 个 `.ttf`（只属于 `gmcm/`）
 
 `gmcm/` 目录带着 5 个 Windows 中文字体，总共约 44 MB：
 
@@ -171,15 +206,48 @@ PDF 嵌入体积，不改分页**——两套模板在两种字体下页数完�
 > **一个字都印不出来**（实测正文丢 1503 个字形），而编译照样退出码 0、PDF 照样
 > 8 页——非常隐蔽。所以：**留在原地，或者直接删掉。**
 
+### `hwcup2026/` 为什么不带字体？
+
+它**一个 `.ttf` 都不带**，靠 `\IfFontExistsTF` 现场探测：
+
+- Windows 上有 SimSun / SimHei / Times New Roman → 用它，**这就是 2026 官方
+  《论文格式规范》点名的宋体/黑体**，也是官方 Word 附件3 用的字体。
+- 没有 → 回落到 Noto Serif/Sans CJK SC + Liberation Serif，**照样编得过**。
+
+封面页、4 个 Logo、摘要页顶部的赛事标题，以及「题目 / 摘要 / 关键词」这些**固定
+标签**，全都直接取自官方附件3 的渲染图（`assets/*.png`），所以**不受**
+STXinwei / LiSu 这类字体缺失的影响——那几个字不是排出来的，是贴上去的。
+
+> **最终提交版请在 Windows 上编。** 回落分支只是为了让你在 Overleaf / Linux 上
+> 也能先看到版式；Noto CJK 的笔画粗细与宋体不完全一致，严格对齐官方样张还是
+> 用 SimSun / SimHei。
+
 ### 授权提示
 
-这 5 个 `.ttf` 是 Windows 系统自带的**商用**中文字体（版权归中易 ZhongYi、
+`gmcm/` 里那 5 个 `.ttf` 是 Windows 系统自带的**商用**中文字体（版权归中易 ZhongYi、
 华文 SinoType 等），**不是自由字体**。随包携带只为让你零配置编译、字形与 Word 一致。
 如需再分发或商用，请自行确认授权；或者删掉它们改用 `fandol` 自由字体集。
+
+`hwcup2026/` **不含任何字体文件**，不存在这个问题。
 
 ---
 
 ## 四、目录里都是什么
+
+<details>
+<summary><b>hwcup2026/</b>（2026 华为杯严格格式版，9 个文件）</summary>
+
+| 文件 | 说明 |
+|---|---|
+| `main.tex` | **主文件（入口）**，论文写在这里 |
+| `hwcup2026.cls` | 文档类，严格复刻 2026 官方附件3 的版面尺寸与字号 |
+| `preview.pdf` | 作者预编译的 3 页样张 |
+| `assets/official-cover.png` | 官方附件3 第 1 页渲染图（封面底图） |
+| `assets/abstract-header.png` | 摘要页顶部赛事标题渲染图 |
+| `assets/label-title.png` / `label-abstract.png` / `label-keywords.png` | 三个固定标签渲染图 |
+| `README.md` | 该模板的独立说明（含 2026 官方硬性要求逐条清单） |
+
+</details>
 
 <details>
 <summary><b>gmcm/</b>（研赛·华为杯，12 个文件）</summary>
@@ -237,11 +305,12 @@ PDF 嵌入体积，不改分页**——两套模板在两种字体下页数完�
 
 ```bash
 # 仓库根目录下执行
-python scripts/check_latex_full.py                 # 编全部：模板 ×（原样 + 无 Windows 字体）
-python scripts/check_latex_full.py --only gmcm     # 只编研赛
-python scripts/check_latex_full.py --no-simulate   # 只按原样编，不跑回落路径
-python scripts/check_latex_full.py --keep          # 保留临时目录，方便翻 .log / .pdf
-python scripts/check_latex_full.py --self-test     # 不需要装 TeX，只测改写逻辑
+python scripts/check_latex_full.py                    # 编全部：模板 ×（原样 + 无 Windows 字体）
+python scripts/check_latex_full.py --only hwcup2026   # 只编 2026 华为杯
+python scripts/check_latex_full.py --only gmcm        # 只编研赛
+python scripts/check_latex_full.py --no-simulate      # 只按原样编，不跑回落路径
+python scripts/check_latex_full.py --keep             # 保留临时目录，方便翻 .log / .pdf
+python scripts/check_latex_full.py --self-test        # 不需要装 TeX，只测改写逻辑
 ```
 
 脚本把**整个模板目录**拷进系统临时目录再编译（**不在仓库内编译**，仓库里永远
@@ -254,31 +323,38 @@ python scripts/check_latex_full.py --self-test     # 不需要装 TeX，只测�
 
 实测环境：**Windows + MiKTeX 25.12**（XeTeX / pdfTeX），引擎各跑 3 遍。
 
-| 模板 | 引擎 | 原样（随包字体 / 系统 Windows 字体） | 模拟无 Windows 字体（fandol + TeX Gyre） |
+| 模板 | 引擎 | 原样（系统 Windows 字体） | 模拟无 Windows 字体 |
 |---|---|---|---|
-| `gmcm` | `xelatex` | **8 页**，395 954 B | **8 页**，391 120 B |
-| `cumcm` | `xelatex` | **12 页**，452 165 B | **12 页**，538 970 B |
+| `hwcup2026` | `xelatex` | **3 页**，662 371 B | **3 页**，652 715 B（Noto CJK + Liberation） |
+| `gmcm` | `xelatex` | **8 页**，395 954 B | **8 页**，391 121 B（fandol + TeX Gyre） |
+| `cumcm` | `xelatex` | **12 页**，452 166 B | **12 页**，538 968 B（fandol + TeX Gyre） |
 | `mcm` | `pdflatex` | **11 页**，279 394 B | 不适用（不含中文，不调 Windows 字体） |
 
-**5/5 通过**：每次都是退出码 0、0 条硬错误、0 个缺字形、0 处未解析引用。
-两列**页数完全一致**——换字体只改字形与嵌入体积，不改分页。
+**7/7 通过**（`hwcup2026` 与 `gmcm` 各两遍、`cumcm` 两遍、`mcm` 一遍）：每次都是
+退出码 0、0 条硬错误、0 个缺字形、0 处未解析引用。同一模板两列**页数完全一致**——
+换字体只改字形与嵌入体积，不改分页。
 
 > 「模拟无 Windows 字体」不是靠"在这台 Windows 机器上碰运气"：脚本会把临时副本
 > 里的 ctex 字体集**钉成 `fandol`**、把西文字体探测的名字**换成一定不存在的名字**
-> （`\IfFontExistsTF{Times New Roman}` → `\IfFontExistsTF{NoSuchWindowsFontZZZ}`），
-> 并把随包 `.ttf` 删掉——所以在任何平台上这一遍走的都是真实的回落分支。
-> 顺带一个佐证：`cumcm` 两列体积差了 86 805 B，正是 TeX Gyre 替掉 Times New
-> Roman / Arial 之后嵌入字体变大的量。
+> （`\IfFontExistsTF{Times New Roman}` → `\IfFontExistsTF{NoSuchWindowsFontZZZ}`，
+> 中文探测 `SimSun` / `SimHei` 同样处理），并把随包 `.ttf` 删掉——所以在任何平台上
+> 这一遍走的都是真实的回落分支。
+>
+> 两个佐证：`cumcm` 两列体积差了 86 802 B，正是 TeX Gyre 替掉 Times New Roman /
+> Arial 之后嵌入字体变大的量；`hwcup2026` 两列只差 9 656 B，因为 Noto CJK 与
+> SimSun / SimHei 的字形集相近。
 
 ### 5.2 编译产物与随仓库提交的样张一致
 
 | 模板 | 本次编译 | 仓库里的 `*.pdf` | |
 |---|---|---|---|
 | `gmcm` | 395 954 B | `MathModel.pdf` 395 954 B | ✅ 逐字节相同 |
-| `cumcm` | 452 165 B | `example.pdf` 452 166 B | ⚠️ 差 1 字节 |
+| `cumcm` | 452 166 B | `example.pdf` 452 166 B | ⚠️ 差 1 字节 |
 | `mcm` | 279 394 B | `mcmthesis-demo.pdf` 279 394 B | ✅ 逐字节相同 |
 
 说明仓库里那两份样张就是这些源码在当前工具链下真实编出来的，不是别处拷来的。
+`hwcup2026/preview.pdf` 用的是作者自己那台机器（引擎版本与页数一致，都是 3 页），
+本仓库没有宣称它与这里的重编译结果逐字节相同。
 
 `cumcm` 这 1 字节必须说清楚，**不能宣称逐字节相同**：差异出现在文件末尾——前
 444 862 字节完全一致（占全文件 98.4%），不同的只有最后一个 Flate 压缩对象流
@@ -290,7 +366,10 @@ python scripts/check_latex_full.py --self-test     # 不需要装 TeX，只测�
 
 `.github/workflows/ci.yml` 的 `latex` 任务在装好 TeX Live 后跑
 `python scripts/check_latex_full.py --require`（`--require` = 没装 TeX 就报错退出，
-不允许静默跳过）。Ubuntu 上没有 Windows 字体，所以那一遍**天然就是回落路径**。
+不允许静默跳过）。Ubuntu 上没有 Windows 字体，所以那一遍**天然就是回落路径**；
+为了让 `hwcup2026` 的回落分支也有字体可用，安装步骤里点名了 `fonts-noto-cjk`
+与 `fonts-liberation`，并用 `fc-list` 在安装阶段就把这两个家族钉住（缺了立刻失败，
+不必等编译日志）。
 
 ### 5.4 已知的无害警告
 
@@ -298,6 +377,7 @@ python scripts/check_latex_full.py --self-test     # 不需要装 TeX，只测�
 
 | 模板 | 警告 | 说明 |
 |---|---|---|
+| `hwcup2026` | `LaTeX Warning: You have requested release '2026/06/01' of LaTeX`（每遍 ×4） | `ctexart` 请求比本机更新的 LaTeX 内核，属 MiKTeX 版本提示。**无 Overfull / Underfull** |
 | `gmcm` | `(\end occurred when \iftrue on line 16 was incomplete)` | `gmcmthesis.cls` 里 `\newif\if@gmcm@preface` 之后没有配对的 `\fi`，`\iftrue` 一直悬着。TeX 只在文件尾报告一次，不影响排版 |
 | `gmcm` | `! ClassError{mcmthesis}` 里写错类名 | 该文件是从美赛模板改来的，报错信息里的类名忘了改。只有你用错引擎时才会看到这句话 |
 | `gmcm` | 1 处 `Overfull \hbox`、1 处 `Underfull \hbox` | 纯排版提示 |
@@ -313,6 +393,7 @@ python scripts/check_latex_full.py --self-test     # 不需要装 TeX，只测�
 
 | 模板 | 上游 | 许可证 |
 |---|---|---|
+| `hwcup2026` | **本仓库作者自制**（依据 2026-09-16 官方《论文格式规范》与附件3 Word 模板逐条复刻；封面/标签取自官方附件3 渲染图） | 自制部分按本仓库许可；**官方附件3 渲染图版权属竞赛组委会** ⚠️ |
 | `gmcm` | **本仓库作者自制**（参考谱系：`springli07/GMCM_LaTeX_overleaf` → `zhanwen/MathModel`） | 上游两处均**未附 LICENSE**；本仓库按「注明来源、原样收录」处理 |
 | `cumcm` | [`latexstudio/CUMCMThesis`](https://github.com/latexstudio/CUMCMThesis) @ `38d1f21` | 上游**无 LICENSE**、未收录 CTAN ⚠️ |
 | `mcm` | [`latexstudio-org/mcmthesis`](https://github.com/latexstudio-org/mcmthesis) @ `8ac05e2` | **LPPL 1.3c or later** ✅（已随包保留 `mcmthesis.dtx`） |
@@ -330,6 +411,7 @@ python scripts/check_latex_full.py --self-test     # 不需要装 TeX，只测�
 ## 七、相关文档
 
 - 精简版模板（自写、含合规检查）：[`assets/latex/README.md`](../README.md)
+- 2026 华为杯严格格式版逐条要求：[`hwcup2026/README.md`](hwcup2026/README.md)
 - 三赛事规则对照（官方链接、AI 政策、页数与匿名要求）：`references/contests.md`
 - 提交前自检：`references/checklists.md`、`scripts/check_paper.py`
 - 完整模板的真编译体检：`scripts/check_latex_full.py`

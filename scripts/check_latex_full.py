@@ -1,34 +1,44 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""`assets/latex/full/` 下三套「完整文档类」模板的「真编译」体检。
+"""`assets/latex/full/` 下四套「完整文档类」模板的「真编译」体检。
 
 为什么要有这个脚本（和 `check_latex.py` 的分工）:
     `assets/latex/{cumcm,yjs,mcm}/main.tex` 是**自带的自写精简模板**，只有一
     个 `main.tex` + `refs.bib`，`check_latex.py` 负责它们。
 
-    `assets/latex/full/{gmcm,cumcm,mcm}/` 是**完整文档类版本**：带 `.cls`、
-    `.sty`、`figures/`，研赛那份还随包带了 5 个中文字体 `.ttf`。这些模板是
-    直接拿去投稿用的，能不能编过只有真编一遍才知道；而它们和精简版有两处本质
-    差别，精简版的体检脚本覆盖不到：
+    `assets/latex/full/{hwcup2026,gmcm,cumcm,mcm}/` 是**完整文档类版本**：带
+    `.cls`、`.sty`、`figures/`，`gmcm` 那份还随包带了 5 个中文字体 `.ttf`。
+    这些模板是直接拿去投稿用的，能不能编过只有真编一遍才知道；而它们和精简版
+    有两处本质差别，精简版的体检脚本覆盖不到：
 
       1. **不是两个文件**。必须整目录拷贝（`.cls`/`.sty`/`figures/`/字体都在
          旁边），少拷一个 `figures/f1.png` 就报 `File not found`。
-      2. **字体要跨平台**。研赛的 `gmcmthesis.cls` 会用随包的 `SimSun.ttf`
-         等字体（字形和 Word 一致），国赛的 `cumcmthesis.cls` 会调 Windows
-         自带的 Times New Roman / Arial。这两样在 Overleaf / Linux 上都没有，
-         必须能回落到 TeX 发行版自带的字体。所以脚本对这两套模板额外跑一遍
-         **「模拟没有 Windows 字体的机器」**：删掉随包 `.ttf`、把 ctex 的字体
-         集钉成 `fandol`、把西文字体探测的名字换成一定不存在的名字，逼程序走
-         回落分支。两条路径都编得过，模板才算真的可移植。
+      2. **字体要跨平台**。`hwcup2026.cls` 探测系统里的 SimSun / SimHei，
+         研赛的 `gmcmthesis.cls` 用随包的 `SimSun.ttf` 等字体（字形和 Word
+         一致），国赛的 `cumcmthesis.cls` 会调 Windows 自带的 Times New
+         Roman / Arial。这些在 Overleaf / Linux 上都没有，必须能回落到别处。
+         所以脚本对这几套模板额外跑一遍**「模拟没有 Windows 字体的机器」**：
+         删掉随包 `.ttf`、把 ctex 的字体集钉成 `fandol`、把字体探测的名字换成
+         一定不存在的名字，逼程序走回落分支。两条路径都编得过，模板才算真的
+         可移植。
+
+    注意回落目标不一样，CI 要装的系统字体也不一样：
+
+      * `hwcup2026` 回落到 **Noto Serif / Sans CJK SC** 与 **Liberation
+        Serif**，由 Ubuntu 的 `fonts-noto-cjk` + `fonts-liberation` 提供；
+      * `gmcm` / `cumcm` 回落到 **TeX Gyre**（Termes / Heros / Cursor）与
+        `fandol`，随 TeX Live 分发，不需要额外系统字体。
 
     脚本只往系统临时目录写文件，**不碰仓库里的任何模板**，也不在仓库里留下
     `.aux` / `.log` / `.pdf` 之类的编译垃圾。
 
 关于「先删掉预编译好的 PDF」:
-    每套模板目录里都放了一份作者预编译的样张（`MathModel.pdf` /
-    `example.pdf` / `mcmthesis-demo.pdf`）。它们**不能**拷进临时目录，否则
-    编译失败时旧 PDF 还在，`pdf.exists()` 照样为真，体检就被骗过去了。
-    只删顶层同名的那一个，`figures/` 里的图片 PDF 照常保留。
+    每套模板目录里都放了一份作者预编译的样张（`preview.pdf` /
+    `MathModel.pdf` / `example.pdf` / `mcmthesis-demo.pdf`）。它们**不能**
+    拷进临时目录，否则编译失败时旧 PDF 还在，`pdf.exists()` 照样为真，体检就
+    被骗过去了。只删与主文件同名的那一个（如 `main.tex` → `main.pdf`），
+    `figures/` 里的图片 PDF 照常保留；`preview.pdf` 与主文件不同名，不会冒充
+    编译产物。
 
 用法:
     python scripts/check_latex_full.py                  # 缺 TeX 时跳过（退出码 0）
@@ -78,6 +88,19 @@ LATEX_FULL_DIR = REPO_ROOT / "assets" / "latex" / "full"
 # order         : 可选的合规性顺序核对（AI 声明 vs 参考文献），查 .tex 源码
 TEMPLATES = (
     {
+        "name": "hwcup2026",
+        "title": "2026 华为杯（第二十三届中国研究生数学建模竞赛）严格格式版",
+        "engine": "xelatex",
+        "entry": "main.tex",
+        "min_pages": 3,              # 样张 = 封面 + 摘要 + 短正文
+        # 这份模板不随包带字体：封面与摘要抬头是官方附件3的位图，
+        # 正文字体靠探测系统里的 SimSun / SimHei。
+        "bundled_fonts": (),
+        "simulate_linux": True,      # 无 SimSun/SimHei 时回落到 Noto CJK + Liberation Serif
+        # 2026 华为杯《论文格式规范》没要求 AI 使用声明，故不核对顺序
+        "order": None,
+    },
+    {
         "name": "gmcm",
         "title": "中国研究生数学建模竞赛（华为杯 / 研赛）",
         "engine": "xelatex",
@@ -122,7 +145,12 @@ TEMPLATES = (
 
 #: 只用来判断「有没有 Windows 字体」的字体名。模拟无 Windows 字体的机器时，
 #: 把这些**探测用的名字**换成一个一定不存在的名字，逼程序走回落分支。
-WINDOWS_FONT_PROBES = ("Times New Roman", "Courier New", "Arial")
+#:
+#: 前三个是 `\IfFontExistsTF{Times New Roman}` 这种西文探测；后两个是
+#: `hwcup2026.cls` 里 `\IfFontExistsTF{SimSun}` 的中文探测。带上花括号做匹配，
+#: 所以 `gmcmthesis.cls` 的 `\IfFontExistsTF{SimSun.ttf}`（带扩展名，走的是
+#: 「随包字体在不在」另一条逻辑）不会被误伤。
+WINDOWS_FONT_PROBES = ("Times New Roman", "Courier New", "Arial", "SimSun", "SimHei")
 BLIND_FONT_NAME = "NoSuchWindowsFontZZZ"
 
 #: 模拟时把 ctex 的自动字体集钉成 fandol（随 TeX Live / MiKTeX 分发，
@@ -429,13 +457,20 @@ def self_test() -> int:
     # --- 模板表自检
     names = [t["name"] for t in TEMPLATES]
     check("模板名无重复", len(names) == len(set(names)))
+    check("模板表覆盖 full/ 下的全部模板目录",
+          sorted(names) == sorted(p.name for p in LATEX_FULL_DIR.iterdir() if p.is_dir()))
     check("每个模板的 entry 都真实存在",
           all((LATEX_FULL_DIR / t["name"] / t["entry"]).exists() for t in TEMPLATES))
     check("每个模板的随包字体都真实存在",
           all((LATEX_FULL_DIR / t["name"] / f).exists()
               for t in TEMPLATES for f in t["bundled_fonts"]))
-    check("cumcm / gmcm 需要模拟无 Windows 字体，mcm 不需要",
-          [t["simulate_linux"] for t in TEMPLATES] == [True, True, False])
+    check("hwcup2026 / cumcm / gmcm 需要模拟无 Windows 字体，mcm 不需要",
+          [t["simulate_linux"] for t in TEMPLATES] == [True, True, True, False])
+    check("模拟时能屏蔽 SimSun / SimHei 的中文探测",
+          blind_windows_fonts_text("\\IfFontExistsTF{SimSun}")[1] == 1
+          and blind_windows_fonts_text("\\IfFontExistsTF{SimHei}")[1] == 1)
+    check("屏蔽探测名不会误伤 `\\IfFontExistsTF{SimSun.ttf}`（随包字体探测）",
+          blind_windows_fonts_text("\\IfFontExistsTF{SimSun.ttf}")[1] == 0)
 
     failed = [label for label, good in checks if not good]
     for label, good in checks:
@@ -450,7 +485,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="编译 assets/latex/full/ 下的完整文档类模板并体检（不改动仓库文件）")
     parser.add_argument("--only", action="append", metavar="NAME",
-                        help="只测指定模板，可重复（gmcm / cumcm / mcm）")
+                        help="只测指定模板，可重复（hwcup2026 / gmcm / cumcm / mcm）")
     parser.add_argument("--require", action="store_true",
                         help="找不到编译引擎时判为失败（CI 用）；默认是跳过")
     parser.add_argument("--no-simulate", action="store_true",

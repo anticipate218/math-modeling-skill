@@ -434,7 +434,7 @@ rm -rf ~/.agents/skills/math-modeling-skill
 
 **可直接用的成品件**：
 - [`assets/latex/`](assets/latex/)：**两套并行的三赛事 LaTeX 模板**。① [`full/`](assets/latex/full/)＝**完整文档类版（推荐参赛提交用）**，基于各赛事官方 `.cls`，内含完整正文骨架、图片与预编译样例 PDF，`xelatex`/`pdflatex` 连跑三遍即可；研赛模板默认调用 Windows 字体，仓库已附带 `.ttf`，缺字体时**自动回落到 TeX Gyre + fandol**。② [`cumcm/`](assets/latex/cumcm/)、[`yjs/`](assets/latex/yjs/)、[`mcm/`](assets/latex/mcm/)＝**轻量自包含版**，单个 `main.tex`（不 `\input` 外部文件、图表用 TikZ/pgfplots 内联）+ `refs.bib`，走 `xelatex → bibtex → xelatex ×2`。两套都已内置各赛事硬规则（摘要页、页码、AI 声明位置、附录源程序），且**每次 CI 都会被真正编译一遍**（见下方「质量保障」），不是"文档里写着能编"。
-- [`examples/algorithms/`](examples/algorithms/)：17 个算法模块、222 个公开函数（优化/图论/启发式/预测/时间序列/统计/评价/多准则/聚类/机器学习/微分方程/随机仿真/几何/空间与物理场/博弈/多目标/灵敏度），**仅依赖 numpy 与标准库**；每个模块都带 `_self_test()`，再用 [`examples/run_algorithms.py`](examples/run_algorithms.py) 跑黄金值回归与确定性复跑。逐函数的数学形式、步骤、参数表与陷阱见 [`references/algorithm-details.md`](references/algorithm-details.md)。
+- [`examples/algorithms/`](examples/algorithms/)：17 个算法模块、260 个公开函数（优化/图论/启发式/预测/时间序列/统计/评价/多准则/聚类/机器学习/微分方程/随机仿真/几何/空间与物理场/博弈/多目标/灵敏度），**仅依赖 numpy 与标准库**；每个模块都带 `_self_test()`，再用 [`examples/run_algorithms.py`](examples/run_algorithms.py) 跑黄金值回归与确定性复跑。逐函数的数学形式、步骤、参数表与陷阱见 [`references/algorithm-details.md`](references/algorithm-details.md)。
 - [`assets/gallery/`](assets/gallery/)：16 张**原创**论文配图（评价权重与敏感性、TOPSIS 排序、预测对比与残差诊断、SIR 机理与参数敏感性、Pareto 前沿、蒙特卡洛收敛、排队仿真、最短路、空间插值、相关矩阵等），由 [`scripts/make_figures.py`](scripts/make_figures.py) 固定种子生成——**逐字节可复现**，可当画图与图注范本。配色与排版经 [`scripts/check_palette.py`](scripts/check_palette.py) 做**可访问性体检**：Okabe-Ito 色相在该项体检里二色觉最差 ΔE 达 16.1，而常见的"论文风"配色 seaborn deep / ColorBrewer Set2 / tab10 分别只有 2.7 / 2.5 / 4.6；另有线型与标记点两条冗余通道兜住黑白打印，见 [`assets/gallery/README.md`](assets/gallery/README.md) §5.7–5.8。
 
 **为什么仓库里没有历年优秀论文的原图**：论文插图版权归作者/出版方，即使标注出处，未经许可把它们下载进仓库再分发通常也不构成合规使用，还会带来学术诚信风险。因此本仓库改为提供「原创可复现图库 + 官方与作者授权来源的链接索引」，见 [`references/paper-examples.md`](references/paper-examples.md)。
@@ -799,19 +799,19 @@ python examples/run_algorithms.py --module graphs --verbose   # 只跑一个模�
 
 | 题目族 | 模块 | 你会拿到什么 |
 |---|---|---|
-| 优化与规划 | `optimization.py` | 单纯形、分支定界整数规划、背包 DP、匈牙利指派、Vogel 运输 |
-| 图论与网络 | `graphs.py` | 最短路、最小生成树、最大流/最小割、TSP、PageRank、连通性 |
-| 元启发式 | `heuristics.py` | 模拟退火、遗传算法、粒子群、蚁群 |
-| 时间序列与预测 | `forecasting.py`、`timeseries.py` | 平滑与 Holt-Winters、AR、平稳性检验、滚动回测、季节分解、进阶模型 |
-| 统计与回归 | `statistics.py` | 相关/检验/正态性、OLS 与诊断、岭回归/Lasso、逻辑与泊松回归、PCA/因子分析、Bootstrap 与置换检验 |
-| 评价与决策 | `evaluation.py`、`multicriteria.py` | AHP/熵权/CRITIC/组合赋权、TOPSIS、VIKOR、灰色关联、DEA、排序稳健性 |
-| 机器学习 | `ml.py` | KNN、决策树、随机森林、梯度提升、朴素贝叶斯、LDA、交叉验证、不平衡处理 |
-| 聚类 | `clustering.py` | K-means++、轮廓系数、层次聚类、DBSCAN |
-| 微分方程与机理 | `differential.py` | Euler/RK4、SIR 仿真与拟合、Logistic、Lotka-Volterra、收敛阶 |
-| 随机与仿真 | `stochastic.py` | 蒙特卡洛、排队论 M/M/1 与仿真、马尔可夫稳态/吸收 |
-| 几何与空间 | `geometry.py`、`spatial.py` | 凸包/点在多边形内/Haversine/IDW/克里金/泰森多边形；一维热传导、二维 Poisson 松弛、林火与交通流元胞自动机、量纲分析 |
-| 多目标与灵敏度 | `multiobjective.py`、`sensitivity.py` | Pareto 前沿与支配关系、单/多参数灵敏度与稳健性度量 |
-| 博弈与分配 | `game.py` | 零和博弈值、Nash 枚举、Shapley 值、稳定匹配、演化动力学 |
+| 优化与规划 | `optimization.py` | 单纯形（含灵敏度分析）、内点法、分支定界整数规划、背包 DP、匈牙利指派、Vogel 运输、目标规划、情景鲁棒与机会约束 LP |
+| 图论与网络 | `graphs.py` | 最短路（Dijkstra/Bellman-Ford/Floyd/A\*）、最小生成树、最大流/最小割、最小费用流、TSP、PageRank、连通性、社区发现、拓扑排序与关键路径、VRP |
+| 元启发式 | `heuristics.py` | 模拟退火、遗传算法、粒子群、蚁群、差分进化、禁忌搜索、灰狼、变邻域搜索、人工蜂群、标准基准函数库 |
+| 时间序列与预测 | `forecasting.py`、`timeseries.py` | 平滑与 Holt-Winters、AR、平稳性检验（含趋势/漂移型）、滚动回测、季节分解、GM(1,1)、ARIMA/SARIMA、GARCH、卡尔曼滤波与平滑 |
+| 统计与回归 | `statistics.py` | 相关/检验/正态性、非参数检验（Mann-Whitney/Wilcoxon/Kruskal-Wallis/ANOVA）、OLS 与诊断、HAC(Newey-West) 标准误、岭回归/Lasso、逻辑与泊松回归、PCA/因子分析、Bootstrap（含 BCa）与置换检验 |
+| 评价与决策 | `evaluation.py`、`multicriteria.py` | AHP/熵权/CRITIC/组合赋权、TOPSIS、VIKOR、灰色关联、DEA（CCR/BCC）、模糊综合评价、RSR、PROMETHEE II、ELECTRE I/II/III、Borda/Copeland、Kendall 协调系数、排序稳健性 |
+| 机器学习 | `ml.py` | KNN、决策树（Gini/熵）、随机森林、梯度提升、朴素贝叶斯、LDA、PCA、交叉验证、不平衡处理、PR 曲线与平均精度 |
+| 聚类 | `clustering.py` | K-means++、轮廓系数、层次聚类、DBSCAN、GMM、谱聚类、模糊 C 均值、K-medoids、Gap 统计量 |
+| 微分方程与机理 | `differential.py` | Euler/RK4/RK45、隐式 Euler、SIR/SEIR 仿真与拟合、Logistic、Lotka-Volterra、收敛阶、雅可比稳定性、Euler-Maruyama（SDE） |
+| 随机与仿真 | `stochastic.py` | 蒙特卡洛、排队论 M/M/1、M/M/c、M/M/c/K、M/G/1 与离散事件仿真、马尔可夫稳态/吸收、MCMC（MH/Gibbs）、Copula、几何布朗运动 |
+| 几何与空间 | `geometry.py`、`spatial.py` | 凸包/点在多边形内/Haversine/IDW/克里金/泰森多边形/多边形裁剪；一维热传导、二维 Poisson 松弛、林火与交通流元胞自动机、量纲分析、空间自相关 Moran's I |
+| 多目标与灵敏度 | `multiobjective.py`、`sensitivity.py` | Pareto 前沿与支配关系、NSGA-II、MOEA/D、超体积/IGD/Spacing/拐点；OAT/弹性/Morris/Sobol（含二阶）、插补与异常检测 |
+| 博弈与分配 | `game.py` | 零和博弈值、Nash 枚举、Shapley 值、稳定匹配、演化动力学、迭代剔除、ESS（演化稳定策略）、相关均衡 LP |
 
 **逐算法的细节（数学形式 → 步骤 → 复杂度 → 参数表 → 陷阱 → 怎么检验）见 `references/algorithm-details.md`；"该用哪个族、什么时候换成熟库"见 `references/algorithm-implementations.md`；"这题该用哪类模型"见 `references/model-library.md`。**
 
@@ -845,7 +845,7 @@ python examples/run_algorithms.py --module graphs --verbose   # 只跑一个模�
 | 结构 | `python scripts/validate_skill.py . --strict` | frontmatter 字段白名单、`name` 与目录一致、description/compatibility 长度、正文行数、**文件引用是否存在**、未索引文件、Windows 反斜杠路径 |
 | 自检工具 | `python scripts/check_paper.py --self-test` | 用「好稿/坏稿」固件验证检查逻辑本身没坏 |
 | 安装器 | `python scripts/install_skill.py --self-test` | 25 项固件测试：复制时确实丢掉 `.git`/`__pycache__`、已存在时先拒绝再 `--force`、**非本技能的目录一律不删**、`--dry-run` 不写盘、带/不带顶层前缀的 ZIP 都能解、`auto` 挑选顺序、项目根向上查找、**`--into` 给技能根会自动补一层 / 给技能目录则原样使用 / 指向别人的技能目录时拒绝**、**带 UTF-8 BOM 的 `SKILL.md` 仍可识别**、**联网动作会退避重试且失败时给出可执行的出路**、**Release 资产里混着 LaTeX 模板包时仍只认技能包**——全程不联网、不碰真实技能目录 |
-| 算法回归 | `python examples/run_algorithms.py` | 自带的 **17 个算法模块、875 个断言键**逐个跑数值自检，并与 `algorithms_golden.json` 黄金值比对（含确定性复跑：每个模块跑两遍，结果必须逐位一致） |
+| 算法回归 | `python examples/run_algorithms.py` | 自带的 **17 个算法模块、1361 个断言键**逐个跑数值自检，并与 `algorithms_golden.json` 黄金值比对（含确定性复跑：每个模块跑两遍，结果必须逐位一致） |
 | 配图配色 | `python scripts/check_palette.py --quiet` | 直接读 `make_figures.py` 里的设计令牌，算二色觉仿真 CIELAB ΔE、灰度间隔与 WCAG 对比度；并断言「颜色之外还有线型/标记」这条冗余编码确实存在 |
 | 模板真编译 | `python scripts/check_latex.py --require`（CI）／`--self-test`（本机无需 TeX） | 在临时目录里真的编译 `assets/latex/` 三套轻量模板（引擎 → bibtex → 引擎 ×2），核对硬错误、未解析引用、缺字体、页数下限，以及 **AI 声明与参考文献的先后顺序** |
 | 完整模板真编译 | `python scripts/check_latex_full.py --require`（CI）／`--self-test`（本机无需 TeX） | 真的编译 `assets/latex/full/` 四套**完整文档类**模板（各 3 遍，共 7 跑），核对硬错误、缺字、未解析引用、页数下限，并**删掉随附的 `.ttf` + 强制 `fontset=fandol` + 屏蔽 Windows 字体探测后再编一遍**，验证"没有 Windows 字体也能编过、页数不变"这条回落路径 |
@@ -903,7 +903,7 @@ math-modeling-skill/
 │   └── gallery/                  # 16 张原创配图 + 画法、配色与图注说明
 ├── examples/
 │   ├── modeling_patterns.py      # 带注释的透明基线示例
-│   ├── algorithms/               # 17 个算法模块、222 个公开函数（仅依赖 numpy + 标准库）
+│   ├── algorithms/               # 17 个算法模块、260 个公开函数（仅依赖 numpy + 标准库）
 │   ├── run_algorithms.py         # 算法自检 + 黄金值回归（确定性复跑）
 │   └── algorithms_golden.json    # 黄金值基线（CI 比对用）
 ├── evals/                        # 触发评测与行为用例（含 near-miss 负例）

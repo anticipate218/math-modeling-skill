@@ -1,3 +1,125 @@
+## [1.11.0] - 2026-09-22
+
+本版是**算法库的一次扩容 + 一次体检**：`examples/algorithms/` 的 17 个模块从
+**222 个公开函数**扩到 **260 个**（净增 38 个），自测断言键从 **875 条**增至
+**1361 条**；同时按模块逐函数做了一轮**对抗性复核**——每条结论都要求有一个
+**模块之外的独立参照**（`scipy` / `sklearn` / `statsmodels` / `networkx` 只允许出现在
+临时探针里，仓库代码仍只依赖 `numpy`），并据此修掉一批真实缺陷。
+README 另新增「提示词模板」板块（T0–T8 九套可直接改用的提示词）。
+
+### 新增算法（38 个公开函数）
+
+| 模块 | 新增 | 一句话 |
+|---|---|---|
+| `optimization` | `lp_sensitivity`、`interior_point_lp` | 影子价格 + 基不变区间；Mehrotra 预测-校正内点法 |
+| `graphs` | `bellman_ford`、`topological_sort`、`critical_path` | 负权最短路 + 负环；Kahn 拓扑排序；CPM 关键路径 |
+| `heuristics` | `benchmark_functions`、`benchmark_optimizers`、`artificial_bee_colony` | 标准测试函数与已知全局最优；同预算同种子横向对比；ABC（Karaboga 2005） |
+| `statistics` | `mann_whitney_u`、`wilcoxon_signed_rank`、`kruskal_wallis`、`anova_oneway`、`newey_west_se`、`bca_bootstrap_ci` | 非参数检验族、单因素方差分析、HAC 标准误、BCa 自助置信区间 |
+| `evaluation` | `rsr_evaluation`、`promethee_ii_ranking`、`kendall_w_concordance` | 秩和比 + 分档；PROMETHEE II 净流全排序；Kendall 协调系数 |
+| `clustering` | `kmedoids` | PAM：簇心必须是真实样本点 |
+| `differential` | `euler_maruyama` | 对角噪声 Itô SDE 的强收敛格式 |
+| `stochastic` | `mmck_metrics`、`geometric_brownian_motion` | M/M/c/K 稳态指标；GBM 精确解路径 |
+| `geometry` | `sutherland_hodgman_clip` | 凸多边形对任意多边形窗口的裁剪 |
+| `game` | `iterated_elimination`、`ess_check`、`correlated_equilibrium_lp` | 纯策略迭代剔除；对称二人博弈 ESS；双矩阵博弈的 CE 线性规划 |
+| `timeseries` | `kalman_smoother_linear` | 卡尔曼滤波 + RTS 平滑 |
+| `ml` | `pca_fit`、`pca_transform`、`pr_curve`、`average_precision_score` | 中心化 + SVD 主成分；PR 曲线与 AP |
+| `multicriteria` | `electre_ii` | 双阈值强/弱级别高于关系 + 升降蒸馏排序 |
+| `multiobjective` | `moead`、`igd_metric`、`spacing_metric`、`knee_points` | 切比雪夫标量化 MOEA/D；IGD；Schott 间距；二维前沿拐点 |
+| `sensitivity` | `sobol_second_order`、`impute_mice` | Saltelli 二阶指数；链式方程多重插补（简化版） |
+| `spatial` | `moran_i` | 全局莫兰指数：点估计 + 正态近似 + 置换检验 |
+
+`forecasting` 未新增函数，但 `adf_test` / `mackinnon_crit` 补上了
+**`regression="ctt"`**（常数 + 线性 + 二次趋势）分支与对应的 MacKinnon 2010 临界值表
+——研赛/美赛里带确定性弯曲趋势的序列终于不必自己拆项。
+
+### 修复：真实缺陷
+
+复核过程中确认并修掉的缺陷（严重度按"是否会静默算错"判定）：
+
+| 模块 | 缺陷 | 严重度 |
+|---|---|---|
+| `optimization` | `branch_and_bound_ilp` 把「松弛无界」误判为 `infeasible` | 高 |
+| `optimization` | `interior_point_lp` 对偶残差符号写反，迭代不收敛乃至发散 | 高 |
+| `graphs` | `bellman_ford` 遇负自环时 `has_negative_cycle=True` 却返回 `negative_cycle=None`（契约自相矛盾），新增 `_pred_cycle` 在泛函图上搜环、平行边取最小权重算环权 | 高 |
+| `heuristics` | `simulated_annealing` 几何降温下溢成精确 `0.0` 后 `exp(-delta / T)` 抛 `ZeroDivisionError` | 高 |
+| `timeseries` | `garch11_forecast` 均值回复指数 off-by-one（黄金值 3 处随之更正） | 高 |
+| `ml` | `_pairwise_sq_dist` 用 `‖a‖²+‖b‖²-2a·b` 展开，同点自距离出现灾难性抵消而变**正数** | 中 |
+| `multiobjective` | `crowding_distance` 在退化目标上把并列点误标边界 `inf`，NSGA-II 截断因而漏淘汰 | 中 |
+| `multiobjective` | `_parse_box` 的一维简写 `(lo, hi)` 绕过了共用的有限性与 `hi > lo` 校验 | 中 |
+| `statistics` | `mann_whitney_u` 两个单侧尾共用同一个连续性修正量，`alternative="less"` 偏差 | 中 |
+| `multicriteria` | `rank_sum_ratio` 文档写「并列取平均秩」而实现用竞赛名次 (1,1,3)，并列时 Rsr 与名次都偏 | 中 |
+| `multicriteria` | `_spearman` 声称「天然支持并列」却直接对原值做 Pearson | 中 |
+| `multicriteria` | `rank_consensus` 用 `list.index` 线性扫描共同方案，实际 O(K²·m²) 而非文档的 O(K²·m) | 低 |
+| `ml` | `confusion_matrix` 恒真分支；`roc_auc` 存在不可达分支且文档失实；`decision_tree_fit` 缺 `criterion` 参数 | 低 |
+| `multiobjective` | `knee_points` 的 `scores` 未按原始下标回填，打乱输入后与 `F[i]` 对不上 | 低 |
+| `graphs` | `tsp_two_opt` 陷阱 3 把入参长度校验的说法写反 | 低（文档） |
+| `heuristics` | `_parse_bounds` 的一维简写 `(lo, hi)` 绕过全部校验（`(5, 3)` / `(nan, 5)` 都当合法盒，PSO/DE/GWO 静默搜索成 NaN） | 中 |
+| `heuristics` | `ant_colony_tsp` 单城市早退路径的 `history` 长度是 1 而非文档承诺的 `iters + 1` | 低 |
+| `heuristics` | 另有 4 处文档/自测守卫口径问题（ABC 求值次数、`benchmark_functions` 常数、tabu 藐视准则可达性、`ranking` 自测守卫过弱） | 低 |
+| `heuristics` | `benchmark_functions` 的最优值自测只在 `dim=3` 点测，容差又写成 `1e-9 * max(1, \|最优值\|)`（schwefel 处宽到 4.2e-7），而该键实测偏差仅 4.5e-13，断言近乎不设防、`bm_opt_dev` 还会被误当成上界；改为绝对容差 `1e-9 * dim` 并扫遍 `dim=2..6` 全部 35 个组合（有新增黄金键，旧键不变） | 中 |
+| `examples` | `run_algorithms.py --update-golden` 用 `open(..., "w")` 写基线，Windows 上会把 `\n` 翻译成 `\r\n`，重建一次基线整个 JSON 变 CRLF、git diff 全红；补 `newline="\n"` | 低 |
+
+`heuristics` 还有 1 处**故意不修**：`tabu` 在既有测试权重下的最优回路长度牵动黄金键，
+按"黄金基线冻结"的验收规则保留，改法与影响已写在模块注释里，留待下一次大版本。
+
+### 修复：声明与实现不符
+
+下列问题**不改变任何数值**，但"文档在说谎"，本版一并纠正：
+`lp_sensitivity` 的双对偶信息被拆到 `lp_sensitivity`（影子价格 + 基不变区间，仅 min 形式、
+仅 `A_ub` + `bounds`）与 `interior_point_lp`（对偶变量 `y`、间隙历史）两处说明；
+`pareto_front` 补「不去重」陷阱；`epsilon_constraint_pareto` 补罚系数的下界 `max(极差, 1)`；
+`_safe_norm` 说明常数指标会**抬高**一致性而非「被忽略」；`_norm_ppf` 把精度声称从
+「~1e-12」改为分级实测（中段 1e-15 级、p=1e-8 约 4e-10、p=1e-12 约 7e-9）；
+`newey_west_se` 说明一维 `X` 会被 `as_matrix` 变成 **(1, n)** 单行，以及带宽
+`floor(4n^(2/9))` 的真实取值（n=400 → 5，不是 6）。
+
+### 文档
+
+- **`README.md` 新增「提示词模板」板块**（位于「它会做什么」与「算法与代码」之间）：
+  好提示词的四件套 + ❌/✅ 对照表、按阶段挑模板的 9 行索引、**T0 开局设定 → T8 全流程托管
+  九张卡片**（每张都是可直接复制改写的一段提示词 + 「为什么这样写」）、
+  以及「微调与常见失效」的 8 条症状对照。
+- `references/algorithm-details.md` 按 `__all__` 顺序补齐 38 个新函数的
+  六段式条目（数学形式 / 步骤 / 复杂度 / 参数 / 陷阱 / 怎么检验），并更正优化模块
+  「不做内点法」等 3 处过期表述。
+- `references/algorithm-implementations.md` 的分族速查表随新增函数扩写。
+- `examples/algorithms/__init__.py` 的模块清单按新函数重写；
+  `README.md` 中的函数总数、算法模块表与断言键数同步为 260 / 1361。
+- 版本号 `1.10.0` → `1.11.0`（`SKILL.md` 的 `metadata.version`、`CITATION.cff`、
+  `INSTALL.md` 的示例 ZIP 名）。
+
+### 验证
+
+- `python examples/run_algorithms.py`：**17 个模块 / 1361 个断言键，失败 0 个模块**，
+  每个模块跑两次结果逐位一致（确定性检查），黄金值比对 `rtol=atol=1e-09`。
+- 每个模块都有模块外的独立参照：`scipy.stats`（非参数检验、分布尾概率、
+  Spearman/PPF）、`sklearn`（PCA、PR 曲线、随机森林/GBDT 等）、`statsmodels`
+  （Newey-West、logit 插补）、`networkx`（最短路、负环、拓扑序）、
+  以及解析真值与蛮力网格（Ishigami 指数、超体积、Pareto 前沿、CPM 时差）。
+- AST 守卫（与 CI 同一套）：`scanned 19 files` / `AST GUARDS: clean`——
+  无禁用第三方导入、无 `assert` 关键字、无全局 `np.random`、公开函数 docstring 字段序一致。
+- `validate_skill.py . --strict`、`check_paper.py --self-test`、`install_skill.py --self-test`、
+  `check_latex.py --self-test` / `--require`、`check_latex_full.py --require`、
+  `check_palette.py --quiet`、`make_figures.py --self-test` 全部通过。
+
+### 诚实的边界
+
+- **「黄金值零漂移」只证明没有回归，不证明算法正确。** 本版的正确性证据来自
+  上一条里的**模块外独立参照**，不是黄金值本身。
+- `ml` 中的 `random_forest_*`、`gradient_boosting_*`、`gaussian_nb_*`、`lda_*`、
+  `permutation_importance`、`class_weight_balanced`、`decision_tree_predict`
+  共 12 个公开函数**没有取得仓库之外的独立交叉验证**，只有内部一致性与自测；
+  它们可以用于竞赛论文的说明性计算，但不应被当成工业级实现。
+- 全部实现都是**教学透明版**：优先可读、可复现、可手算核对，不做工程优化。
+  `heuristics` / `multiobjective` 的元启发式给的是**同一预算下的可比结果**，
+  不承诺全局最优。
+- `game` 模块的已知缺口：`iterated_elimination` 不实现混合策略占优；
+  `ess_check` 的 `|B| > 14` 分支未经端到端运行；`correlated_equilibrium_lp` 的
+  `n_constraints` 未做外部交叉验证；退化博弈的 Nash 集不完整（只作说明，未求解）。
+- `sensitivity` 的 `impute_mice` 收敛判据是**绝对**阈值，默认 `max_iter=10, tol=1e-6`
+  在真实量纲数据上通常返回 `converged=False`——这是**如实报告**而非静默错误，
+  调用时请按列标准差量级放大 `tol` 或显式增大 `max_iter`。
+
 ## [1.10.0] - 2026-09-22
 
 本版加入**第四套完整文档类模板**：`assets/latex/full/hwcup2026/`——2026 年华为杯

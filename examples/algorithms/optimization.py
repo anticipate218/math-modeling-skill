@@ -1,8 +1,10 @@
 """线性规划、整数规划、指派与运输问题。
 
-这个模块提供竞赛里真正会被用到的那几件事。**共 9 个公开函数**，按用途分成四组：
+这个模块提供竞赛里真正会被用到的那几件事。**共 11 个公开函数**，按用途分成四组：
 
 - 通用求解器：``simplex_lp``（两阶段单纯形，支持等式/不等式/变量上下界）、
+  ``interior_point_lp``（原始-对偶内点法，Mehrotra 预测-校正，可与单纯形互相对拍）、
+  ``lp_sensitivity``（最优基的影子价格与右端项/目标系数灵敏度区间）、
   ``branch_and_bound_ilp``（小规模整数/0-1 规划，在 LP 松弛上分支定界）；
 - 组合结构精确解：``knapsack_dp``（0-1 背包动态规划）、``assignment_hungarian``
   （指派问题 Kuhn-Munkres / 匈牙利算法，O(n^3)）、``transportation_vogel``
@@ -28,6 +30,8 @@ from ._common import as_matrix, as_vector
 
 __all__ = [
     "simplex_lp",
+    "lp_sensitivity",
+    "interior_point_lp",
     "branch_and_bound_ilp",
     "knapsack_dp",
     "assignment_hungarian",
@@ -99,6 +103,61 @@ def _simplex_iterate(tab: np.ndarray, basis: List[int], m: int, ncols: int,
             return "unbounded"
         _pivot(tab, basis, leaving, entering, m)
     return "max_iter"
+
+
+def _bound_transform(n: int, bounds) -> Tuple[np.ndarray, np.ndarray,
+                                              List[Tuple[int, float]],
+                                              List[Tuple[np.ndarray, float, int]]]:
+    """把 ``x = shift + T @ z``（``z >= 0``）的变换抽出来，供灵敏度分析与内点法复用。
+
+    返回 ``(shift, T, col_orig, bound_rows)``：
+
+    - ``col_orig[k] = (j, s)``：第 k 列来自原变量 ``j``，且 ``c_z[k] = s * c_j``；
+    - ``bound_rows``：``(约束行, 右端项, 变量下标)``，来自 ``hi`` 有限的变量上界
+      （``row @ z <= hi - lo``）。
+
+    :func:`simplex_lp` 内部保留了自己的同构实现（避免改动已验证的求解器），
+    本函数只服务于新增的 :func:`lp_sensitivity` 与 :func:`interior_point_lp`。
+    """
+    if bounds is None:
+        bounds = [(0.0, None)] * n
+    if len(bounds) != n:
+        raise ValueError(f"bounds 长度 {len(bounds)} 与变量数 {n} 不一致")
+
+    shift = np.zeros(n)
+    cols: List[np.ndarray] = []
+    col_orig: List[Tuple[int, float]] = []
+    pending: List[Tuple[int, float]] = []
+    for j, (lo, hi) in enumerate(bounds):
+        has_lo = lo is not None
+        has_hi = hi is not None
+        if not has_lo and not has_hi:            # 自由变量：拆成正负两支
+            col_p = np.zeros(n); col_p[j] = 1.0
+            col_m = np.zeros(n); col_m[j] = -1.0
+            cols.extend([col_p, col_m])
+            col_orig.extend([(j, 1.0), (j, -1.0)])
+        elif not has_lo:                         # x <= hi，令 x = hi - t
+            shift[j] = float(hi)
+            col = np.zeros(n); col[j] = -1.0
+            cols.append(col)
+            col_orig.append((j, -1.0))
+        else:                                    # x = lo + t
+            shift[j] = float(lo)
+            col = np.zeros(n); col[j] = 1.0
+            cols.append(col)
+            col_orig.append((j, 1.0))
+            if has_hi:
+                pending.append((len(cols) - 1, float(hi) - float(lo)))
+
+    T = np.array(cols, dtype=float).T if cols else np.zeros((n, 0))
+    bound_rows: List[Tuple[np.ndarray, float, int]] = []
+    for col_idx, rhs_val in pending:
+        if rhs_val < -_EPS:
+            raise ValueError("bounds 中 hi < lo，问题本身不可行")
+        row = np.zeros(T.shape[1])
+        row[col_idx] = 1.0
+        bound_rows.append((row, rhs_val, col_orig[col_idx][0]))
+    return shift, T, col_orig, bound_rows
 
 
 def simplex_lp(c, A_ub=None, b_ub=None, A_eq=None, b_eq=None,
@@ -336,6 +395,403 @@ def simplex_lp(c, A_ub=None, b_ub=None, A_eq=None, b_eq=None,
 
 
 # --------------------------------------------------------------------------
+# LP 灵敏度分析
+# --------------------------------------------------------------------------
+
+def lp_sensitivity(c, A_ub=None, b_ub=None, bounds=None) -> Dict[str, object]:
+    """线性规划最优基的灵敏度分析：影子价格 + 右端项 / 目标系数可变动区间。
+
+    参数:
+        c: 长度 n 的目标系数。**本函数是 min 形式**（最小化 ``c @ x``）；
+            要分析 ``max c @ x``，请传 ``-c``，返回的 ``objective`` / ``shadow_prices``
+            都是"负目标"的量纲。
+        A_ub: 不等式约束矩阵 ``A_ub @ x <= b_ub``；None 表示无不等式约束。
+        b_ub: 不等式右端项。
+        bounds: 长度 n 的 ``(lo, hi)`` 列表；``lo=None`` 表示 −∞，``hi=None`` 表示 +∞；
+            ``bounds=None`` 等价于 ``x >= 0``。
+
+    返回:
+        dict：
+
+        - ``status``：``"optimal"``/``"infeasible"``/``"unbounded"``/``"max_iter"``；
+        - ``x``、``objective``：最优解与最优目标值（非最优时均为 None）；
+        - ``shadow_prices``：一维 ndarray，``shadow_prices[i] = ∂(最优目标)/∂b_i``。
+          **min 形式下 ``<= 0``**：右端项放宽只会让目标更小。行序为
+          ``[A_ub 的各行, bounds 中有限上界导出的各行]``。教科书里常用的
+          "影子价格 >= 0"（每放宽一单位能改善多少）口径等于 ``-shadow_prices``；
+        - ``rhs_ranges``：list of dict，键为 ``index``、``source``、``variable``、
+          ``lower``、``upper``。区间是使**最优基保持不变**的 ``b_i`` 范围，
+          单侧或整条射线用 ``-inf``/``inf`` 表示。``source == "A_ub"`` 时 ``index``
+          是 ``A_ub`` 的行号；``source == "bound"`` 时该行来自变量 ``variable`` 的
+          上界 ``hi``（区间单位与 ``hi`` 相同，因为行右端就是 ``hi - lo``）；
+        - ``obj_ranges``：list of dict，键为 ``index``、``lower``、``upper``，
+          是使最优基保持不变的目标系数 ``c[index]`` 区间；``index`` 与传入的 ``c``
+          下标对齐（是原变量，不是变换后的 z）。同样用 ±inf 表示单侧。
+
+    算法:
+        用与 :func:`simplex_lp` 相同的两阶段单纯形求出最优基，然后直接读最优单纯形表：
+
+        - 影子价格：第 i 行松弛/剩余变量列在目标行里的**相反数**
+          （``shadow_prices[i] = -r_{s_i}``），它等于 ``c_B B^{-1}`` 的第 i 个分量；
+        - 右端项区间：``dx_B/db_i = B^{-1} e_i`` 恰好就是该行松弛变量在表中的列
+          （因为该列等于 ``B^{-1}(±e_i)``），无需真的求逆；要求
+          ``x_B + Δ w >= 0``，即
+          ``Δ >= max{-x_Bk/w_k : w_k > 0}``、``Δ <= min{-x_Bk/w_k : w_k < 0}``；
+        - 目标系数区间：``c_j`` 变动 δ 后非基列的 reduced cost 变成
+          ``r_k + δ (g_k - g_B · â_k)``（``g`` 是 δ 对 ``c_z`` 的影响向量，
+          ``â_k`` 是表中第 k 列），对所有非基列要求 ``r_k + δ h_k >= 0``，
+          即 δ 被一组比值上下界夹住。
+
+    复杂度:
+        时间 O((m + n) · m)（读表与区间计算）+ 单纯形自身的迭代；
+        空间 O((m + 1) × (n + m))，与 :func:`simplex_lp` 同阶。
+
+    陷阱:
+        - 只支持**不等式约束 + 变量上下界**。有等式约束时请先手工消元，或改用成熟求解器
+          （``scipy.optimize.linprog`` 会直接给出 ``.ineqlin.marginals``）。
+        - **退化基**（``x_B`` 有 0 分量）会把区间压缩成单侧甚至一个点
+          （``lower == upper``）：此时"最优基不变"的范围确实很窄，但最优目标值常常仍在
+          更大的范围里线性变化——区间宽窄不等于"影子价格还能不能用"。
+        - 区间是**基不变**的充分范围，不是影子价格适用的充要范围：退化时基可以换掉而
+          影子价格数值不变，此时区间会偏保守（偏窄）。
+        - ``bounds`` 里 ``hi`` 有限的变量会额外生成约束行，它们同样占据
+          ``shadow_prices`` / ``rhs_ranges`` 的位置（``source == "bound"``），
+          不要把行号直接当成 ``A_ub`` 的行号。
+        - 若原问题是 max 形式，请先取 ``c -> -c``：否则影子价格的符号解释会反转。
+
+    参考:
+        Chvátal《Linear Programming》第 3 章；Hillier & Lieberman 灵敏度分析一节。
+    """
+    c_vec = as_vector(c, "c")
+    n = c_vec.size
+    shift, T, col_orig, bound_rows = _bound_transform(n, bounds)
+    mz = T.shape[1]
+
+    rows: List[np.ndarray] = []
+    rhs_orig: List[float] = []       # 表右端项（已扣除 shift 的影响）
+    rhs_base: List[float] = []       # 报告区间时用的原始右端项
+    src: List[Tuple[str, int, Optional[int]]] = []
+    if A_ub is not None and len(np.asarray(A_ub)) > 0:
+        A_m = as_matrix(A_ub, "A_ub")
+        b_v = as_vector(b_ub, "b_ub")
+        if A_m.shape[1] != n or A_m.shape[0] != b_v.size:
+            raise ValueError("A_ub 形状与 b_ub / c 不匹配")
+        for i in range(A_m.shape[0]):
+            rows.append(A_m[i] @ T)
+            rhs_orig.append(float(b_v[i] - A_m[i] @ shift))
+            rhs_base.append(float(b_v[i]))
+            src.append(("A_ub", i, None))
+    for row, r, j in bound_rows:
+        rows.append(row)
+        rhs_orig.append(float(r))
+        rhs_base.append(float(r))
+        src.append(("bound", -1, j))
+
+    m_rows = len(rows)
+    total = mz + m_rows + sum(1 for r in rhs_orig if r < -_EPS)
+    tab = np.zeros((m_rows + 1, total + 1))
+    basis = [-1] * m_rows
+    slack_col = [mz + i for i in range(m_rows)]
+    artificials: List[int] = []
+    art_ptr = mz + m_rows
+    for i in range(m_rows):
+        r = rhs_orig[i]
+        if r >= -_EPS:
+            tab[i, :mz] = rows[i]
+            tab[i, slack_col[i]] = 1.0
+            basis[i] = slack_col[i]
+        else:
+            tab[i, :mz] = -rows[i]
+            tab[i, slack_col[i]] = -1.0
+            tab[i, art_ptr] = 1.0
+            basis[i] = art_ptr
+            artificials.append(art_ptr)
+            art_ptr += 1
+            r = -r
+        tab[i, total] = r
+
+    # --- 第一阶段：最小化人工变量之和 ---
+    phase1 = np.zeros(total)
+    for a in artificials:
+        phase1[a] = 1.0
+    tab[m_rows, :total] = phase1
+    tab[m_rows, total] = 0.0
+    for i in range(m_rows):
+        if basis[i] in artificials:
+            tab[m_rows, :] -= tab[i, :]
+    status = _simplex_iterate(tab, basis, m_rows, total, [], 500)
+    if status == "max_iter":
+        return {"status": "max_iter", "x": None, "objective": None,
+                "shadow_prices": None, "rhs_ranges": None, "obj_ranges": None}
+    if -tab[m_rows, total] > 1e-7:
+        return {"status": "infeasible", "x": None, "objective": None,
+                "shadow_prices": None, "rhs_ranges": None, "obj_ranges": None}
+
+    for i in range(m_rows):
+        if basis[i] in artificials:
+            pivot_col = -1
+            for j in range(mz + m_rows):
+                if j not in artificials and abs(tab[i, j]) > 1e-9:
+                    pivot_col = j
+                    break
+            if pivot_col >= 0:
+                _pivot(tab, basis, i, pivot_col, m_rows)
+            else:
+                tab[i, :] = 0.0      # 冗余行：影子价格为 0、区间无限
+
+    # --- 第二阶段：原目标 ---
+    c_z = T.T @ c_vec
+    tab[m_rows, :] = 0.0
+    for j in range(mz):
+        tab[m_rows, j] = c_z[j]
+    for i in range(m_rows):
+        b = basis[i]
+        if 0 <= b < total and tab[i, b] != 0.0 and tab[m_rows, b] != 0.0:
+            tab[m_rows, :] -= tab[m_rows, b] * tab[i, :]
+    status = _simplex_iterate(tab, basis, m_rows, total, artificials, 500)
+    if status != "optimal":
+        return {"status": status, "x": None, "objective": None,
+                "shadow_prices": None, "rhs_ranges": None, "obj_ranges": None}
+
+    x_B = tab[:m_rows, total]
+    shadows = np.zeros(m_rows)
+    rhs_ranges: List[Dict[str, object]] = []
+    for i in range(m_rows):
+        shadows[i] = -float(tab[m_rows, slack_col[i]])
+        w = tab[:m_rows, slack_col[i]]        # = dx_B / d b_i
+        d_lo = -_INF
+        d_hi = _INF
+        for k in range(m_rows):
+            wk = float(w[k])
+            xk = float(x_B[k])
+            if abs(xk) < 1e-9:
+                xk = 0.0                          # 退化分量按数值噪声处理
+            if wk > 1e-12:
+                cand = -xk / wk
+                if cand > d_lo:
+                    d_lo = cand
+            elif wk < -1e-12:
+                cand = -xk / wk
+                if cand < d_hi:
+                    d_hi = cand
+        kind, a_idx, var_j = src[i]
+        rhs_ranges.append({"index": a_idx if kind == "A_ub" else i,
+                           "source": kind, "variable": var_j,
+                           "lower": rhs_base[i] + d_lo, "upper": rhs_base[i] + d_hi})
+
+    basis_set = set(int(b) for b in basis if b >= 0)
+    obj_ranges: List[Dict[str, object]] = []
+    for j in range(n):
+        g = np.zeros(total)
+        gb = np.zeros(m_rows)
+        for k in range(mz):
+            cj, s = col_orig[k]
+            if cj == j:
+                g[k] = s
+        for i in range(m_rows):
+            b = int(basis[i])
+            if 0 <= b < mz:
+                cj, s = col_orig[b]
+                if cj == j:
+                    gb[i] = s
+        d_lo = -_INF
+        d_hi = _INF
+        for k in range(mz + m_rows):
+            if k in basis_set:
+                continue
+            r = float(tab[m_rows, k])
+            if r < 0.0:
+                r = 0.0                           # 最优性下 reduced cost 不应为负
+            h = float(g[k]) - (float(gb @ tab[:m_rows, k]) if m_rows else 0.0)
+            if h > 1e-12:
+                cand = -r / h
+                if cand > d_lo:
+                    d_lo = cand
+            elif h < -1e-12:
+                cand = -r / h
+                if cand < d_hi:
+                    d_hi = cand
+        obj_ranges.append({"index": j, "lower": float(c_vec[j]) + d_lo,
+                           "upper": float(c_vec[j]) + d_hi})
+
+    z = np.zeros(mz)
+    for i in range(m_rows):
+        b = int(basis[i])
+        if 0 <= b < mz:
+            z[b] = tab[i, total]
+    x_out = shift + T @ z
+    return {"status": "optimal", "x": x_out, "objective": float(c_vec @ x_out),
+            "shadow_prices": shadows, "rhs_ranges": rhs_ranges, "obj_ranges": obj_ranges}
+
+
+# --------------------------------------------------------------------------
+# 原始-对偶内点法
+# --------------------------------------------------------------------------
+
+def _max_step(u: np.ndarray, du: np.ndarray, z: np.ndarray, dz: np.ndarray,
+              eta: float) -> float:
+    """沿 (du, dz) 走到 ``u``/``z`` 首次触界前的长度，再乘安全系数 ``eta``。"""
+    alpha = 1.0
+    for arr, d in ((u, du), (z, dz)):
+        neg = d < 0.0
+        if np.any(neg):
+            alpha = min(alpha, float(np.min(-arr[neg] / d[neg])))
+    return min(1.0, eta * alpha)
+
+
+def interior_point_lp(c, A_ub=None, b_ub=None, bounds=None,
+                      max_iter: int = 200, tol: float = 1e-10) -> Dict[str, object]:
+    """用原始-对偶内点法（Mehrotra 预测-校正）求解线性规划。
+
+    参数:
+        c: 长度 n 的目标系数（min 形式）。
+        A_ub: 不等式约束矩阵 ``A_ub @ x <= b_ub``；None 表示没有行约束。
+        b_ub: 不等式右端项。
+        bounds: 长度 n 的 ``(lo, hi)`` 列表；``bounds=None`` 等价于 ``x >= 0``。
+        max_iter: 最大迭代次数。
+        tol: 收敛阈值（对偶间隙与两条残差都按目标量级相对判定）。
+
+    返回:
+        dict：
+
+        - ``x``、``fun``、``objective``：最优解与最优目标值（``fun`` 与 ``objective``
+          是同一个值，同时给出便于不同调用习惯取用）；
+        - ``y``：对偶变量，行序 = ``[A_ub 各行, bounds 有限上界导出的各行]``；
+        - ``slack``：各行的原始松弛量 ``b - A @ x``（长度 = 行数）；
+        - ``n_iter``：实际迭代次数；``duality_gap``：最终互补间隙 ``u·z``；
+        - ``gap_history``：list of float，每次迭代的对偶间隙；
+        - ``history``：list of dict，每次迭代的 ``iter`` / ``duality_gap`` /
+          ``primal_residual`` / ``dual_residual`` / ``sigma`` / ``alpha``；
+        - ``status``：``"optimal"``（收敛）或 ``"max_iter"``（未收敛）。
+
+    算法:
+        1. 变量变换把 ``bounds`` 化成 ``u >= 0``，再为每行补松弛变量，得到标准形
+           ``min ĉ·u  s.t.  Â u = b̂, u >= 0``，其中 ``Â = [A | I]``。
+        2. 解 KKT 残差 ``r_p = Âu - b̂``、``r_d = Âᵀy + z - ĉ``、
+           ``r_c = UZe - σμe`` 的牛顿方程：由 ``Â Θ Âᵀ Δy = -r_p - ÂΘr_d + ÂZ⁻¹r_c``
+           （``Θ = Z⁻¹U``）解出 ``Δy``，再回代
+           ``Δu = Θ(ÂᵀΔy + r_d) - Z⁻¹r_c``、``Δz = -r_d - ÂᵀΔy``。
+        3. Mehrotra 预测-校正：先解仿射方向（σ = 0）得到 ``μ_aff``，取
+           ``σ = (μ_aff/μ)³``，再加二阶项 ``Δu_aff·Δz_aff`` 修正后重解一次；
+           步长取到边界前 ``0.995`` 倍。
+        4. 初始点固定取 ``u = 1, z = 1, y = 0``（**不可行起点**），所以不需要可行初值。
+
+    复杂度:
+        每迭代 O(n³)（形成并求解 m × m 正规方程）；空间 O(n²)。
+        实际迭代次数通常 20~50，与问题规模弱相关。
+
+    陷阱:
+        - **边界解收敛慢**：最优解在顶点上时互补松弛量趋近 0，最后几步间隙下降变慢，
+          退化 LP 更明显；``max_iter`` 太小会返回 ``"max_iter"``。
+        - 需要**严格内点**初值（``u > 0, z > 0``）；这里用全 1 的不可行起点，因此
+          不需要事先知道可行解，但对不可行/无界的 LP 本方法**不会**给出
+          ``"infeasible"``/``"unbounded"`` 判定，只会耗尽迭代返回 ``"max_iter"``。
+          可行性/无界性判定请用 :func:`simplex_lp`。
+        - 返回的 ``x`` 是内点迭代的极限，不是精确顶点；需要精确顶点解时用
+          :func:`simplex_lp`，或把本函数结果当热启动再跑单纯形。
+        - ``tol`` 是相对量级：目标值量级很大时绝对误差随之放大；量级很小（< 1e-6）时
+          建议显式收紧 ``tol``。
+
+    参考:
+        Mehrotra (1992) 预测-校正内点法；Wright《Primal-Dual Interior-Point Methods》第 11 章。
+    """
+    c_vec = as_vector(c, "c")
+    n = c_vec.size
+    shift, T, _col_orig, bound_rows = _bound_transform(n, bounds)
+    mz = T.shape[1]
+
+    a_rows: List[np.ndarray] = []
+    b_list: List[float] = []
+    if A_ub is not None and len(np.asarray(A_ub)) > 0:
+        A_m = as_matrix(A_ub, "A_ub")
+        b_v = as_vector(b_ub, "b_ub")
+        if A_m.shape[1] != n or A_m.shape[0] != b_v.size:
+            raise ValueError("A_ub 形状与 b_ub / c 不匹配")
+        for i in range(A_m.shape[0]):
+            a_rows.append(A_m[i] @ T)
+            b_list.append(float(b_v[i] - A_m[i] @ shift))
+    for row, r, _j in bound_rows:
+        a_rows.append(row)
+        b_list.append(float(r))
+    m = len(a_rows)
+    Az = np.array(a_rows, dtype=float).reshape(m, mz) if m else np.zeros((0, mz))
+    b_hat = np.array(b_list, dtype=float)
+    c_z = T.T @ c_vec
+    N = mz + m
+    c_hat = np.concatenate([c_z, np.zeros(m)])
+
+    u = np.ones(N)
+    zd = np.ones(N)
+    y = np.zeros(m)
+    history: List[Dict[str, float]] = []
+    gap_history: List[float] = []
+    status = "max_iter"
+
+    def _newton(rc: np.ndarray):
+        """解一次牛顿方程，返回 (Δu, Δz, Δy)。"""
+        theta = u / zd
+        th_z = theta[:mz]
+        th_s = theta[mz:]
+        M = (Az * th_z) @ Az.T + np.diag(th_s) if m else np.zeros((0, 0))
+        a_rd = Az @ (th_z * rd[:mz]) + th_s * rd[mz:]
+        a_rc = Az @ (rc[:mz] / zd[:mz]) + rc[mz:] / zd[mz:]
+        rhs = -rp - a_rd + a_rc
+        if m:
+            try:
+                dy = np.linalg.solve(M, rhs)
+            except np.linalg.LinAlgError:
+                dy = np.linalg.lstsq(M, rhs, rcond=None)[0]
+        else:
+            dy = np.zeros(0)
+        a_tdy = np.concatenate([Az.T @ dy, dy]) if m else np.zeros(mz)
+        du = theta * (a_tdy + rd) - rc / zd
+        dz = -rd - a_tdy
+        return du, dz, dy
+
+    for it in range(int(max_iter)):
+        rp = (Az @ u[:mz] + u[mz:] - b_hat) if m else np.zeros(0)
+        a_ty = np.concatenate([Az.T @ y, y]) if m else np.zeros(mz)
+        # 注意符号：这里按上面推导取 r_d = Âᵀy + z - ĉ（而不是 ĉ - Âᵀy - z），
+        # 否则牛顿方程右端项的三处 r_d 全部反号，迭代会发散。
+        rd = a_ty + zd - c_hat
+        mu = float(u @ zd) / N
+
+        du_a, dz_a, _dy_a = _newton(u * zd)
+        alpha_a = _max_step(u, du_a, zd, dz_a, 1.0)
+        mu_aff = float((u + alpha_a * du_a) @ (zd + alpha_a * dz_a)) / N
+        sigma = (mu_aff / mu) ** 3 if mu > 1e-300 else 1.0
+        sigma = min(max(sigma, 1e-12), 1.0)
+        du, dz, dy = _newton(u * zd - sigma * mu + du_a * dz_a)
+        alpha = _max_step(u, du, zd, dz, 0.995)
+        u = u + alpha * du
+        zd = zd + alpha * dz
+        y = y + alpha * dy
+
+        gap = float(u @ zd)
+        rp_inf = float(np.max(np.abs(rp))) if m else 0.0
+        rd_inf = float(np.max(np.abs(rd)))
+        gap_history.append(gap)
+        history.append({"iter": float(it + 1), "duality_gap": gap,
+                        "primal_residual": rp_inf, "dual_residual": rd_inf,
+                        "sigma": float(sigma), "alpha": float(alpha)})
+        ref = 1.0 + max(abs(float(c_vec @ (shift + T @ u[:mz]))),
+                        abs(float(b_hat @ y)) if m else 0.0)
+        if gap <= tol * ref and rp_inf <= max(1e-9, 10.0 * tol) * ref \
+                and rd_inf <= max(1e-9, 10.0 * tol) * ref:
+            status = "optimal"
+            break
+
+    z_opt = u[:mz]
+    x_out = shift + T @ z_opt
+    obj = float(c_vec @ x_out)
+    slack = (b_hat - Az @ z_opt) if m else np.zeros(0)
+    return {"status": status, "x": x_out, "fun": obj, "objective": obj,
+            "y": y, "slack": slack, "n_iter": len(gap_history),
+            "duality_gap": float(gap_history[-1]) if gap_history else _INF,
+            "history": history, "gap_history": gap_history}
+
+
+# --------------------------------------------------------------------------
 # 整数规划
 # --------------------------------------------------------------------------
 
@@ -350,8 +806,14 @@ def branch_and_bound_ilp(c, A_ub=None, b_ub=None, A_eq=None, b_eq=None,
         max_nodes: 搜索节点上限。
 
     返回:
-        dict，键为 ``status``（``"optimal"``/``"infeasible"``/``"node_limit"``）、
-        ``x``、``fun``、``nodes``（实际探索节点数）、``gap``。
+        dict，键为 ``status``（``"optimal"``/``"infeasible"``/``"unbounded"``/
+        ``"node_limit"``）、``x``、``fun``、``nodes``（实际探索节点数）、``gap``。
+
+        ``status == "unbounded"`` 沿用成熟求解器"infeasible or unbounded"的约定：
+        **找不到任何整数可行解，且某个节点的 LP 松弛无界**。此时确切的数学结论是
+        "目标无界"（当该节点区域内含整数点，例如无上界的自由整数变量）或"不可行"
+        （该区域内根本没有整数点）；分支定界本身无法只靠松弛区分这两者，因此这里统一
+        报 ``"unbounded"``，不要再当成"问题不可行"使用。
 
         ``gap`` **只在非最优路径上才有意义**，且各路径的语义不同：
 
@@ -361,7 +823,7 @@ def branch_and_bound_ilp(c, A_ub=None, b_ub=None, A_eq=None, b_eq=None,
           其中 ``lb`` 是**用根节点边界重解的 LP 松弛值**（见下），因此这是相对根松弛界的
           一个偏大（保守）的**启发式**相对间隙；若此时还没有可行整数解（``best_x is None``），
           ``gap`` 为 None；
-        - ``status == "infeasible"``：``gap`` 为 None。
+        - ``status == "infeasible"`` / ``status == "unbounded"``：``gap`` 为 None。
 
         内部算 gap 时用的那个 ``lb`` 是**根节点 LP 松弛值**（重新用最初的 ``bounds`` 调一次
         :func:`simplex_lp` 得到），不是"当前开节点里最好的界"，也不是最终下界；它只是最弱但最易得的
@@ -380,6 +842,11 @@ def branch_and_bound_ilp(c, A_ub=None, b_ub=None, A_eq=None, b_eq=None,
           gap 偏大/保守）；``status == "optimal"`` 时它恒为硬编码的 ``0.0``，不是真实的间隙。
           代码里对间隙取了绝对值，因此它**不会**出现负数。
         - 0-1 背包请直接用 :func:`knapsack_dp`，伪多项式 O(nC) 比分支定界快得多。
+        - **无界的 LP 松弛**（例如某个整数变量没有上界、目标系数方向又不减）会让节点被
+          丢弃：如果最终一个整数解都没找到，返回 ``status == "unbounded"`` 而不是
+          ``"infeasible"``（这正是"infeasible or unbounded"的由来）。反过来，只要找到了
+          整数解，无界松弛的那一支本来也提供不了更好的界，``optimal`` 结论不受影响。
+        - 所有变量的 ``bounds`` 都有限时 LP 松弛必然有界，不会触发上面的分支。
 
     参考:
         Land & Doig (1960) 分支定界；Dakin (1965) 整数规划分支法。
@@ -398,6 +865,7 @@ def branch_and_bound_ilp(c, A_ub=None, b_ub=None, A_eq=None, b_eq=None,
     best_x: Optional[np.ndarray] = None
     best_val = -_INF if maximize else _INF
     nodes = 0
+    saw_unbounded = False
 
     def lp_lower_bound(node_bounds):
         res = simplex_lp(c_vec, A_ub, b_ub, A_eq, b_eq, node_bounds,
@@ -419,6 +887,9 @@ def branch_and_bound_ilp(c, A_ub=None, b_ub=None, A_eq=None, b_eq=None,
         nodes += 1
         res = lp_lower_bound(node_bounds)
         if res["status"] != "optimal":
+            # 无界的松弛节点提供不了有限界：记下来，若始终没有整数解则报 unbounded
+            if res["status"] == "unbounded":
+                saw_unbounded = True
             continue
         val = float(res["fun"])
         if best_x is not None:
@@ -458,6 +929,9 @@ def branch_and_bound_ilp(c, A_ub=None, b_ub=None, A_eq=None, b_eq=None,
             stack.append(child)
 
     if best_x is None:
+        if saw_unbounded:
+            return {"status": "unbounded", "x": None, "fun": None,
+                    "nodes": nodes, "gap": None}
         return {"status": "infeasible", "x": None, "fun": None, "nodes": nodes, "gap": None}
     return {"status": "optimal", "x": best_x, "fun": float(best_val), "nodes": nodes, "gap": 0.0}
 
@@ -1529,5 +2003,126 @@ def _self_test() -> dict:
     out["facility_p2_n_evaluated"] = int(fl2["n_evaluated"])
     out["facility_p1_cost"] = round(float(fl1["total_cost"]), 6)
     out["facility_p1_selected"] = [int(v) for v in fl1["selected"]]
+
+    # 13) LP 灵敏度：min -x-y s.t. x+2y<=4, x<=3（等价于 max x+y 的手算算例）
+    #     最优 (3, 0.5) 值 -3.5；两行的影子价格都是 -0.5（放宽第 2 行时 y 必须下降，
+    #     所以导数不是 -1）；右端项区间分别手算为 [3, +inf) 与 [0, 4]；
+    #     目标系数区间手算为 c_x ∈ (-inf, -0.5]（超出后最优基换到 (0,2)）
+    A_s = np.array([[1.0, 2.0], [1.0, 0.0]])
+    b_s = [4.0, 3.0]
+    sens = lp_sensitivity([-1.0, -1.0], A_ub=A_s, b_ub=b_s)
+    if sens["status"] != "optimal":
+        raise AssertionError(f"lp_sensitivity 手算算例应为 optimal，实际 {sens['status']}")
+    if abs(float(sens["objective"]) + 3.5) > 1e-9 or \
+            not np.allclose(np.asarray(sens["x"], float), [3.0, 0.5], atol=1e-9):
+        raise AssertionError(
+            f"lp_sensitivity 手算最优应为 x=(3, 0.5)、值 -3.5，"
+            f"实际 x={np.asarray(sens['x'], float).tolist()}、值 {sens['objective']}")
+    sh_s = np.asarray(sens["shadow_prices"], float)
+    if sh_s.shape != (2,) or not np.allclose(sh_s, [-0.5, -0.5], atol=1e-9):
+        raise AssertionError(f"lp_sensitivity 影子价格手算为 (-0.5, -0.5)，实际 {sh_s.tolist()}")
+    rr_s = sens["rhs_ranges"]
+    if abs(float(rr_s[0]["lower"]) - 3.0) > 1e-9 or not np.isinf(float(rr_s[0]["upper"])):
+        raise AssertionError(f"第 1 行右端项区间手算为 [3, +inf)，实际 {rr_s[0]}")
+    if abs(float(rr_s[1]["lower"]) - 0.0) > 1e-9 or abs(float(rr_s[1]["upper"]) - 4.0) > 1e-9:
+        raise AssertionError(f"第 2 行右端项区间手算为 [0, 4]，实际 {rr_s[1]}")
+    # 数值扰动对拍：区间内的 b_i 变动必须满足 Δ目标 ≈ shadow_i · Δb_i
+    for idx_s, delta_s in ((0, -0.25), (0, 0.5), (1, -1.0), (1, 0.75)):
+        b_pert = list(b_s)
+        b_pert[idx_s] += delta_s
+        p_pert = simplex_lp([-1.0, -1.0], A_ub=A_s, b_ub=b_pert)
+        pred = float(sens["objective"]) + float(sh_s[idx_s]) * delta_s
+        if abs(float(p_pert["fun"]) - pred) > 1e-6:
+            raise AssertionError(
+                f"b[{idx_s}] 变动 {delta_s}：重解 simplex_lp 得 {p_pert['fun']}，"
+                f"按影子价格预测 {pred}，区间内线性关系被破坏")
+    # 区间之外：b_0 = 2.5 < 下界 3，最优基必须换掉，影子价格不再适用
+    p_out = simplex_lp([-1.0, -1.0], A_ub=A_s, b_ub=[2.5, 3.0])
+    pred_out = float(sens["objective"]) + float(sh_s[0]) * (2.5 - b_s[0])
+    if abs(float(p_out["fun"]) - pred_out) < 1e-3:
+        raise AssertionError(
+            f"b_0 超出区间下界后基却没变：重解 {p_out['fun']} 仍等于线性预测 {pred_out}")
+    # 目标系数区间：c_x 刚超出上界 -0.5 时最优解必须从 (3, 0.5) 换到 (0, 2)
+    or_s = sens["obj_ranges"]
+    if not np.isinf(float(or_s[0]["lower"])) or abs(float(or_s[0]["upper"]) + 0.5) > 1e-9:
+        raise AssertionError(f"c_x 区间手算为 (-inf, -0.5]，实际 {or_s[0]}")
+    if abs(float(or_s[1]["lower"]) + 2.0) > 1e-9 or abs(float(or_s[1]["upper"])) > 1e-9:
+        raise AssertionError(f"c_y 区间手算为 [-2, 0]，实际 {or_s[1]}")
+    inner = simplex_lp([-0.501, -1.0], A_ub=A_s, b_ub=b_s)
+    outer = simplex_lp([-0.499, -1.0], A_ub=A_s, b_ub=b_s)
+    if not np.allclose(np.asarray(inner["x"], float), [3.0, 0.5], atol=1e-6):
+        raise AssertionError(f"c_x 在区间内最优解应保持 (3, 0.5)，实际 {inner['x']}")
+    if np.allclose(np.asarray(outer["x"], float), [3.0, 0.5], atol=1e-6):
+        raise AssertionError(f"c_x 超出区间后最优解应变，实际仍为 {outer['x']}")
+    out["lpsens_status"] = str(sens["status"])
+    out["lpsens_objective"] = round(float(sens["objective"]), 6)
+    out["lpsens_x"] = [round(float(v), 6) for v in sens["x"]]
+    out["lpsens_shadow"] = [round(float(v), 6) for v in sh_s]
+    out["lpsens_rhs0_lower"] = round(float(rr_s[0]["lower"]), 6)
+    out["lpsens_rhs0_upper_is_inf"] = bool(np.isinf(float(rr_s[0]["upper"])))
+    out["lpsens_rhs1_lower"] = round(float(rr_s[1]["lower"]), 6)
+    out["lpsens_rhs1_upper"] = round(float(rr_s[1]["upper"]), 6)
+    out["lpsens_obj0_upper"] = round(float(or_s[0]["upper"]), 6)
+    out["lpsens_obj0_lower_is_neg_inf"] = bool(np.isinf(float(or_s[0]["lower"])))
+    out["lpsens_obj1_lower"] = round(float(or_s[1]["lower"]), 6)
+    out["lpsens_obj1_upper"] = round(float(or_s[1]["upper"]), 6)
+    out["lpsens_obj0_outside_x"] = [round(float(v), 6) for v in outer["x"]]
+
+    # 14) 内点法与单纯形对拍（3 个 LP：非退化 2 个 + 高退化 1 个），并验证强对偶
+    #     c·x == b·y（y 覆盖 A_ub 行与有限上界导出的行；各 case 末尾列出全部行右端项）
+    ip_cases = [
+        ([-1.0, -1.0], [[1.0, 2.0], [1.0, 0.0]], [4.0, 3.0], [(0.0, None), (0.0, None)],
+         [4.0, 3.0]),
+        ([-3.0, -2.0], [[1.0, 1.0], [1.0, 3.0]], [4.0, 6.0], [(0.0, None), (0.0, None)],
+         [4.0, 6.0]),
+        ([-1.0, -1.0, -1.0], [[1.0, 1.0, 0.0], [0.0, 1.0, 1.0]], [2.0, 2.0],
+         [(0.0, 1.0), (0.0, 1.0), (0.0, 1.0)], [2.0, 2.0, 1.0, 1.0, 1.0]),
+    ]
+    ip_worst_x = 0.0
+    ip_worst_obj = 0.0
+    ip_worst_dual = 0.0
+    ip_first = None
+    for c_ip, A_ip, b_ip, bd_ip, rows_ip in ip_cases:
+        ref_ip = simplex_lp(c_ip, A_ub=A_ip, b_ub=b_ip, bounds=bd_ip)
+        ip = interior_point_lp(c_ip, A_ip, b_ip, bounds=bd_ip)
+        if ip["status"] != "optimal":
+            raise AssertionError(
+                f"interior_point_lp 未收敛（status={ip['status']}，n_iter={ip['n_iter']}）"
+                f"：c={c_ip}, b={b_ip}, bounds={bd_ip}")
+        if ref_ip["status"] != "optimal":
+            raise AssertionError(f"对拍用的 simplex_lp 竟然不是 optimal：{ref_ip['status']}")
+        dx_ip = float(np.max(np.abs(np.asarray(ip["x"], float)
+                                    - np.asarray(ref_ip["x"], float))
+                             / np.maximum(1.0, np.abs(np.asarray(ref_ip["x"], float)))))
+        dobj_ip = abs(float(ip["objective"]) - float(ref_ip["fun"]))
+        ip_worst_x = max(ip_worst_x, dx_ip)
+        ip_worst_obj = max(ip_worst_obj, dobj_ip)
+        if dx_ip > 1e-6:
+            raise AssertionError(
+                f"interior_point_lp 与 simplex_lp 的解相对误差 {dx_ip} 超过 1e-6："
+                f"c={c_ip}, b={b_ip}, bounds={bd_ip}")
+        if dobj_ip > 1e-8:
+            raise AssertionError(
+                f"interior_point_lp 与 simplex_lp 的目标差 {dobj_ip} 超过 1e-8："
+                f"c={c_ip}, b={b_ip}, bounds={bd_ip}")
+        dual_ip = float(np.asarray(rows_ip, float) @ np.asarray(ip["y"], float))
+        resid_dual = abs(float(ip["objective"]) - dual_ip)
+        ip_worst_dual = max(ip_worst_dual, resid_dual)
+        if resid_dual > 1e-6 * max(1.0, abs(float(ip["objective"]))):
+            raise AssertionError(
+                f"强对偶 c·x == b·y 不成立：c·x={ip['objective']}，b·y={dual_ip}")
+        if len(ip["history"]) != int(ip["n_iter"]) or len(ip["gap_history"]) != int(ip["n_iter"]):
+            raise AssertionError("interior_point_lp 的迭代历史长度与 n_iter 不一致")
+        if ip_first is None:
+            ip_first = ip
+    out["ipp_status"] = str(ip_first["status"])
+    out["ipp_n_iter"] = int(ip_first["n_iter"])
+    out["ipp_objective"] = round(float(ip_first["objective"]), 9)
+    out["ipp_x"] = [round(float(v), 6) for v in ip_first["x"]]
+    out["ipp_y"] = [round(float(v), 6) for v in ip_first["y"]]
+    out["ipp_duality_gap"] = float(f"{float(ip_first['duality_gap']):.3e}")
+    out["ipp_worst_x_relerr"] = float(f"{ip_worst_x:.3e}")
+    out["ipp_worst_obj_diff"] = float(f"{ip_worst_obj:.3e}")
+    out["ipp_worst_strong_duality"] = float(f"{ip_worst_dual:.3e}")
 
     return out

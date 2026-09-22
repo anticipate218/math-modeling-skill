@@ -1,12 +1,13 @@
 """常微分方程初值问题：Euler/RK4/RK45 积分、隐式 Euler、SIR/SEIR 传染病模型与基本再生数、
 logistic 增长与 logistic 映射、Lotka-Volterra 捕食者-被捕食者、SIR 参数最小二乘拟合、
-收敛阶估计与 Jacobian 稳定性。
+收敛阶估计与 Jacobian 稳定性，以及随机微分方程的 Euler-Maruyama 格式。
 
-本模块共 15 个公开函数，按用途分成四组：
+本模块共 16 个公开函数，按用途分成五组：
 - 通用积分器：``solve_ivp_euler`` / ``solve_ivp_rk4`` / ``solve_ivp_rk45`` / ``implicit_euler``；
 - 机理右端项与离散映射：``sir_rhs`` / ``seir_rhs`` / ``lotka_volterra_rhs`` / ``logistic_growth`` / ``logistic_map``；
 - 机理仿真与派生量：``simulate_sir`` / ``simulate_seir`` / ``basic_reproduction_number``；
-- 参数辨识与数值诊断：``fit_sir_least_squares`` / ``estimate_convergence_order`` / ``jacobian_stability``。
+- 参数辨识与数值诊断：``fit_sir_least_squares`` / ``estimate_convergence_order`` / ``jacobian_stability``；
+- 随机微分方程：``euler_maruyama``。
 
 这些都是**教学透明版**：定步长、显式格式、几行就能看懂的一阶/四阶方法。
 刚性方程、长时间积分、事件检测（如阈值触发）请换成熟求解器（scipy.integrate），
@@ -27,7 +28,7 @@ from typing import Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 
-from ._common import as_vector, check_same_length
+from ._common import as_vector, check_same_length, rng
 
 ArrayLike = Union[Sequence[float], np.ndarray]
 RhsFn = Callable[[float, np.ndarray], ArrayLike]
@@ -48,6 +49,7 @@ __all__ = [
     "solve_ivp_rk45",
     "jacobian_stability",
     "logistic_map",
+    "euler_maruyama",
 ]
 
 
@@ -1138,6 +1140,176 @@ def logistic_map(
     }
 
 
+def _sde_field(val: ArrayLike, n_paths: int, d: int, name: str) -> np.ndarray:
+    """内部工具：把 drift/diffusion 的返回值规范成 (n_paths, d)，形状不对就报错。"""
+    arr = np.asarray(val, dtype=float)
+    if n_paths == 1:
+        if arr.shape == (1, d):
+            return arr
+        if arr.shape == (d,):
+            return arr.reshape(1, d)
+        raise ValueError(
+            f"{name} 在 n_paths=1 时必须返回形状 (1, {d}) 或 ({d},)，得到 {arr.shape}"
+        )
+    if arr.shape == (n_paths, d):
+        return arr
+    if arr.shape == (d,) and d != n_paths:
+        return np.tile(arr.reshape(1, d), (n_paths, 1))
+    raise ValueError(
+        f"{name} 在 n_paths={n_paths} 时必须返回形状 ({n_paths}, {d})（或当 d != n_paths 时"
+        f"返回常数向量 ({d},)），得到 {arr.shape}；注意不要用 as_vector 之类会把批量状态"
+        f"展平成一维的函数"
+    )
+
+
+def euler_maruyama(
+    drift: Callable[[float, ArrayLike], ArrayLike],
+    diffusion: Callable[[float, ArrayLike], ArrayLike],
+    y0: ArrayLike,
+    t_span: Tuple[float, float],
+    n_steps: int,
+    n_paths: int = 1,
+    increments: Optional[ArrayLike] = None,
+    seed: Optional[int] = None,
+) -> dict:
+    """显式 Euler-Maruyama 法求解对角噪声 Itô SDE：dy = f(t, y) dt + g(t, y) dW。
+
+    参数:
+        drift: 漂移项 f(t, y)，接受形状 ``(n_paths, d)`` 的批量状态并返回同样形状的数组
+            （``n_paths=1`` 时也按批量口径调用，形状是 ``(1, d)``；用 ``as_vector`` 解包
+            或直接元素级运算都可以）。
+        diffusion: 扩散项 g(t, y)，口径与 drift 完全相同；对角噪声意味着第 i 维只被第 i
+            个维纳过程驱动（非对角噪声要用 Cholesky 或 Milstein，见"陷阱"4）。
+        y0: 初值，标量或长度 d 的序列；d 由此确定。
+        t_span: ``(t0, t1)``，必须满足 ``t1 > t0``。
+        n_steps: 时间步数，必须 >= 1；步长 ``dt = (t1 - t0) / n_steps``。
+        n_paths: 独立样本路径条数，必须 >= 1；默认 1。
+        increments: 预先给定的布朗增量数组，形状 ``(n_steps, d)``（``n_paths=1``）或
+            ``(n_paths, n_steps, d)``；给定时**忽略 seed**，用于复用同一条布朗路径
+            做收敛阶对拍或方差缩减。
+        seed: 随机种子；None 表示使用库默认种子（结果可复现）。
+
+    返回:
+        dict，键为：
+        ``t``  时间网格 ``(n_steps + 1,)``；
+        ``y``  解轨迹：``n_paths=1`` 时形状 ``(n_steps + 1, d)``，否则
+            ``(n_paths, n_steps + 1, d)``；
+        ``n_steps`` / ``dt`` / ``n_paths`` / ``d``  步数、步长、路径条数、状态维数；
+        ``increments``  实际使用的布朗增量，形状 ``(n_steps, d)``（``n_paths=1``）或
+            ``(n_paths, n_steps, d)``，再喂回本函数可逐位复现同一条路径；
+        ``brownian_sum``  每条路径的终点布朗运动 ``W_{t1} = Σ ΔW``，形状 ``(n_paths, d)``；
+        ``terminal``  终点状态，形状 ``(n_paths, d)``；
+        ``terminal_mean`` / ``terminal_std``  终点状态的样本均值与（总体）标准差，
+            形状 ``(d,)``；``n_paths=1`` 时 ``terminal_std`` 为全 0。
+
+    算法:
+        1. ``dt = (t1 - t0) / n_steps``，布朗增量 ``ΔW_k ~ N(0, dt·I_d)``（即
+           ``sqrt(dt) * Z``，Z 为标准正态）。
+        2. 递推 ``y_{k+1} = y_k + f(t_k, y_k) dt + g(t_k, y_k) ΔW_k``；
+           Euler-Maruyama 是 Itô 口径（``g'`` 项不出现），强阶 0.5 / 弱阶 1.0。
+        3. 对 ``n_paths > 1`` 同时推进所有路径（状态一次取 ``(n_paths, d)``，避免
+           Python 层按路径循环，这是能跑几千条路径的关键）。
+
+    复杂度:
+        时间 O(n_paths · n_steps · d)，空间 O(n_paths · n_steps · d)（需要存整条轨迹）。
+        n_paths=20000、n_steps=100、d=1 约 20 ms。
+
+    陷阱:
+        1. **强阶只有 0.5**：与确定性 Euler 的 O(dt) 不同，Euler-Maruyama 的路径误差
+           只按 ``sqrt(dt)`` 下降（弱阶才是 O(dt)）。想提高精度要么加密步长（代价是
+           4 倍步数换来误差减半），要么改用 Milstein（需要 ``g'``）。
+        2. 本函数按 **Itô** 口径离散；若模型是按 Stratonovich 写的，必须先加上修正项
+           ``0.5 g g' dt`` 再传进来，否则结果系统性偏移。
+        3. ``n_paths > 1`` 时 drift/diffusion **必须**对批量状态逐元素成立（返回
+           ``(n_paths, d)``）。像 ``as_vector(y)`` 这种会把 ``(n_paths, 1)`` 展平成
+           ``(n_paths,)`` 的写法会被形状检查直接拒绝，不会静默算出错误结果。
+        4. 只支持**对角**噪声（每个分量一个独立维纳过程）。若协方差矩阵非对角，需要
+           先做 Cholesky 分解或改用多维 Milstein，本函数不处理。
+        5. 终点统计量的蒙特卡洛误差按 ``1/sqrt(n_paths)`` 收敛：检验均值时别只跑几百条
+           路径就下结论，也不要忘了 ``terminal_std`` 本身也有约 ``1/sqrt(2 n_paths)``
+           的相对误差。
+        6. 传了 ``increments`` 就不会再用 ``seed``（两者同时给以 ``increments`` 为准），
+           复现实验时务必把 ``increments`` 一起存下来。
+
+    参考:
+        Maruyama 1955；Kloeden & Platen, "Numerical Solution of Stochastic Differential
+        Equations", 1992（第 9-10 章 Euler-Maruyama 的强/弱收敛阶）。
+    """
+    if not callable(drift) or not callable(diffusion):
+        raise ValueError("drift 与 diffusion 都必须是可调用对象")
+    if len(t_span) != 2:
+        raise ValueError(f"t_span 必须是 (t0, t1) 二元组，得到 {t_span}")
+    t0, t1 = float(t_span[0]), float(t_span[1])
+    if not (math.isfinite(t0) and math.isfinite(t1)) or t1 <= t0:
+        raise ValueError(f"t_span 必须满足 t1 > t0 且有限，得到 ({t0}, {t1})")
+    n_steps_i = int(n_steps)
+    n_paths_i = int(n_paths)
+    if n_steps_i < 1:
+        raise ValueError(f"n_steps 必须 >= 1，得到 {n_steps}")
+    if n_paths_i < 1:
+        raise ValueError(f"n_paths 必须 >= 1，得到 {n_paths}")
+
+    y_start = as_vector(y0, "y0")
+    d = int(y_start.size)
+    if not np.all(np.isfinite(y_start)):
+        raise ValueError("y0 必须是有限数")
+    dt = (t1 - t0) / n_steps_i
+
+    if increments is None:
+        gen = rng(seed)
+        if n_paths_i == 1:
+            inc = gen.standard_normal((n_steps_i, d)) * math.sqrt(dt)
+        else:
+            inc = gen.standard_normal((n_paths_i, n_steps_i, d)) * math.sqrt(dt)
+    else:
+        inc = np.asarray(increments, dtype=float)
+        if n_paths_i == 1:
+            if inc.shape == (n_steps_i,):
+                inc = inc.reshape(n_steps_i, 1)
+            if inc.shape != (n_steps_i, d):
+                raise ValueError(
+                    f"n_paths=1 时 increments 形状必须是 ({n_steps_i}, {d})，得到 {inc.shape}"
+                )
+        elif inc.shape != (n_paths_i, n_steps_i, d):
+            raise ValueError(
+                f"n_paths={n_paths_i} 时 increments 形状必须是 "
+                f"({n_paths_i}, {n_steps_i}, {d})，得到 {inc.shape}"
+            )
+        if not np.all(np.isfinite(inc)):
+            raise ValueError("increments 必须是有限数")
+    inc3 = inc.reshape(n_paths_i, n_steps_i, d)
+
+    ys = np.empty((n_paths_i, n_steps_i + 1, d), dtype=float)
+    ys[:, 0, :] = y_start.reshape(1, d)
+    y_cur = np.tile(y_start.reshape(1, d), (n_paths_i, 1))
+    for k in range(n_steps_i):
+        t_k = t0 + k * dt
+        f_val = _sde_field(drift(t_k, y_cur), n_paths_i, d, "drift")
+        g_val = _sde_field(diffusion(t_k, y_cur), n_paths_i, d, "diffusion")
+        y_cur = y_cur + f_val * dt + g_val * inc3[:, k, :]
+        ys[:, k + 1, :] = y_cur
+
+    t_grid = np.linspace(t0, t1, n_steps_i + 1)
+    terminal = ys[:, -1, :].copy()
+    if n_paths_i > 1:
+        terminal_std = np.std(terminal, axis=0)
+    else:
+        terminal_std = np.zeros(d, dtype=float)
+    return {
+        "t": t_grid,
+        "y": ys[0] if n_paths_i == 1 else ys,
+        "n_steps": n_steps_i,
+        "n_paths": n_paths_i,
+        "d": d,
+        "dt": float(dt),
+        "increments": inc if n_paths_i == 1 else inc3,
+        "brownian_sum": np.sum(inc3, axis=1),
+        "terminal": terminal,
+        "terminal_mean": np.mean(terminal, axis=0),
+        "terminal_std": terminal_std,
+    }
+
+
 def _self_test() -> dict:
     """跑一组小规模确定性算例，返回关键数值供 examples/run_algorithms.py 断言。
 
@@ -1336,6 +1508,143 @@ def _self_test() -> dict:
             f"r=4 的 Lyapunov {lm40['lyapunov']} 应逼近 ln2={math.log(2.0)}（容差 2e-3）"
         )
 
+    # (9) Euler-Maruyama：几何布朗运动的弱精度（均值/方差/对数收益）、强阶 0.5（嵌套布朗路径
+    # 的 RMSE 比值）、g=0 退化为确定性 Euler，以及形状/参数校验与可复现性。
+    mu_gbm, sig_gbm = 0.4, 0.3
+    y0_gbm = np.array([1.0])
+    t_gbm = 1.0
+    log_var_target = sig_gbm ** 2 * t_gbm
+    log_mean_target = (mu_gbm - 0.5 * sig_gbm ** 2) * t_gbm
+
+    def gbm_drift(t: float, y: ArrayLike) -> np.ndarray:
+        return mu_gbm * np.asarray(y, dtype=float)
+
+    def gbm_diffusion(t: float, y: ArrayLike) -> np.ndarray:
+        return sig_gbm * np.asarray(y, dtype=float)
+
+    n_paths_weak, n_steps_weak = 20000, 100
+    em_weak = euler_maruyama(
+        gbm_drift, gbm_diffusion, y0_gbm, (0.0, t_gbm), n_steps_weak, n_paths_weak
+    )
+    gbm_mean_exact = math.exp(mu_gbm * t_gbm)
+    gbm_std_exact = gbm_mean_exact * math.sqrt(math.exp(sig_gbm ** 2 * t_gbm) - 1.0)
+    em_mean_rel = abs(float(em_weak["terminal_mean"][0]) - gbm_mean_exact) / gbm_mean_exact
+    em_std_rel = abs(float(em_weak["terminal_std"][0]) - gbm_std_exact) / gbm_std_exact
+    if em_mean_rel > 0.05:
+        raise AssertionError(
+            f"GBM 终点均值的相对误差 {em_mean_rel} 超过 5%（弱阶 1.0 应能压住）"
+        )
+    if em_std_rel > 0.08:
+        raise AssertionError(f"GBM 终点标准差的相对误差 {em_std_rel} 超过 8%")
+    em_log_ret = np.log(em_weak["terminal"][:, 0] / float(y0_gbm[0]))
+    em_log_mean = float(np.mean(em_log_ret))
+    em_log_var = float(np.var(em_log_ret))
+    if abs(em_log_mean - log_mean_target) > 0.02:
+        raise AssertionError(
+            f"ln(y_T/y_0) 的样本均值 {em_log_mean} 偏离闭式 {log_mean_target} 超过 0.02"
+        )
+    if abs(em_log_var - log_var_target) > 0.02:
+        raise AssertionError(
+            f"ln(y_T/y_0) 的样本方差 {em_log_var} 偏离闭式 {log_var_target} 超过 0.02"
+        )
+
+    # 强收敛：同一条布朗路径加密步长，RMSE 应约按 sqrt(dt) 下降（比值 ~ sqrt(2)）。
+    n_fine, n_paths_strong = 128, 2000
+    dt_fine = t_gbm / n_fine
+    fine_inc = rng(20240101).standard_normal((n_paths_strong, n_fine, 1)) * math.sqrt(dt_fine)
+    w_terminal = np.sum(fine_inc, axis=1)
+    y_exact_terminal = np.exp(
+        (mu_gbm - 0.5 * sig_gbm ** 2) * t_gbm + sig_gbm * w_terminal
+    )[:, 0]
+    em_strong_err = []
+    for n_level in (32, 64, 128):
+        group = n_fine // n_level
+        inc_level = fine_inc.reshape(n_paths_strong, n_level, group, 1).sum(axis=2)
+        res_level = euler_maruyama(
+            gbm_drift,
+            gbm_diffusion,
+            y0_gbm,
+            (0.0, t_gbm),
+            n_level,
+            n_paths_strong,
+            increments=inc_level,
+        )
+        deviation = res_level["terminal"][:, 0] - y_exact_terminal
+        em_strong_err.append(float(np.sqrt(np.mean(deviation ** 2))))
+    em_ratio_64 = em_strong_err[1] / em_strong_err[2]
+    em_ratio_128 = em_strong_err[0] / em_strong_err[1]
+    if not 1.2 <= em_ratio_128 <= 1.7:
+        raise AssertionError(
+            f"EM 强收敛比值 err(32)/err(64)={em_ratio_128} 不在 [1.2, 1.7]，"
+            f"强阶不是 0.5？（误差序列 {em_strong_err}）"
+        )
+    if not 1.2 <= em_ratio_64 <= 1.7:
+        raise AssertionError(
+            f"EM 强收敛比值 err(64)/err(128)={em_ratio_64} 不在 [1.2, 1.7]"
+        )
+
+    def f_decay_em(t: float, y: ArrayLike) -> np.ndarray:
+        return -np.asarray(y, dtype=float)
+
+    def zero_diffusion(t: float, y: ArrayLike) -> np.ndarray:
+        return np.zeros_like(np.asarray(y, dtype=float))
+
+    em_det = euler_maruyama(f_decay_em, zero_diffusion, y0_gbm, (0.0, 1.0), 100)
+    det_t, det_y = solve_ivp_euler(f_decay_em, y0_gbm, (0.0, 1.0), 0.01)
+    if det_t.size != em_det["t"].size or float(np.max(np.abs(det_t - em_det["t"]))) > 1e-12:
+        raise AssertionError("g=0 的确定性对拍要求 EM 与 solve_ivp_euler 用同一条时间网格")
+    em_det_diff = float(np.max(np.abs(em_det["y"][:, 0] - det_y[:, 0])))
+    if em_det_diff > 1e-12:
+        raise AssertionError(
+            f"g=0 时 EM 应与确定性 Euler 逐点一致，最大偏差 {em_det_diff}"
+        )
+    if abs(float(em_det["y"][-1, 0]) - 0.99 ** 100) > 1e-12:
+        raise AssertionError(f"g=0、dt=0.01 时应得到 0.99^100，实际 {em_det['y'][-1, 0]}")
+
+    # 可复现：同 seed 两次结果逐位相同；存下 increments 再喂回去也逐位相同。
+    em_rep_a = euler_maruyama(gbm_drift, gbm_diffusion, y0_gbm, (0.0, 1.0), 64, 3, seed=7)
+    em_rep_b = euler_maruyama(gbm_drift, gbm_diffusion, y0_gbm, (0.0, 1.0), 64, 3, seed=7)
+    em_reproducible = bool(np.array_equal(em_rep_a["y"], em_rep_b["y"]))
+    if not em_reproducible:
+        raise AssertionError("同一 seed 两次调用结果不一致，随机源没被 seed 固定")
+    em_replay = euler_maruyama(
+        gbm_drift,
+        gbm_diffusion,
+        y0_gbm,
+        (0.0, 1.0),
+        64,
+        3,
+        increments=em_rep_a["increments"],
+    )
+    em_replay_diff = float(np.max(np.abs(em_replay["y"] - em_rep_a["y"])))
+    if em_replay_diff > 0.0:
+        raise AssertionError(f"喂回 increments 应逐位复现，最大偏差 {em_replay_diff}")
+
+    def ambiguous_drift(t: float, y: ArrayLike) -> np.ndarray:
+        return np.array([1.0, 2.0], dtype=float)
+
+    em_bad_calls = (
+        lambda: euler_maruyama(gbm_drift, gbm_diffusion, y0_gbm, (0.0, 1.0), 0),
+        lambda: euler_maruyama(gbm_drift, gbm_diffusion, y0_gbm, (1.0, 1.0), 8),
+        lambda: euler_maruyama(gbm_drift, gbm_diffusion, y0_gbm, (0.0, 1.0), 8, 0),
+        lambda: euler_maruyama(
+            gbm_drift, gbm_diffusion, y0_gbm, (0.0, 1.0), 8, increments=np.zeros((4, 1))
+        ),
+        lambda: euler_maruyama(
+            ambiguous_drift, zero_diffusion, np.array([1.0, 2.0]), (0.0, 1.0), 8, 2
+        ),
+    )
+    em_bad_ok = 0
+    for em_call in em_bad_calls:
+        try:
+            em_call()
+        except ValueError:
+            em_bad_ok += 1
+    if em_bad_ok != len(em_bad_calls):
+        raise AssertionError(
+            f"非法输入应全部抛 ValueError，只有 {em_bad_ok}/{len(em_bad_calls)} 个被拦下"
+        )
+
     return {
         "euler_y1": round(float(y_euler[-1, 0]), 8),
         "rk4_y1": round(float(y_rk4[-1, 0]), 10),
@@ -1372,4 +1681,28 @@ def _self_test() -> dict:
         "logistic_map_period_32": int(lm32["period"]),
         "logistic_map_lyap_39": round(float(lm39["lyapunov"]), 6),
         "logistic_map_period_39": int(lm39["period"]),
+        "em_gbm_mean_rel": round(float(em_mean_rel), 8),
+        "em_gbm_std_rel": round(float(em_std_rel), 8),
+        "em_gbm_logret_mean": round(float(em_log_mean), 6),
+        "em_gbm_logret_var": round(float(em_log_var), 6),
+        "em_gbm_logret_mean_target": round(float(log_mean_target), 6),
+        "em_gbm_logret_var_target": round(float(log_var_target), 6),
+        "em_gbm_mean_exact": round(float(gbm_mean_exact), 8),
+        "em_gbm_std_exact": round(float(gbm_std_exact), 8),
+        "em_weak_n_paths": int(n_paths_weak),
+        "em_weak_n_steps": int(n_steps_weak),
+        "em_weak_dt": round(float(em_weak["dt"]), 8),
+        "em_strong_err_32": round(float(em_strong_err[0]), 8),
+        "em_strong_err_64": round(float(em_strong_err[1]), 8),
+        "em_strong_err_128": round(float(em_strong_err[2]), 8),
+        "em_strong_ratio_128": round(float(em_ratio_128), 6),
+        "em_strong_ratio_64": round(float(em_ratio_64), 6),
+        "em_det_max_abs_diff": round(float(em_det_diff), 12),
+        "em_det_y1": round(float(em_det["y"][-1, 0]), 12),
+        "em_det_y1_closed": round(float(0.99 ** 100), 12),
+        "em_seed_reproducible": bool(em_reproducible),
+        "em_increment_replay_diff": round(float(em_replay_diff), 12),
+        "em_bad_inputs_rejected": int(em_bad_ok),
+        "em_bad_inputs_total": int(len(em_bad_calls)),
+        "em_brownian_sum_check": round(float(np.max(np.abs(em_rep_a["brownian_sum"] - np.sum(em_rep_a["increments"], axis=1)))), 12),
     }

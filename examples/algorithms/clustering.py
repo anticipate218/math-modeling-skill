@@ -1,10 +1,10 @@
 """聚类算法：K-means++、K-means、轮廓系数、肘部曲线、层次聚类、DBSCAN、
-高斯混合 EM、谱聚类、模糊 C 均值、DB/CH 有效性指标与 gap statistic。
+高斯混合 EM、谱聚类、模糊 C 均值、K-medoids（PAM）、DB/CH 有效性指标与 gap statistic。
 
-本模块共 12 个公开函数，按用途分成三组：聚类核心 ``kmeans_plusplus_init`` / ``kmeans`` /
-``agglomerative`` / ``dbscan`` / ``gmm_em`` / ``spectral_clustering`` / ``fuzzy_cmeans``，
-有效性评估 ``silhouette_score`` / ``davies_bouldin_score`` / ``calinski_harabasz_score`` /
-``gap_statistic``，以及选 k 用的 ``elbow_curve``。
+本模块共 13 个公开函数，按用途分成四组：聚类核心 ``kmeans_plusplus_init`` / ``kmeans`` /
+``agglomerative`` / ``dbscan`` / ``gmm_em`` / ``spectral_clustering`` / ``fuzzy_cmeans`` /
+``kmedoids``，有效性评估 ``silhouette_score`` / ``davies_bouldin_score`` /
+``calinski_harabasz_score`` / ``gap_statistic``，以及选 k 用的 ``elbow_curve``。
 
 这些实现是**教学透明版**：目标是把论文里要交代的每一步都摊开写清楚，
 而不是追求工业级速度。数据量超过几千条时请换成熟实现（如 sklearn），
@@ -48,6 +48,7 @@ __all__ = [
     "davies_bouldin_score",
     "calinski_harabasz_score",
     "gap_statistic",
+    "kmedoids",
 ]
 
 
@@ -56,11 +57,28 @@ def _pairwise_distances(x: np.ndarray, centers: np.ndarray) -> np.ndarray:
 
     用展开式 ||a-b||^2 = ||a||^2 - 2a·b + ||b||^2 一次算完，避免显式三重循环；
     负数由浮点误差引起时用 clip 归零，再开方。
+
+    注意 ``clip`` 只能救回**负**的舍入残差：两点重合或极近时相减消去后残差也可能为
+    **正**（量级 ``eps * ||a||^2``，坐标 ~3 时开方后约 1e-8），直接开方就会得到"自己到
+    自己有 1e-8 距离"的假值，污染 K-medoids 的 ``cost``（medoid 自身本应贡献 0）与
+    silhouette 的簇内距离。因此这里把所有低于容差的元素改用**直接差分**重算：既消掉假
+    距离，又保证其余（分离良好的）元素与原来逐位相同。
     """
     a2 = np.sum(x ** 2, axis=1, keepdims=True)
     b2 = np.sum(centers ** 2, axis=1, keepdims=True).T
     sq = a2 - 2.0 * (x @ centers.T) + b2
-    return np.sqrt(np.clip(sq, 0.0, None))
+    np.clip(sq, 0.0, None, out=sq)
+    scale = 1.0
+    if a2.size:
+        scale = max(scale, float(a2.max()))
+    if b2.size:
+        scale = max(scale, float(b2.max()))
+    tol = 1e-9 * scale
+    rows, cols = np.nonzero(sq < tol)
+    if rows.size:
+        diff = x[rows] - centers[cols]
+        sq[rows, cols] = np.einsum("ij,ij->i", diff, diff)
+    return np.sqrt(sq)
 
 
 def _check_k(n_samples: int, k: int) -> None:
@@ -830,6 +848,244 @@ def fuzzy_cmeans(
     }
 
 
+def _as_distance_matrix(data: MatrixLike, precomputed: bool, name: str = "data") -> np.ndarray:
+    """内部工具：把输入变成合法距离矩阵（预计算模式要方阵、对称、对角 0、非负）。"""
+    mat = np.asarray(as_matrix(data, name), dtype=float)
+    if not np.all(np.isfinite(mat)):
+        raise ValueError(f"{name} 含非有限值（nan/inf）")
+    if not precomputed:
+        if mat.shape[1] < 1:
+            raise ValueError(f"{name} 至少要有一列特征")
+        return _pairwise_distances(mat, mat)
+    n_row, n_col = mat.shape
+    if n_row != n_col:
+        raise ValueError(
+            f"precomputed=True 时 {name} 必须是方阵距离矩阵，得到 {mat.shape}"
+        )
+    if n_row < 1:
+        raise ValueError(f"{name} 不能为空")
+    if np.any(mat < 0.0):
+        raise ValueError(f"{name} 的距离出现负值，不是合法距离矩阵")
+    scale = max(1.0, float(np.max(np.abs(mat))))
+    if float(np.max(np.abs(mat - mat.T))) > 1e-9 * scale:
+        raise ValueError(f"{name} 的距离矩阵不对称（PAM 要求无向距离）")
+    if float(np.max(np.abs(np.diag(mat)))) > 1e-9 * scale:
+        raise ValueError(f"{name} 的对角元不为 0（自距离必须为 0）")
+    return 0.5 * (mat + mat.T)
+
+
+def _pam_build(D: np.ndarray, k: int, gen) -> List[int]:
+    """内部工具：PAM 的 BUILD 阶段，贪心选初始 medoids（并列时用 gen 随机挑一个）。"""
+    n = D.shape[0]
+    tol = 1e-12 * max(1.0, float(np.max(D)))
+    scores = np.sum(D, axis=0)
+    best = float(np.min(scores))
+    tied = np.flatnonzero(scores <= best + tol)
+    medoids = [int(gen.choice(tied))]
+    current = D[:, medoids[0]].copy()
+    while len(medoids) < k:
+        totals = np.minimum(current[:, None], D).sum(axis=0)
+        totals[np.asarray(medoids, dtype=int)] = np.inf
+        best = float(np.min(totals))
+        tied = np.flatnonzero(totals <= best + tol)
+        pick = int(gen.choice(tied))
+        medoids.append(pick)
+        current = np.minimum(current, D[:, pick])
+    return sorted(medoids)
+
+
+def _pam_assign(D: np.ndarray, medoids: Sequence[int]) -> tuple:
+    """内部工具：最近 medoid 指派，返回 (labels, 最近距离)。"""
+    sub = D[:, list(medoids)]
+    idx = np.argmin(sub, axis=1)
+    return idx.astype(int), sub[np.arange(D.shape[0]), idx]
+
+
+def _pam_swap(
+    D: np.ndarray, medoids: List[int], max_iter: int
+) -> tuple:
+    """内部工具：PAM 的 SWAP 阶段，精确最优改进下降直到无正收益或达到迭代上限。
+
+    Δ_{jh} = Σ_{i∈C_j}(min(d(i,h), s_j(i)) − d(i,m_j)) + Σ_{i∉C_j} min(0, d(i,h) − nn(i))，
+    其中 ``nn(i)`` 是 i 到当前最近 medoid 的距离，``s_j(i)`` 是 i 到"除 m_j 之外最近的
+    那个 medoid"的距离（i ∈ C_j 时若 h 比另一个 medoid 还远，i 会改投后者而不是 h）。
+    该式是精确的（Kaufman & Rousseeuw 1990 的 T_{jh}）。
+    """
+    n = D.shape[0]
+    medoids = sorted(int(m) for m in medoids)
+    labels, nn = _pam_assign(D, medoids)
+    cost = float(np.sum(nn))
+    history = [cost]
+    n_iter = 0
+    converged = False
+    while n_iter < max_iter:
+        non_medoid = np.ones(n, dtype=bool)
+        non_medoid[np.asarray(medoids, dtype=int)] = False
+        cand = np.flatnonzero(non_medoid)
+        if cand.size == 0:
+            converged = True
+            break
+        best_delta = 0.0
+        best_pair = None
+        for j, m_j in enumerate(medoids):
+            inside = labels == j
+            d_mj = D[:, m_j]
+            # 精确 Δ 的 i ∈ C_j 分支：把 m_j 换成 h 后，i 未必跟到 h 去——如果另一个
+            # 已有 medoid 比 h 还近，i 会改投它。所以每点的变化是
+            # min(d(i,h), 次近 medoid 距离) − d(i,m_j)，只用 d(i,h) 会高估增量、
+            # 漏掉真正能下降的交换（这正是 PAM 原文的 T_{jh} 公式）。
+            if len(medoids) > 1:
+                others = [D[:, medoids[l]] for l in range(len(medoids)) if l != j]
+                second = np.min(np.column_stack(others), axis=1)
+            else:
+                second = np.full(n, np.inf)
+            target = np.minimum(D[:, cand], second[:, None])
+            gain = np.sum(target[inside] - d_mj[inside, None], axis=0)
+            if np.any(~inside):
+                gain = gain + np.sum(
+                    np.minimum(0.0, D[np.ix_(~inside, cand)] - nn[~inside, None]), axis=0
+                )
+            pos = int(np.argmin(gain))
+            delta = float(gain[pos])
+            if delta < best_delta - 1e-12 * max(1.0, abs(cost)):
+                best_delta = delta
+                best_pair = (j, int(cand[pos]))
+        if best_pair is None:
+            converged = True
+            break
+        j, h = best_pair
+        medoids[j] = h
+        medoids = sorted(medoids)
+        labels, nn = _pam_assign(D, medoids)
+        cost = float(np.sum(nn))
+        history.append(cost)
+        n_iter += 1
+    return medoids, labels, cost, history, n_iter, converged
+
+
+def kmedoids(
+    data: MatrixLike,
+    k: int,
+    method: str = "pam",
+    max_iter: int = 100,
+    seed: Optional[int] = None,
+    precomputed: bool = False,
+) -> Dict[str, object]:
+    """K-medoids（PAM：Partitioning Around Medoids）：用**真实样本点**当簇心。
+
+    参数:
+        data: 样本矩阵 ``(n_samples, n_features)``；当 ``precomputed=True`` 时改为
+            ``(n_samples, n_samples)`` 的对称距离矩阵（对角线必须为 0）。
+        k: 簇数，必须满足 ``1 <= k <= n_samples``。
+        method: ``"pam"``（BUILD + SWAP，缺省）、``"build"``（只做贪心 BUILD，不做交换，
+            用于展示初始化质量与最终解的差距）、``"fastpam"``（本实现按 ``"pam"`` 处理：
+            FastPAM 只是同一目标的加速精确算法，解相同，本模块不实现其加速结构）。
+        max_iter: SWAP 阶段最大迭代轮数，必须 >= 1。
+        seed: 随机种子；只影响 BUILD 阶段的**并列打破**（多个候选 medoid 的总代价完全
+            相同时随机挑一个），因此同 seed 结果逐位可复现。
+        precomputed: 见 ``data``。
+
+    返回:
+        dict，键为：
+        ``medoids``  选中的样本下标列表（升序）；
+        ``labels``  每个样本所属簇的下标，取值是 ``medoids`` 列表里的位置（0..k-1）；
+        ``cost``  PAM 目标函数值：``Σ_i min_j d(i, medoid_j)``（距离，不是平方）；
+        ``total_cost``  ``cost`` 的同值别名（论文里两种叫法都常见）；
+        ``inertia``  **平方**距离口径的``Σ_i min_j d(i, medoid_j)^2``，与 ``kmeans`` 的
+            ``inertia`` 可比，注意它与 ``cost`` 不是同一个量；
+        ``n_iter``  SWAP 实际执行的轮数（``method="build"`` 时为 0）；
+        ``converged``  是否在 ``max_iter`` 轮内再也找不到下降的交换；
+        ``cost_history``  每轮结束（含 BUILD 之后的初值）的 ``cost``，长度 = ``n_iter + 1``；
+        ``cluster_sizes``  各簇样本数（与 ``medoids`` 同序）；
+        ``n_samples`` / ``k`` / ``method``  规模与用的方法。
+
+    算法:
+        1. **BUILD**：第一个 medoid 取"到所有点距离之和最小"的点；之后每次在剩余点里挑
+           一个使总代价下降最多的点，直到选满 k 个（贪心，不是精确优化）。
+        2. **SWAP**：对每一对 ``(已有 medoid m_j, 非 medoid h)`` 精确计算交换后的总代价
+           变化
+           ``Δ_{jh} = Σ_{i∈C_j}(min(d(i,h), s_j(i)) − d(i,m_j)) + Σ_{i∉C_j} min(0, d(i,h) − nn(i))``
+           （``C_j`` 是当前指派给 ``m_j`` 的簇，``nn(i)`` 是 i 到最近 medoid 的距离，
+           ``s_j(i)`` 是 i 到除 ``m_j`` 外最近 medoid 的距离：i 换成 h 后若另一个 medoid
+           更近，i 会改投它。漏掉这一分支会高估 Δ、漏掉能下降的交换），
+           取 ``Δ`` 最小的一对真正交换；重复直到没有负 ``Δ`` 或达到 ``max_iter``。
+        3. 与 K-means 的差别只在"中心"：K-means 中心是均值（可能是数据里不存在的点），
+           目标是最小化平方距离；K-medoids 中心是真实样本，目标是最小化距离（L1 型），
+           因此对离群点稳健得多，也能直接吃预计算的任意距离矩阵。
+
+    复杂度:
+        - 数据模式先算距离矩阵：时间 O(n^2 d)、空间 O(n^2)；
+        - SWAP 每轮 O(k · n · (n − k))，总时间 O(max_iter · k · n^2)，空间 O(n^2)。
+        ``n`` 上千以后就明显比 K-means 慢，教学/中小规模数据够用。
+        注意 PAM 只保证收敛到**局部**最优（目标函数每轮严格下降且有下界 0，故必收敛）；
+        换不同 seed 得到的解可能总代价不同，实践上建议跑几个 seed 取 ``cost`` 最小的。
+
+    陷阱:
+        1. **``cost``（距离和）与 ``inertia``（平方距离和）不能混用**：K-medoids 最小化
+           前者，K-means 最小化后者；拿 ``inertia`` 去和 K-means 的 SSE 比较才可比，
+           拿 ``cost`` 比会得出"K-medoids 更好"的假象。
+        2. ``labels`` 是 ``medoids`` 列表的**位置**，不是簇心编号；``medoids`` 每次交换后
+           都会重新排序，所以跨调用比较标签必须先按 ``medoids`` 对齐，不要直接比数组。
+        3. ``precomputed=True`` 时**只接受合法距离**：非对称、负值、非零对角都会抛
+           ``ValueError``。相似度矩阵（越大越相似）必须先转成距离，否则结果是垃圾。
+        4. 距离未标准化时结果完全由量纲最大的特征支配；类别型特征请先用 Gower 距离
+           构造好矩阵再传 ``precomputed=True``。
+        5. PAM 的 SWAP 是**精确最优改进**（每轮在全 O(k(n−k)) 个交换里挑最好的），
+           所以单轮代价是 ``O(k n^2)``；FastPAM 的加速不改变解，只改变常数与内存，
+           数据量大时请直接用成熟实现。
+        6. ``k = n`` 时每个点都是 medoid、``cost = 0``，此时算法立刻"收敛"，但这没有
+           任何聚类意义——选 k 还是要靠轮廓系数 / gap statistic 这类外部指标。
+
+    参考:
+        Kaufman, L. & Rousseeuw, P.J. (1990) "Finding Groups in Data: An Introduction to
+        Cluster Analysis", Wiley, 第 2 章（PAM / BUILD / SWAP）；
+        Schubert, E. & Rousseeuw, P.J. (2019) "Fast and Easy Medoid Clustering",
+        Journal of Statistical Software 91(4)。
+    """
+    if not isinstance(max_iter, (int, np.integer)):
+        raise ValueError("max_iter 必须是整数")
+    if int(max_iter) < 1:
+        raise ValueError(f"max_iter 必须 >= 1，得到 {max_iter}")
+    key = str(method).lower()
+    if key not in ("pam", "build", "fastpam"):
+        raise ValueError(f"method 只能是 'pam' / 'build' / 'fastpam'，得到 {method!r}")
+    D = _as_distance_matrix(data, bool(precomputed))
+    n = D.shape[0]
+    _check_k(n, k)
+    k_i = int(k)
+
+    gen = rng(seed)
+    medoids = _pam_build(D, k_i, gen)
+    labels, nn = _pam_assign(D, medoids)
+    cost = float(np.sum(nn))
+    history = [cost]
+    n_iter = 0
+    converged = True
+    if key != "build" and k_i < n:
+        medoids, labels, cost, history, n_iter, converged = _pam_swap(
+            D, medoids, int(max_iter)
+        )
+    sizes = [int(np.count_nonzero(labels == j)) for j in range(k_i)]
+    inertia = 0.0
+    for j in range(k_i):
+        if sizes[j] > 0:
+            inertia += float(np.sum(D[labels == j, medoids[j]] ** 2))
+    return {
+        "medoids": [int(m) for m in medoids],
+        "labels": labels,
+        "cost": cost,
+        "total_cost": cost,
+        "inertia": inertia,
+        "n_iter": int(n_iter),
+        "converged": bool(converged),
+        "cost_history": [float(v) for v in history],
+        "cluster_sizes": sizes,
+        "n_samples": int(n),
+        "k": k_i,
+        "method": key,
+    }
+
+
 def davies_bouldin_score(X: MatrixLike, labels: ArrayLike) -> float:
     """Davies-Bouldin 指数：簇内散度与簇心距离之比的最大值再对簇平均，越小越好。
 
@@ -1071,7 +1327,11 @@ def _self_test() -> dict:
         ``fuzzy_row_sums_ok`` 隶属度每行和是否为 1、``fuzzy_max_dev`` 行和最大偏差、
         ``fuzzy_n_iter`` FCM 迭代轮数、
         ``db_perfect`` / ``db_random`` 完美分组与随机标签的 DB 值、
-        ``ch_perfect`` / ``ch_random`` 对应的 CH 值、``gap_k_hat`` gap 选出的 k。
+        ``ch_perfect`` / ``ch_random`` 对应的 CH 值、``gap_k_hat`` gap 选出的 k；
+        以 ``kmedoids_`` 开头的一组键记录 K-medoids 的结论：手算一维算例的
+        medoid/``cost``/``inertia``、暴力枚举得到的最优 ``cost``、BUILD 与 PAM 的差距、
+        ``precomputed`` 模式等价性、cost/inertia 自洽偏差、柯西不等式自检、
+        seed 可复现性、三簇还原是否精确、离群点稳健性、非法输入报错计数。
 
     算法:
         构造三个中心分别在 (-5,-5)、(0,6)、(6,-4)、标准差 0.5 的二维高斯簇，
@@ -1177,6 +1437,179 @@ def _self_test() -> dict:
     if int(gs["k_hat"]) != 3:
         raise AssertionError(f"gap_statistic 的 k_hat={gs['k_hat']}，期望 3")
 
+    # ---- 追加部分：K-medoids（PAM） ----
+    # 一维算例 {1,2,3,8,9} 的 L1 距离矩阵可以手算，全部结论都能独立验证：
+    # k=1 的最优 medoid 是下标 2（距离和 2+1+0+5+6=14，其余候选为 18/15/19/22），
+    # 平方口径 inertia = 4+1+0+25+36 = 66；k=2 的全局最优 cost = 3（候选对 (1,3) 或 (1,4)）。
+    line = np.array([[1.0], [2.0], [3.0], [8.0], [9.0]])
+    line_D = np.abs(line - line.T)
+    lk1 = kmedoids(line, 1, seed=1)
+    if lk1["medoids"] != [2] or abs(float(lk1["cost"]) - 14.0) > 1e-12:
+        raise AssertionError(f"kmedoids k=1 算例错误：{lk1['medoids']}, {lk1['cost']}")
+    if abs(float(lk1["inertia"]) - 66.0) > 1e-12:
+        raise AssertionError(f"kmedoids k=1 的平方口径 inertia 错误：{lk1['inertia']}")
+    if int(lk1["n_iter"]) != 0 or not bool(lk1["converged"]):
+        raise AssertionError(f"kmedoids k=1 应立即收敛：{lk1['n_iter']}, {lk1['converged']}")
+
+    # 暴力枚举所有 k=2 组合，PAM 的结果必须达到全局最优（小规模下可穷举验证）。
+    brute_best = np.inf
+    for a in range(5):
+        for b in range(a + 1, 5):
+            brute_best = min(brute_best, float(np.minimum(line_D[:, a], line_D[:, b]).sum()))
+    if abs(brute_best - 3.0) > 1e-12:
+        raise AssertionError(f"暴力枚举的 k=2 最优 cost 应为 3，得到 {brute_best}")
+    lk2 = kmedoids(line, 2, seed=2)
+    if abs(float(lk2["cost"]) - brute_best) > 1e-12:
+        raise AssertionError(f"kmedoids k=2 未达全局最优：{lk2['cost']} vs {brute_best}")
+    if abs(float(lk2["cost"]) - 3.0) > 1e-12 or int(lk2["n_iter"]) != 1:
+        raise AssertionError(f"kmedoids k=2 算例错误：{lk2['cost']}, {lk2['n_iter']}")
+
+    # cost/inertia 必须与 (medoids, labels) 对应得上，且 labels 是最近 medoid 指派。
+    med2 = [int(m) for m in lk2["medoids"]]
+    lab2 = np.asarray(lk2["labels"], dtype=int)
+    if not np.array_equal(lab2, np.argmin(line_D[:, med2], axis=1)):
+        raise AssertionError(f"kmedoids k=2 的 labels 不是最近 medoid 指派：{lab2}")
+    d2 = line_D[np.arange(5), [med2[j] for j in lab2]]
+    kmedoids_identity_dev = max(
+        abs(float(np.sum(d2)) - float(lk2["cost"])) / max(1.0, float(lk2["cost"])),
+        abs(float(np.sum(d2**2)) - float(lk2["inertia"])) / max(1.0, float(lk2["inertia"])),
+    )
+    if not kmedoids_identity_dev < 1e-12:
+        raise AssertionError(f"kmedoids 的 cost/inertia 与指派不自洽，偏差 {kmedoids_identity_dev}")
+    # 柯西不等式：n·Σd² >= (Σd)² ⇒ inertia >= cost²/n（两种口径的独立一致性约束）。
+    kmedoids_cauchy_ok = bool(float(lk2["inertia"]) * 5.0 >= float(lk2["cost"]) ** 2 - 1e-12)
+    if not kmedoids_cauchy_ok:
+        raise AssertionError("kmedoids 不满足 inertia >= cost^2 / n")
+
+    # BUILD 只做贪心初始化、不做 SWAP，代价不可能低于 PAM 的最终解（本算例严格更差）。
+    lb = kmedoids(line, 2, method="build", seed=2)
+    if not (float(lb["cost"]) >= float(lk2["cost"]) - 1e-12):
+        raise AssertionError(f"kmedoids BUILD 比 PAM 更好，说明 SWAP 无效：{lb['cost']} < {lk2['cost']}")
+    if int(lb["n_iter"]) != 0 or len(lb["cost_history"]) != 1:
+        raise AssertionError(f"method='build' 不应有 SWAP 轮次：{lb['n_iter']}, {lb['cost_history']}")
+
+    # k = n：每个点都是 medoid，cost 与 inertia 必须同时为 0。
+    lkn = kmedoids(line, 5, seed=1)
+    if abs(float(lkn["cost"])) > 1e-12 or abs(float(lkn["inertia"])) > 1e-12:
+        raise AssertionError(f"k=n 时 kmedoids 代价应为 0：{lkn['cost']}, {lkn['inertia']}")
+    if lkn["cluster_sizes"] != [1, 1, 1, 1, 1]:
+        raise AssertionError(f"k=n 时簇大小应全为 1：{lkn['cluster_sizes']}")
+
+    # 预计算距离矩阵必须与数据模式等价（同 seed 逐位一致）。
+    lp = kmedoids(line_D, 2, seed=2, precomputed=True)
+    kmedoids_precomputed_same = bool(
+        [int(m) for m in lp["medoids"]] == med2 and abs(float(lp["cost"]) - float(lk2["cost"])) < 1e-12
+    )
+    if not kmedoids_precomputed_same:
+        raise AssertionError(f"precomputed 模式与数据模式不一致：{lp['medoids']}, {lp['cost']}")
+
+    # seed 可复现；并列最优时不同 seed 允许换解，但 cost 必须同样最优。
+    kmedoids_seed_stable = bool(
+        [int(m) for m in kmedoids(line, 2, seed=2)["medoids"]] == med2
+    )
+    if not kmedoids_seed_stable:
+        raise AssertionError("kmedoids 同 seed 两次调用结果不一致")
+    tie_costs = [float(kmedoids(line, 2, seed=s)["cost"]) for s in (1, 2, 3)]
+    if max(abs(v - brute_best) for v in tie_costs) > 1e-12:
+        raise AssertionError(f"kmedoids 换 seed 后未保持最优：{tie_costs}")
+
+    # 三簇算例：medoid 必须是真实样本点，且分组逐一还原真值（medoids 升序 ⇒ 序号即簇号）。
+    xm = kmedoids(x, 3, seed=7)
+    xm_labels = np.asarray(xm["labels"], dtype=int)
+    kmedoids_three_cluster_exact = bool(np.array_equal(xm_labels, true_labels))
+    if not kmedoids_three_cluster_exact:
+        raise AssertionError(f"kmedoids 未还原三簇分组：{xm_labels}")
+    if any(int(m) not in range(x.shape[0]) for m in xm["medoids"]):
+        raise AssertionError(f"kmedoids 的 medoid 不是真实样本下标：{xm['medoids']}")
+    if xm["cluster_sizes"] != [30, 30, 30]:
+        raise AssertionError(f"kmedoids 三簇大小错误：{xm['cluster_sizes']}")
+
+    # 稳健性（相对 K-means 的存在理由）：加一个 (100,100) 极端离群点后，
+    # 三个 medoid 仍各自留在本簇数据块内，离群点自己不会被选为 medoid。
+    xa = np.vstack([x, np.array([[100.0, 100.0]])])
+    oa = kmedoids(xa, 3, seed=7)
+    if 90 in [int(m) for m in oa["medoids"]]:
+        raise AssertionError(f"kmedoids 把极端离群点选成了 medoid：{oa['medoids']}")
+    for j, m in enumerate(oa["medoids"]):
+        if not 30 * j <= int(m) < 30 * (j + 1):
+            raise AssertionError(f"kmedoids 的 medoid {m} 跑出了第 {j} 簇，离群点污染了中心")
+
+    # 非法输入必须抛 ValueError（不是 assert，也不是静默给出垃圾结果）。
+    bad_line_neg = np.array([[0.0, -1.0, 3.0], [1.0, 0.0, 2.0], [3.0, 2.0, 0.0]])
+    bad_line_asym = line_D.copy()
+    bad_line_asym[0, 1] += 0.5
+    bad_line_diag = line_D.copy()
+    bad_line_diag[0, 0] = 1.0
+    bad_calls = (
+        (lambda: kmedoids(line, 0), "k=0"),
+        (lambda: kmedoids(line, 6), "k>n"),
+        (lambda: kmedoids(line, 2, method="kmeans"), "method 拼错"),
+        (lambda: kmedoids(line, 2, max_iter=0), "max_iter=0"),
+        (lambda: kmedoids(line, 2, max_iter=1.5), "max_iter 非整数"),
+        (lambda: kmedoids(bad_line_neg, 2, precomputed=True), "距离含负值"),
+        (lambda: kmedoids(bad_line_asym, 2, precomputed=True), "距离矩阵不对称"),
+        (lambda: kmedoids(bad_line_diag, 2, precomputed=True), "对角元不为 0"),
+        (lambda: kmedoids(np.zeros((3, 4)), 2, precomputed=True), "precomputed 非方阵"),
+    )
+    kmedoids_errors_ok = 0
+    for call, what in bad_calls:
+        try:
+            call()
+        except ValueError:
+            kmedoids_errors_ok += 1
+            continue
+        raise AssertionError(f"kmedoids 对「{what}」未抛 ValueError")
+    if kmedoids_errors_ok != len(bad_calls):
+        raise AssertionError(f"kmedoids 非法输入用例只通过了 {kmedoids_errors_ok}/{len(bad_calls)}")
+
+    # 展开式距离矩阵的"大数相消"回归（坐标 ~3、含完全重合的点）：自距离必须**精确**为 0。
+    # 否则 clip 只挡得住负残差，正的残差开方后是 ~1e-8 的假距离，medoid 自身会给 cost
+    # 贡献非零值，PAM 的目标函数就与"按 (medoids, labels) 直接算"的暴力值对不上。
+    xd = np.array(
+        [
+            [3.141593, -2.718282],
+            [3.141593, -2.718282],
+            [-1.414214, 0.577350],
+            [2.236068, 2.236068],
+            [0.0, 0.0],
+            [1.732051, -1.732051],
+        ]
+    )
+    dd = _pairwise_distances(xd, xd)
+    clustering_dist_diag_exact = bool(float(np.max(np.abs(np.diag(dd)))) == 0.0)
+    if not clustering_dist_diag_exact:
+        raise AssertionError(f"距离矩阵对角元不为 0：{np.diag(dd)}")
+    # 直接差分算的"真"距离矩阵，作为独立参照（不经过任何展开式）。
+    dd_true = np.sqrt(np.maximum(np.sum((xd[:, None, :] - xd[None, :, :]) ** 2, axis=2), 0.0))
+    kd = kmedoids(xd, 3, seed=4)
+    med_d = [int(m) for m in kd["medoids"]]
+    lab_d = np.asarray(kd["labels"], dtype=int)
+    d_own = dd_true[np.arange(xd.shape[0]), [med_d[j] for j in lab_d]]
+    clustering_dist_identity_dev = max(
+        abs(float(np.sum(d_own)) - float(kd["cost"])) / max(1.0, float(kd["cost"])),
+        abs(float(np.sum(d_own**2)) - float(kd["inertia"])) / max(1.0, float(kd["inertia"])),
+    )
+    if not clustering_dist_identity_dev < 1e-12:
+        raise AssertionError(
+            f"kmedoids cost/inertia 与直接差分的距离矩阵不自洽，偏差 {clustering_dist_identity_dev}"
+        )
+    brute_2d = np.inf
+    n_d = xd.shape[0]
+    for a_ in range(n_d):
+        for b_ in range(a_ + 1, n_d):
+            for c_ in range(b_ + 1, n_d):
+                brute_2d = min(
+                    brute_2d,
+                    float(
+                        np.minimum(
+                            np.minimum(dd_true[:, a_], dd_true[:, b_]), dd_true[:, c_]
+                        ).sum()
+                    ),
+                )
+    clustering_pam_ge_brute_2d = bool(float(kd["cost"]) >= brute_2d * (1.0 - 1e-12))
+    if not clustering_pam_ge_brute_2d:
+        raise AssertionError(f"PAM 的 cost 低于全局最优：{kd['cost']} < {brute_2d}")
+
     return {
         "kmeans_inertia": round(km["inertia"], 6),
         "kmeans_n_iter": int(km["n_iter"]),
@@ -1203,4 +1636,27 @@ def _self_test() -> dict:
         "ch_random": round(float(ch_random), 6),
         "gap_k_hat": int(gs["k_hat"]),
         "gap_values": [round(float(v), 6) for v in np.asarray(gs["gap"]).ravel()],
+        "kmedoids_line_k1_medoid": int(lk1["medoids"][0]),
+        "kmedoids_line_k1_cost": round(float(lk1["cost"]), 6),
+        "kmedoids_line_k1_inertia": round(float(lk1["inertia"]), 6),
+        "kmedoids_line_k2_medoids": med2,
+        "kmedoids_line_k2_cost": round(float(lk2["cost"]), 6),
+        "kmedoids_line_k2_brute": round(float(brute_best), 6),
+        "kmedoids_line_build_medoids": [int(m) for m in lb["medoids"]],
+        "kmedoids_line_build_cost": round(float(lb["cost"]), 6),
+        "kmedoids_line_kn_cost": round(float(lkn["cost"]), 6),
+        "kmedoids_identity_dev": kmedoids_identity_dev,
+        "kmedoids_cauchy_ok": bool(kmedoids_cauchy_ok),
+        "kmedoids_precomputed_same": bool(kmedoids_precomputed_same),
+        "kmedoids_seed_stable": bool(kmedoids_seed_stable),
+        "kmedoids_tie_seeds_cost": [round(float(v), 6) for v in tie_costs],
+        "kmedoids_three_cluster_exact": bool(kmedoids_three_cluster_exact),
+        "kmedoids_three_cluster_cost": round(float(xm["cost"]), 6),
+        "kmedoids_three_cluster_sizes": [int(v) for v in xm["cluster_sizes"]],
+        "kmedoids_outlier_medoids": [int(m) for m in oa["medoids"]],
+        "kmedoids_outlier_is_medoid": bool(90 in [int(m) for m in oa["medoids"]]),
+        "kmedoids_errors_ok": int(kmedoids_errors_ok),
+        "clustering_dist_diag_exact": clustering_dist_diag_exact,
+        "clustering_dist_identity_dev": clustering_dist_identity_dev,
+        "clustering_pam_ge_brute_2d": clustering_pam_ge_brute_2d,
     }

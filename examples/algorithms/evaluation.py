@@ -1,10 +1,12 @@
 """评价与决策模型：AHP、熵权、CRITIC、TOPSIS、VIKOR、灰关联、DEA、模糊综合。
 
-本模块共 11 个公开函数，按用途分成四组：
+本模块共 14 个公开函数，按用途分成五组：
 - 定权：``ahp_weights``（层次分析法）/ ``entropy_weights``（熵权）/ ``critic_weights``（CRITIC）
   / ``combine_weights``（主客观组合赋权）；
-- 综合评价与排序：``topsis`` / ``vikor`` / ``grey_relational_grade`` / ``fuzzy_comprehensive_eval``；
+- 综合评价与排序：``topsis`` / ``vikor`` / ``grey_relational_grade`` / ``fuzzy_comprehensive_eval``
+  / ``rsr_evaluation``（秩和比）/ ``promethee_ii_ranking``（PROMETHEE II 净流排序）；
 - 效率评价：``dea_ccr`` / ``dea_bcc``；
+- 组合评价一致性：``kendall_w_concordance``（肯德尔和谐系数 W）；
 - 稳健性诊断：``topsis_rank_sensitivity``（权重扰动下的排名稳定性）。
 
 评价类题目是国赛/研赛出现频率最高的一类，也是"看起来简单、写起来容易失分"的一类。
@@ -22,6 +24,7 @@
 
 from __future__ import annotations
 
+from statistics import NormalDist
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -37,9 +40,12 @@ __all__ = [
     "topsis",
     "vikor",
     "grey_relational_grade",
+    "rsr_evaluation",
+    "promethee_ii_ranking",
     "dea_ccr",
     "dea_bcc",
     "fuzzy_comprehensive_eval",
+    "kendall_w_concordance",
     "topsis_rank_sensitivity",
 ]
 
@@ -47,6 +53,15 @@ __all__ = [
 SAATY_RI = {1: 0.0, 2: 0.0, 3: 0.58, 4: 0.90, 5: 1.12, 6: 1.24, 7: 1.32,
             8: 1.41, 9: 1.45, 10: 1.49, 11: 1.51, 12: 1.48, 13: 1.56,
             14: 1.57, 15: 1.59}
+
+#: 卡方分布上侧 0.05 分位数（自由度 1..30），用于肯德尔和谐系数的显著性判断。
+#: 与 RI 表一样是**内置查表值**：只覆盖 df <= 30，超出范围时返回 None 而不猜。
+CHI2_005 = {1: 3.841, 2: 5.991, 3: 7.815, 4: 9.488, 5: 11.070, 6: 12.592,
+            7: 14.067, 8: 15.507, 9: 16.919, 10: 18.307, 11: 19.675, 12: 21.026,
+            13: 22.362, 14: 23.685, 15: 24.996, 16: 26.296, 17: 27.587,
+            18: 28.869, 19: 30.144, 20: 31.410, 21: 32.671, 22: 33.924,
+            23: 35.172, 24: 36.415, 25: 37.652, 26: 38.885, 27: 40.113,
+            28: 41.337, 29: 42.557, 30: 43.773}
 
 
 def _resolve_benefit(benefit, n: int) -> np.ndarray:
@@ -94,6 +109,28 @@ def _ranks(scores: np.ndarray) -> np.ndarray:
     return ranks
 
 
+def _average_ranks(values: np.ndarray) -> np.ndarray:
+    """返回 1..n 的**平均名次**（并列取平均秩），1 对应最小值。
+
+    与 :func:`_ranks` 的区别：``_ranks`` 是"竞赛排名法"（并列同名次，会跳号），
+    这里用的是编秩常用的"平均秩"（并列占用的名次取平均，不跳号）。秩和比法与
+    肯德尔和谐系数的教科书公式都建立在平均秩上，两者不能混用。
+    """
+    v = np.asarray(values, dtype=float)
+    n = v.size
+    order = np.argsort(v, kind="mergesort")
+    sorted_v = v[order]
+    out = np.empty(n, dtype=float)
+    i = 0
+    while i < n:
+        j = i
+        while j + 1 < n and abs(sorted_v[j + 1] - sorted_v[i]) <= 1e-12:
+            j += 1
+        out[order[i:j + 1]] = (i + j) / 2.0 + 1.0
+        i = j + 1
+    return out
+
+
 # --------------------------------------------------------------------------
 # 权重确定
 # --------------------------------------------------------------------------
@@ -109,7 +146,9 @@ def ahp_weights(pairwise, max_iter: int = 1000, tol: float = 1e-12) -> Dict[str,
     返回:
         dict，键为 ``weights``（特征向量归一化后的权重）、``lambda_max``（最大特征值）、
         ``CI``（一致性指标）、``CR``（一致性比例）、``consistent``（CR < 0.1）、
-        ``RI``、``n``。
+        ``RI``、``n``、``converged``（幂法是否在 ``max_iter`` 步内收敛）、
+        ``iterations``（实际迭代步数）。``n`` 超出内置 RI 表时额外返回 ``note`` 且
+        ``CR``/``consistent``/``RI`` 为 ``None``。
 
     算法:
         幂法求主特征向量：``w <- A w / ||A w||`` 直到收敛；``lambda_max`` 用
@@ -126,6 +165,11 @@ def ahp_weights(pairwise, max_iter: int = 1000, tol: float = 1e-12) -> Dict[str,
           本实现会直接报错而不是悄悄算出一个错权重。
         - 幂法求的是主特征向量，方向可能整体为负；本实现取绝对值后归一化。
         - CR 达标 ≠ 权重合理：CR 只说明你的判断前后不矛盾。专家打分本身偏了就救不回来。
+        - **收敛性必须自己看 ``converged``**。迭代次数不够（或特征值靠得很近）时，
+          ``weights`` 是"第 max_iter 步的中间结果"，仍然是一组和为 1 的正数，
+          不会报错。例如 4 阶矩阵取 ``max_iter=1`` 时 ``CR`` 从 0.0359 变成 0.0431，
+          权重也明显偏离：审计实测 ``[0.4461, 0.2900, 0.0967, 0.1673]`` vs
+          收敛值 ``[0.4717, 0.2741, 0.1045, 0.1498]``。
 
     参考:
         Saaty (1980)《The Analytic Hierarchy Process》；Saaty 随机一致性指标 RI 表。
@@ -134,6 +178,8 @@ def ahp_weights(pairwise, max_iter: int = 1000, tol: float = 1e-12) -> Dict[str,
     n = A.shape[0]
     if A.shape[1] != n:
         raise ValueError("判断矩阵必须是方阵")
+    if int(max_iter) < 1:
+        raise ValueError("max_iter 必须 >= 1；迭代次数为 0 时幂法不会更新初始权重")
     if np.any(A <= 0):
         raise ValueError("判断矩阵元素必须为正")
     if np.any(np.abs(np.diag(A) - 1.0) > 1e-9):
@@ -142,7 +188,9 @@ def ahp_weights(pairwise, max_iter: int = 1000, tol: float = 1e-12) -> Dict[str,
         raise ValueError("判断矩阵必须正互反（a_ij * a_ji = 1）")
 
     w = np.ones(n) / n
-    for _ in range(max_iter):
+    converged = False
+    iterations = 0
+    for iterations in range(1, int(max_iter) + 1):
         w_new = A @ w
         norm = np.linalg.norm(w_new)
         if norm <= 0:
@@ -150,6 +198,7 @@ def ahp_weights(pairwise, max_iter: int = 1000, tol: float = 1e-12) -> Dict[str,
         w_new = w_new / norm
         if np.max(np.abs(w_new - w)) < tol:
             w = w_new
+            converged = True
             break
         w = w_new
 
@@ -162,10 +211,12 @@ def ahp_weights(pairwise, max_iter: int = 1000, tol: float = 1e-12) -> Dict[str,
     if RI is None:
         return {"weights": w, "lambda_max": lambda_max, "CI": CI, "CR": None,
                 "consistent": None, "RI": None, "n": n,
+                "converged": bool(converged), "iterations": int(iterations),
                 "note": f"n={n} 超出内置 RI 表（1..15），请自行查表判断一致性"}
     CR = 0.0 if RI == 0 else CI / RI
     return {"weights": w, "lambda_max": lambda_max, "CI": CI, "CR": CR,
-            "consistent": bool(CR < 0.1), "RI": RI, "n": n}
+            "consistent": bool(CR < 0.1), "RI": RI, "n": n,
+            "converged": bool(converged), "iterations": int(iterations)}
 
 
 def entropy_weights(X, benefit=None) -> Dict[str, object]:
@@ -178,11 +229,13 @@ def entropy_weights(X, benefit=None) -> Dict[str, object]:
     返回:
         dict，键为 ``weights``、``entropy``（各指标信息熵 e_j）、``divergence``（1 - e_j）、
         ``p``（比重矩阵，``pos / pos.sum(axis=0)``）、``normalized``（**只做了正向化**的矩阵，
-        成本型列被 ``max - x`` 反转，没有再做任何归一化）。
+        成本型列被 ``max - x`` 反转，没有再做任何归一化）、``note``（无区分度指标被置 0
+        权重时的提示，否则为 ``None``）。
 
     算法:
         1. 成本型指标正向化：``x' = max - x``。
-        2. 计算比重 ``p_ij = x'_ij / sum_i x'_ij``。
+        2. 计算比重 ``p_ij = x'_ij / sum_i x'_ij``；某列正向化后全为 0（列和为 0）时
+           该列 ``p`` 记 0、``e_j = 1``、``d_j = 0``。
         3. 信息熵 ``e_j = -(1/ln m) * sum_i p_ij ln p_ij``（``p=0`` 的项按 0 处理）。
         4. 差异系数 ``d_j = 1 - e_j``，权重 ``w_j = d_j / sum d_j``。
 
@@ -195,7 +248,10 @@ def entropy_weights(X, benefit=None) -> Dict[str, object]:
         - 熵权对**量纲和离散度极度敏感**：把所有指标先 min-max 归一化与直接算熵权，
           结果完全不同。论文里必须写清楚你用的是哪一种口径，否则无法复现。
         - 某指标所有方案取值相同时 ``d_j = 0``，该指标权重为 0。这通常说明指标选得不好，
-          要在论文里讨论而不是假装没看见。
+          要在论文里讨论而不是假装没看见。注意**成本型常量列**正向化后整列变成 0
+          （列和为 0），只有把它按"无区分度 → 权重 0"处理才与效益型常量列口径一致；
+          旧版本对这种列会直接抛 ``ValueError``，审计后已改为与效益型常量列同样的处理，
+          并在 ``note`` 里列出来。
         - 熵权是"谁差异大谁重要"，**不等于"谁业务上重要"**，不要用它替代专家判断。
         - 返回键 ``normalized`` 名字有历史遗留问题：它装的是**正向化后**的矩阵，
           **不是归一化矩阵**。真正归一化过的只有比重矩阵 ``p``。要"归一化后的决策矩阵"
@@ -216,21 +272,29 @@ def entropy_weights(X, benefit=None) -> Dict[str, object]:
             pos[:, j] = M[:, j].max() - M[:, j]
 
     col_sum = pos.sum(axis=0, keepdims=True)
-    if np.any(col_sum <= 0):
-        zero_cols = [j for j in range(n) if col_sum[0, j] <= 0]
-        raise ValueError(f"以下指标列和为 0，无法计算比重：{zero_cols}")
-    P = pos / col_sum
+    usable = col_sum[0] > 0
+    if not np.any(usable):
+        raise ValueError("所有指标列的和都为 0，无法计算比重")
+    zero_cols = [j for j in range(n) if not usable[j]]
+    P = np.zeros_like(pos)
+    P[:, usable] = pos[:, usable] / col_sum[0, usable]
 
     k = 1.0 / np.log(m) if m > 1 else 0.0
     with np.errstate(divide="ignore", invalid="ignore"):
         plnp = np.where(P > 0, P * np.log(P), 0.0)
     e = -k * plnp.sum(axis=0)
-    e = np.clip(e, 0.0, 1.0)
+    # 列和为 0 的指标没有任何分布信息：按"熵最大、差异系数为 0"处理（权重 0）
+    e = np.where(usable, np.clip(e, 0.0, 1.0), 1.0)
     d = 1.0 - e
     if d.sum() <= 0:
         raise ValueError("所有指标的信息熵都为 1（无区分度），无法赋权")
     w = d / d.sum()
-    return {"weights": w, "entropy": e, "divergence": d, "p": P, "normalized": pos}
+    note = None
+    if zero_cols:
+        note = (f"以下指标正向化后列和为 0（无区分度），熵按 1 处理、权重置 0："
+                f"{zero_cols}")
+    return {"weights": w, "entropy": e, "divergence": d, "p": P, "normalized": pos,
+            "note": note}
 
 
 def critic_weights(X, benefit=None) -> Dict[str, object]:
@@ -256,6 +320,11 @@ def critic_weights(X, benefit=None) -> Dict[str, object]:
         - 与其他指标高度相关的指标会被判为"冲突小、信息量低"。如果两个指标本质重复，
           这是合理惩罚；但如果它们恰好同等重要，权重会被不合理压低，需要人为修正。
         - 和熵权一样受量纲影响，先归一化再算。
+        - **常量列**（标准差 0）与其他列的 Pearson 相关系数在数学上无定义。本实现把
+          ``NaN`` 一律替换为 0（"无线性关联"）再算冲突性；由于该列 ``sigma = 0``，
+          它自身权重必为 0，但**与它配对的其他列**的冲突性会被这个人为约定影响。
+          本次审计对含常量列的数据实测 ``corr`` 矩阵（0 行/列）即来自该约定——
+          这是**保留行为**，论文里若出现常量列应当直接剔除该指标，而不是依赖这个默认值。
 
     参考:
         Diakoulaki, Mavrotas & Papayannakis (1995) CRITIC 法。
@@ -292,8 +361,10 @@ def combine_weights(weight_sets, method: str = "multiplicative",
         weight_sets: 若干组权重，形如 ``[[w1...], [w1...]]``，每组长度相同。
         method: ``"multiplicative"``（乘法合成，默认）、``"linear"``（线性加权）、
             ``"geometric"``（几何平均）。
-        alphas: 仅 ``"linear"`` 使用；各权重组的系数，None 表示等权。传入的系数若不满足
-            和为 1（容差 1e-9）会被就地归一化，不会报错。
+        alphas: 仅 ``"linear"`` 使用；各权重组的系数，None 表示等权。系数必须非负且之和
+            为正，否则抛 ``ValueError``（负系数会算出负权重）；之和不为 1 时会被就地归一化。
+            注意：``method`` 不是 ``"linear"`` 时**传入 ``alphas`` 会直接报错**，
+            而不是被静默忽略（静默忽略会让调用方以为自己调过参，实际上权重完全没变）。
 
     返回:
         dict，键为 ``weights``（组合权重，已归一化到和为 1）、``method``、
@@ -312,6 +383,13 @@ def combine_weights(weight_sets, method: str = "multiplicative",
           如果你的指标体系里有"小而重要"的指标，乘法合成会毁掉它。
         - 组合权重没有唯一的"正确"方法。论文里必须写清楚组合方式和理由，
           并且**做一次灵敏度分析**证明排序不因组合方式而翻盘。
+        - ``linear`` 的系数 ``alphas`` 必须非负且之和为正：负系数会算出负权重，和恰为 0
+          （例如 ``[0, 0]`` 或 ``[1, -1]``）会让权重变成 ``NaN`` 或无意义的巨大值。
+          这两种输入现在都会抛 ``ValueError``；旧版本会静默返回这些结果
+          （审计实测：权重组为 ``[[0.6, 0.4], [0.1, 0.9]]`` 时，旧实现给
+          ``alphas=[2, -1] -> [1.1, -0.1]``（负权重）、``alphas=[0, 0] -> [nan, nan]``）。
+        - **``alphas`` 传给了非 ``linear`` 的 ``method`` 也会报错**。旧版本会静默忽略它——
+          调用方以为调了参，实际权重完全没变，这是很难自查的一类错误。
         - **博弈论组合赋权没有实现**。真正的博弈论组合赋权要解一个以"组合权重与各单一
           权重的偏差最小化"为目标的小型 LP/QP；本函数只提供 multiplicative / geometric /
           linear 三种**纯代数**合成。论文里如果写"采用博弈论组合赋权"，必须自己补上那一步，
@@ -332,6 +410,10 @@ def combine_weights(weight_sets, method: str = "multiplicative",
             raise ValueError("权重不能为负")
     W = np.vstack(sets)
 
+    if alphas is not None and method != "linear":
+        raise ValueError(f"alphas 只对 method='linear' 有效，当前 method='{method}'；"
+                         "请勿传入 alphas，或改用 'linear'")
+
     if method == "multiplicative":
         w = np.prod(W, axis=0)
     elif method == "geometric":
@@ -341,6 +423,11 @@ def combine_weights(weight_sets, method: str = "multiplicative",
         a = np.ones(K) / K if alphas is None else as_vector(alphas, "alphas")
         if a.size != K:
             raise ValueError("alphas 长度必须等于权重组数")
+        if np.any(a < -1e-12):
+            raise ValueError("alphas（线性加权系数）不能为负：负系数会算出负权重")
+        a = np.clip(a, 0.0, None)
+        if a.sum() <= 0:
+            raise ValueError("alphas 之和必须为正；全 0 或正负相消会让组合权重变成 NaN")
         if abs(a.sum() - 1.0) > 1e-9:
             a = a / a.sum()
         w = a @ W
@@ -368,13 +455,17 @@ def topsis(X, weights, benefit=None) -> Dict[str, object]:
     返回:
         dict，键为 ``closeness``（相对贴近度 C_i，越大越好）、``rank``（1 为最好）、
         ``d_plus``/``d_minus``（到正/负理想解的欧氏距离）、``ideal_best``/``ideal_worst``、
-        ``normalized``（向量归一化矩阵 R）、``weighted``（加权规范矩阵 V）、``note``。
+        ``normalized``（向量归一化矩阵 R）、``weighted``（加权规范矩阵 V）、
+        ``positivized``（**只做了正向化**的矩阵，成本型列被 ``max - x`` 反转；
+        向量归一化的是它而不是原始 ``X``）、``note``。
 
     算法:
-        1. 向量归一化 ``r_ij = x_ij / sqrt(sum_i x_ij^2)``。
-        2. 加权 ``v_ij = w_j r_ij``。
-        3. 正理想解取正向指标的最大值、成本型指标的最小值（负理想解反之）。
-        4. ``C_i = d_i^- / (d_i^+ + d_i^-)``。
+        1. 正向化：成本型指标 ``x' = max - x``（先正向化，后归一化）。
+        2. 向量归一化 ``r_ij = x'_ij / sqrt(sum_i x'_ij^2)``。
+        3. 加权 ``v_ij = w_j r_ij``。
+        4. 因为第 1 步之后**所有指标都是"越大越好"**，正理想解直接取 ``V`` 的列最大、
+           负理想解取列最小（不需要再按指标方向分情况）。
+        5. ``C_i = d_i^- / (d_i^+ + d_i^-)``。
 
     复杂度:
         时间 O(mn) / 空间 O(mn)。
@@ -382,11 +473,18 @@ def topsis(X, weights, benefit=None) -> Dict[str, object]:
     陷阱:
         - **向量归一化必须做**。直接用原始数据算距离，量纲大的指标会独占权重。
           顺带一提：TOPSIS 的"正向化"要在归一化**之前**做（对成本型指标取倒数或极差反转），
-          顺序颠倒会得到完全不同的排序。
+          顺序颠倒会得到完全不同的排序。本实现用的是"先正向化再向量归一化"的口径，
+          另一种常见口径是"直接对原始矩阵向量归一化，理想解按指标方向分别取 min/max"；
+          两者结果不同（审计实测同一数据的贴近度前者为
+          ``[0.3320, 0.9766, 0.0700, 0.6617]``、后者为
+          ``[0.3154, 0.9156, 0.2306, 0.6062]``，本例排序恰好一致，但不能指望总是如此），
+          论文里必须写明用的是哪一种。
         - 正负理想解是**从你给的方案集里选出来的**，不是绝对标准。加入一个很差的新方案，
           原有方案的贴近度会集体上升——所以不能跨数据集比较 C_i。
         - ``C_i`` 接近时排序不稳，务必配合 :func:`topsis_rank_sensitivity` 做扰动分析。
         - 距离用欧氏范数隐含"各指标可替代"的假设；指标间高度相关时考虑马氏距离。
+        - 只有一个方案（m=1）时正负理想解都是它自己，``d+ = d- = 0``，
+          本实现按 ``C = 0.5`` 返回（约定值，不是真实贴近度）。
 
     参考:
         Hwang & Yoon (1981) TOPSIS；Chen & Hwang (1992) 模糊 TOPSIS 扩展。
@@ -429,12 +527,15 @@ def vikor(X, weights, benefit=None, v: float = 0.5) -> Dict[str, object]:
 
     返回:
         dict，键为 ``Q``（折衷值，越小越好）、``S``（群体效用）、``R``（个体遗憾）、
-        ``rank``、``conditions``（是否同时满足可接受优势与可接受决策可靠性）。
+        ``rank``（**1 为最好**，即 ``Q`` 最小者排第 1）、``conditions``（是否同时满足
+        可接受优势与可接受决策可靠性）、``note``。
 
     算法:
         ``S_i = sum_j w_j (f*_j - f_ij) / (f*_j - f^-_j)``；
         ``R_i = max_j [同上]``；
         ``Q_i = v (S_i - S*) / (S^- - S*) + (1 - v)(R_i - R*) / (R^- - R*)``。
+        排名用 ``_ranks(-Q)``：``Q`` 越小越好，所以要先把 ``Q`` 取负再送进"1 为最好"的
+        排名函数。
 
     复杂度:
         时间 O(mn) / 空间 O(mn)。
@@ -443,6 +544,11 @@ def vikor(X, weights, benefit=None, v: float = 0.5) -> Dict[str, object]:
         - VIKOR 的结论**必须做两项检验**：``Q(A(1)) - Q(A(2)) >= 1/(m-1)``（可接受优势），
           且 A(1) 在 S 或 R 中也排第一（可接受决策可靠性）。只报 Q 值排序是不完整的，
           评委很可能会追问。本实现把结论放在 ``conditions`` 里。
+        - **``Q`` 越小越好，``rank`` 越大越差**。这两个方向相反是 VIKOR 最容易写错的地方：
+          旧版本直接对 ``Q`` 调用"1 为最好"的排名函数，``rank`` 完全反了（审计实测：
+          ``Q = [0.7403, 0.0000, 1.0000, 0.3674]`` 时返回 ``rank = [2, 4, 1, 3]``，
+          把 ``Q`` 最大的第 3 个方案排成了第 1 名；正确结果是 ``[3, 1, 4, 2]``）。
+          论文里凡是要给出名次，请以 ``Q`` 或 ``rank`` 中的**一个**为准并说明口径。
         - 某个指标在所有方案上取值相同时分母为 0，需要特殊处理（本实现跳过该指标并记入 note）。
         - ``v`` 的取值会改变排序，论文里要写明取值并做敏感性分析。
 
@@ -483,7 +589,7 @@ def vikor(X, weights, benefit=None, v: float = 0.5) -> Dict[str, object]:
     q2 = safe_divide((1 - v) * (R - R_star), R_minus - R_star, fill=0.0)
     Q = q1 + q2
 
-    rank = _ranks(Q)
+    rank = _ranks(-Q)
     order = np.argsort(Q, kind="mergesort")
     first, second = order[0], order[1]
     accept_advantage = bool(Q[second] - Q[first] >= 1.0 / (m - 1) - 1e-12)
@@ -659,9 +765,10 @@ def dea_ccr(inputs, outputs) -> Dict[str, object]:
         outputs: 产出矩阵，形状 (n 个 DMU, n 项产出)。
 
     返回:
-        dict，键为 ``efficiency``（各 DMU 效率，取值 (0, 1]，1 表示 DEA 有效）、
+        dict，键为 ``efficiency``（各 DMU 效率，取值 [0, 1]，1 表示 DEA 有效）、
         ``rank``、``lambda``（各 DMU 的参考权重，非零项即该 DMU 的"标杆"）、
-        ``peers``（每个 DMU 的参考 DMU 下标）、``statuses``。
+        ``peers``（每个 DMU 的参考 DMU 下标）、``statuses``、``efficient_count``
+        （效率为 1 的 DMU 个数）。
 
     算法:
         对每个 DMU 解输入导向包络 LP：``min theta``
@@ -672,6 +779,11 @@ def dea_ccr(inputs, outputs) -> Dict[str, object]:
         时间 O(n_dmu * LP(n_dmu)) / 空间 O(n_dmu^2)。
 
     陷阱:
+        - **效率区间是 [0, 1] 而不是 (0, 1]**：若某个 DMU 的所有产出都是 0，则
+          ``sum_j lambda_j y_rj >= 0`` 对任意 lambda 都成立，最优解为 ``theta = 0``，
+          该 DMU 的效率就是 0.0（审计实测：投入 ``[[1, 2]]``、产出 ``[[0], [1]]`` 时
+          ``efficiency = [0.0, 1.0]``，两个 LP 的 status 都是 "optimal"）。这不是
+          "无效"，而是"零产出"这种退化输入本身没有效率可言，应在数据阶段排除。
         - **DEA 效率 1 的 DMU 可能有很多个**，CCR 无法再区分它们。需要区分时请用超效率
           DEA（Anderson-Peterson）或在论文里明确指出"多个 DMU 同为 DEA 有效"。
         - **投入产出指标数之和不应超过 DMU 数量的约 1/3**（经验法则）。指标太多时几乎所有
@@ -680,6 +792,9 @@ def dea_ccr(inputs, outputs) -> Dict[str, object]:
         - 负值不允许（DEA 要求非负）。含负值要先做平移，并在论文里说明。
         - 本实现是**输入导向**（在产出不变的前提下最小化投入）。输出导向会得到不同数值，
           注意与文献口径一致。
+        - ``statuses`` 里出现非 "optimal" 的项时，该 DMU 的效率被**静默记为 0**。
+          正式报告前请检查 ``statuses``：它非 "optimal" 通常意味着模型退化或迭代上限，
+          此时的 0 不代表真实的效率水平。
 
     参考:
         Charnes, Cooper & Rhodes (1978) CCR 模型；Banker, Charnes & Cooper (1984) BCC 模型。
@@ -759,7 +874,8 @@ def fuzzy_comprehensive_eval(weights, membership, operator: str = "weighted",
         dict，键为 ``score``（综合隶属度向量 B）、``level``（按最大隶属度原则给出的等级下标）、
         ``level_value``（若提供 ``level_scores`` 则给出加权得分，否则为 ``None``）、
         ``normalized``（``B / B.sum()``；``B`` 全为 0 时原样返回）、``note``（提示字符串或
-        ``None``：权重被自动归一化、或 ``R`` 行和偏离 1 时会给出说明）。
+        ``None``：权重被自动归一化、或 ``R`` 行和偏离 1 时会给出说明，**两类提示同时成立时
+        用 "；" 连接**，不会互相覆盖）。
 
     算法:
         - weighted: 矩阵乘法 ``B = W R``，再归一化。
@@ -778,21 +894,24 @@ def fuzzy_comprehensive_eval(weights, membership, operator: str = "weighted",
           ``raise ValueError``）。
         - ``membership`` 每行的和理论上应为 1，但本实现**不做强制归一化**，只在行和偏离 1 超过
           1e-6 时把提示写进 ``note``。也就是说，漏写一个评语等级不会被拦下，只会得到一句提示。
+        - 上面两类提示是**并列**的。旧版本用 ``hint if hint else note`` 返回，当权重需要归一化
+          **且**行和也偏离 1 时，权重归一化的那条提示会被静默吞掉（审计实测：权重
+          ``[2, 2, 2]`` + 行和不为 1 的 R 只返回行和提示）。现在两类提示会同时出现在 ``note`` 里。
 
     参考:
         汪培庄（1983）模糊综合评判；Zadeh (1965) 模糊集合。
     """
     R = as_matrix(membership, "membership")
     w, note = _normalize_weights(weights, R.shape[0])
-    if R.shape[0] != w.size:
-        raise ValueError(f"隶属度矩阵行数 {R.shape[0]} 与权重长度 {w.size} 不一致")
     if np.any(R < -1e-12) or np.any(R > 1 + 1e-12):
         raise ValueError("隶属度必须在 [0, 1] 内")
 
     row_sums = R.sum(axis=1)
-    hint = None
+    hints = []
+    if note:
+        hints.append(note)
     if np.any(np.abs(row_sums - 1.0) > 1e-6):
-        hint = "部分因素的各等级隶属度之和不为 1，请确认是否遗漏等级（本实现不做强制归一化）"
+        hints.append("部分因素的各等级隶属度之和不为 1，请确认是否遗漏等级（本实现不做强制归一化）")
 
     if operator == "weighted":
         B = w @ R
@@ -814,7 +933,7 @@ def fuzzy_comprehensive_eval(weights, membership, operator: str = "weighted",
         level_value = float(Bn @ ls)
 
     return {"score": B, "normalized": Bn, "level": int(np.argmax(Bn)),
-            "level_value": level_value, "note": hint if hint else note}
+            "level_value": level_value, "note": "；".join(hints) if hints else None}
 
 
 # --------------------------------------------------------------------------
@@ -833,7 +952,9 @@ def topsis_rank_sensitivity(X, weights, benefit=None, delta: float = 0.2,
 
     返回:
         dict，键为 ``base_rank``（原始排序）、``rank_flip_prob``（各方案名次发生变化的频率）、
-        ``best_keep_prob``（原第一名保持第一的频率）、``rank_matrix``（每次抽样的名次矩阵）。
+        ``best_keep_prob``（原第一名保持第一的频率）、``rank_matrix``（每次抽样的名次矩阵，
+        形状 ``(n_samples, m)``）、``base_closeness``（未扰动时的 TOPSIS 贴近度，方便对照
+        "名次没变"时贴近度实际变动的幅度）。
 
     算法:
         每次抽样生成 ``w_j * (1 + U(-delta, delta))``，非负截断后归一化，重算 TOPSIS 排序，
@@ -847,7 +968,12 @@ def topsis_rank_sensitivity(X, weights, benefit=None, delta: float = 0.2,
           必须扩大 ``delta`` 或改为全局扫描（网格/拉丁超立方）。
         - ``rank_flip_prob`` 高不代表模型差，只代表方案之间本来就很接近；
           论文里应当据此讨论"需要更精确的数据"而不是硬挑一个第一名。
-        - 随机抽样结果依赖种子。本实现默认固定种子，请在论文里报告你用的抽样次数。
+        - 随机抽样结果依赖种子。本实现默认固定种子（``seed=None`` 时用
+          :data:`_common.DEFAULT_SEED`，因此默认结果是**可复现**的），请在论文里报告你用的
+          抽样次数。
+        - ``rank_flip_prob`` 只统计"名次号是否变了"，**并列名次口径变化不算翻转**。
+          贴近度可能明显变化而名次完全不变，这正是 ``base_closeness`` 要与
+          ``rank_matrix`` 一起看的原因。
 
     参考:
         TOPSIS 权重灵敏度分析通例；多属性决策的稳健性检验。
@@ -876,6 +1002,348 @@ def topsis_rank_sensitivity(X, weights, benefit=None, delta: float = 0.2,
     return {"base_rank": base_rank, "rank_flip_prob": flip_prob,
             "best_keep_prob": best_keep, "rank_matrix": rank_matrix,
             "base_closeness": base["closeness"]}
+
+
+# --------------------------------------------------------------------------
+# 秩和比（RSR）综合评价
+# --------------------------------------------------------------------------
+
+def rsr_evaluation(X, benefit=None, weights=None,
+                   n_levels: int = 3) -> Dict[str, object]:
+    """秩和比（RSR）综合评价：只按名次合成的综合评价与分档。
+
+    参数:
+        X: 决策矩阵，形状 (m 个评价对象, n 个指标)。
+        benefit: 长度 n 的 bool 序列，``True`` 表示正向（越大越好）；``None`` 表示全部正向。
+        weights: 可选的指标权重，长度 n。``None`` 表示等权——此时
+            ``RSR_i = sum_j R_ij / (m * n)``，就是教科书上的原始公式。
+        n_levels: 分档档数，默认 3（例如"优 / 中 / 差"）。只有 ``m >= 4`` 且各对象的
+            RSR 不全相同时才会做概率单位分档，否则 ``probit`` / ``probit_fit`` /
+            ``distribution`` 一律返回 ``None``。
+
+    返回:
+        dict，键为 ``rank_matrix``（编秩矩阵，**秩越大越好**：正向指标取平均秩，成本型
+        指标取 ``m + 1 - 平均秩``）、``rsr``（秩和比，越大越好）、``rank``（**1 为最好**）、
+        ``probit``（概率单位，条件不满足时为 ``None``）、``probit_fit``（概率单位对 RSR 的
+        线性回归 ``{"slope", "intercept", "r2"}``）、``distribution``（分档结果，
+        **1 表示最好的一档**）、``note``（口径说明）。
+
+    算法:
+        1. 编秩：第 j 列取**平均秩**（并列取平均、不跳号，1 表示该列最差）；成本型指标翻转为
+           ``m + 1 - r``，于是所有列都统一成"秩大者优"。注意 :func:`_ranks` 是竞赛排名法
+           （并列会跳号），**不能**用于 RSR 的秩和公式，两者混用会算出错的 RSR。
+        2. 合成：``RSR_i = (sum_j w_j R_ij) / (m * sum_j w_j)``，取值 (0, 1]；等权时退化为
+           ``sum_j R_ij / (m n)``。
+        3. 分档（仅当 m >= 4 且 RSR 不全相同）：把 RSR 升序排列，第 k 个（k 从 1 起）的
+           累计频率取 ``p_k = (k - 0.5) / m``，概率单位 ``z_k = Phi^{-1}(p_k)``；对 ``z``
+           关于 ``RSR`` 做最小二乘直线回归得 ``z_fit``，再与分档界
+           ``Phi^{-1}(k / n_levels)``（k = 1..n_levels-1）比较得档位。``z`` 越大越好，
+           故回归值越大档位编号越小；返回前已翻转为"1 为最好"。
+
+    复杂度:
+        时间 O(m log m + m n) / 空间 O(m n)。
+
+    陷阱:
+        - **RSR 只用名次，丢掉了量纲信息**：原始数据里"巨大领先"和"微弱领先"在 RSR 中完全
+          相同，指标间差距悬殊时 RSR 会把差距抹平。这时候要么改用 TOPSIS/PROMETHEE，
+          要么把原始数据一并列进论文。
+        - **并列名次会削弱分辨力**。大量并列时多个对象的秩和相同，RSR 相同，只能并列同名次，
+          排序失去意义；请检查 ``rank_matrix`` 里的并列情况。
+        - **成本型指标的秩必须翻转**（本实现已经翻转）。如果排序整体反向，先检查 ``benefit``
+          是否传对——这与灰关联"不正向化结论就反"是同一类错误。
+        - **概率单位分档依赖正态假设，且自由度很低**。``m < 4`` 时回归几乎没有意义，本实现
+          直接不做分档并写进 ``note``，绝不硬凑档位。``m`` 略大于 4 时也请以 ``probit_fit``
+          里的 ``r2`` 为准：``r2`` 很低说明回归线不显著，此时档位结论不可信。
+        - **档数 ``n_levels`` 是主观选择**，同一份数据换档数档位编号就变，必须在论文里写明
+          你用的是几档以及为什么。
+        - 分档边界附近的样本很脆弱：``z_fit`` 恰好落在分档界上时，数据的微小改动就会改档。
+
+    参考:
+        田凤调（1988）秩和比法及其在医学统计中的应用；RSR 法的原始文献。
+    """
+    M = as_matrix(X, "X")
+    m, n = M.shape
+    if m < 1:
+        raise ValueError("X 至少要有一个评价对象")
+    n_levels = int(n_levels)
+    if n_levels < 2:
+        raise ValueError("n_levels 至少为 2")
+    ben = _resolve_benefit(benefit, n)
+    if weights is None:
+        w = np.full(n, 1.0 / n)
+        note = "未提供权重，按等权处理（此时 RSR 等价于 sum_j R_ij / (m n)）"
+    else:
+        w, wn = _normalize_weights(weights, n)
+        note = wn if wn else "权重已按和为 1 归一化"
+
+    # 编秩：正向指标取平均秩，成本型翻转为 m + 1 - r，使各列都是"秩大者优"
+    rank_matrix = np.zeros((m, n), dtype=float)
+    for j in range(n):
+        r = _average_ranks(M[:, j])
+        if not bool(ben[j]):
+            r = m + 1.0 - r
+        rank_matrix[:, j] = r
+
+    rsr = (rank_matrix @ w) / (m * float(w.sum()))
+
+    probit = None
+    probit_fit = None
+    distribution = None
+    if m < 4:
+        note += "；m < 4，概率单位回归自由度不足，不做分档"
+    elif float(np.ptp(rsr)) <= 1e-12:
+        note += "；各对象的 RSR 完全相同，不做分档"
+    else:
+        order = np.argsort(rsr, kind="mergesort")
+        pos = np.empty(m, dtype=float)
+        pos[order] = np.arange(m, dtype=float)
+        # p_k = (k - 0.5) / m，k 从 1 起；秩越小（越差）累计频率越低
+        p = (pos + 0.5) / float(m)
+        dist = NormalDist()
+        probit = np.array([dist.inv_cdf(float(v)) for v in p], dtype=float)
+        slope, intercept = np.polyfit(rsr, probit, 1)
+        z_fit = slope * rsr + intercept
+        ss_tot = float(np.sum((probit - probit.mean()) ** 2))
+        ss_res = float(np.sum((probit - z_fit) ** 2))
+        r2 = 1.0 - ss_res / ss_tot if ss_tot > 1e-15 else 1.0
+        bounds = np.array([dist.inv_cdf(k / float(n_levels))
+                           for k in range(1, n_levels)], dtype=float)
+        level = np.searchsorted(bounds, z_fit) + 1  # 1 = 最差档
+        distribution = (n_levels + 1 - level).astype(int)  # 翻转为 1 = 最好档
+        probit_fit = {"slope": float(slope), "intercept": float(intercept),
+                      "r2": float(r2)}
+        note += (f"；已按 {n_levels} 档做概率单位分档，distribution 中 1 表示最好的一档"
+                 f"（r2 = {r2:.4f}）")
+
+    return {"rank_matrix": rank_matrix, "rsr": rsr, "rank": _ranks(rsr),
+            "probit": probit, "probit_fit": probit_fit,
+            "distribution": distribution, "note": note}
+
+
+# --------------------------------------------------------------------------
+# PROMETHEE II 净流排序
+# --------------------------------------------------------------------------
+
+def promethee_ii_ranking(X, weights, benefit=None, preference: str = "linear",
+                         q: float = 0.0, p=None) -> Dict[str, object]:
+    """PROMETHEE II：用两两比较的净流给出完全排序。
+
+    参数:
+        X: 决策矩阵，形状 (m 个方案, n 个指标)，要求 ``m >= 2``。
+        weights: 指标权重，长度 n。
+        benefit: 指标方向，``True`` 表示越大越好。
+        preference: 偏好函数类型，``"usual"``（``P(d) = 1`` 当 ``d > 0``，否则 0）或
+            ``"linear"``（``P(d) = clip((d - q) / (p - q), 0, 1)``）。
+        q: 无差异阈值（``d <= q`` 视为无差别）。仅 ``linear`` 使用。
+        p: 严格偏好阈值（``d >= p`` 时偏好度为 1）。``None`` 表示按各指标**正向化后数据的
+            极差**自动取值。仅 ``linear`` 使用。
+
+    返回:
+        dict，键为 ``phi_plus``（正流，越大越好）、``phi_minus``（负流，越小越好）、
+        ``phi_net``（净流，**越大越好**，全部净流之和为 0）、``rank``（**1 为最好**）、
+        ``pi``（加权后的总体偏好矩阵，形状 (m, m)，``pi[a, b]`` 表示 a 优于 b 的程度）、
+        ``pairwise_preference``（未加权的逐指标偏好度，形状 (n, m, m)）、
+        ``positivized``（正向化后的矩阵）、``note``。
+
+    算法:
+        1. 正向化：成本型指标取 ``max - x``，使所有指标统一成越大越好。
+        2. 逐指标两两比较 ``d = x_aj - x_bj``，按偏好函数得 ``P_j(a, b) ∈ [0, 1]``。
+        3. 加权合成 ``pi(a, b) = sum_j w_j P_j(a, b)``，对角线置 0。
+        4. 流：``phi_plus_a = sum_b pi(a, b) / (m - 1)``，
+           ``phi_minus_a = sum_b pi(b, a) / (m - 1)``，``phi_net = phi_plus - phi_minus``。
+           PROMETHEE II 按 ``phi_net`` 排序，所以排名用 ``_ranks(phi_net)``（净流越大越好）。
+
+    复杂度:
+        时间 O(n m^2) / 空间 O(n m^2)（``pairwise_preference`` 是三维数组，m 大时注意内存）。
+
+    陷阱:
+        - **PROMETHEE II 会给出"完全排序"，但它掩盖了不可比性**。PROMETHEE I 允许两个方案
+          互不支配（部分序），II 强行用净流做差，把"不可比"和"相等"混为一谈。结论里出现
+          净流非常接近的两个方案时，请不要断言谁更好。
+        - **净流之和恒为 0**，所以它是相对量：不能跨数据集比较 ``phi_net``，也不能说
+          "某方案得分为 0.44"就代表它绝对好。
+        - **阈值 ``q`` / ``p`` 是主观的，且必须与偏好函数匹配**。``usual`` 型偏好函数不含
+          阈值，传 ``q != 0`` 或 ``p`` 会被本实现直接报错，而不是静默忽略。
+        - ``p <= q`` 时线性偏好函数的分母非正，公式失效。**显式传入**这样的 ``p`` 会报错；
+          而 ``p=None`` 时，取值恒定的指标极差为 0（``p = q = 0``），本实现把这类指标的
+          偏好度恒置 0 并写进 ``note``，可视为该指标不参与区分。
+        - 本实现只提供 ``usual`` 与 ``linear`` 两种偏好函数。文献里还有 U 型、V 型、
+          高斯型等；如果你的题目要求其中某种，请在此实现基础上扩展，不要假装它是 linear。
+        - ``pi`` 单向性假设：``pi(a, b)`` 与 ``pi(b, a)`` 独立计算，两者之和不必为 1。
+
+    参考:
+        Brans & Vincke (1985) PROMETHEE；Brans, Vincke & Mareschal (1986) 排序方法比较。
+    """
+    M = as_matrix(X, "X")
+    m, n = M.shape
+    if m < 2:
+        raise ValueError("PROMETHEE 至少需要 2 个方案")
+    if preference not in ("usual", "linear"):
+        raise ValueError(f"未知偏好函数：{preference}（仅支持 'usual' / 'linear'）")
+    ben = _resolve_benefit(benefit, n)
+    w, note = _normalize_weights(weights, n)
+
+    if preference == "usual" and (float(q) != 0.0 or p is not None):
+        raise ValueError("usual 型偏好函数没有无差异/严格偏好阈值，请勿传 q 或 p")
+
+    qq = np.array([q] * n, dtype=float) if np.isscalar(q) else np.asarray(q, dtype=float).ravel()
+    if qq.size != n:
+        raise ValueError(f"q 的长度 {qq.size} 与指标数 {n} 不一致")
+    if np.any(qq < 0):
+        raise ValueError("无差异阈值 q 不能为负")
+
+    # 正向化：成本型取 max - x，之后所有指标都是越大越好
+    pos = M.copy()
+    for j in range(n):
+        if not ben[j]:
+            pos[:, j] = M[:, j].max() - M[:, j]
+
+    auto_p = p is None
+    if auto_p:
+        pp = pos.max(axis=0) - pos.min(axis=0)
+        degenerate = pp <= qq + 1e-15
+    else:
+        pp = np.array([p] * n, dtype=float) if np.isscalar(p) else np.asarray(p, dtype=float).ravel()
+        if pp.size != n:
+            raise ValueError(f"p 的长度 {pp.size} 与指标数 {n} 不一致")
+        if np.any(pp <= qq):
+            raise ValueError("严格偏好阈值 p 必须大于无差异阈值 q")
+        degenerate = np.zeros(n, dtype=bool)
+
+    pairwise = np.zeros((n, m, m), dtype=float)
+    for j in range(n):
+        d = pos[:, j][:, None] - pos[:, j][None, :]
+        if preference == "usual":
+            pairwise[j] = (d > 0).astype(float)
+        elif degenerate[j]:
+            pairwise[j] = 0.0
+        else:
+            pairwise[j] = np.clip((d - qq[j]) / (pp[j] - qq[j]), 0.0, 1.0)
+
+    pi = np.tensordot(w, pairwise, axes=(0, 0))
+    np.fill_diagonal(pi, 0.0)
+    phi_plus = pi.sum(axis=1) / (m - 1)
+    phi_minus = pi.sum(axis=0) / (m - 1)
+    phi_net = phi_plus - phi_minus
+
+    if auto_p and bool(np.any(degenerate)):
+        idx = [int(j) for j in range(n) if degenerate[j]]
+        note = (note + "；" if note else "") + \
+            f"指标 {idx}（0 起编号）正向化后极差不超过 q，偏好度恒为 0，不参与区分"
+
+    return {"phi_plus": phi_plus, "phi_minus": phi_minus, "phi_net": phi_net,
+            "rank": _ranks(phi_net), "pi": pi, "pairwise_preference": pairwise,
+            "positivized": pos, "note": note}
+
+
+# --------------------------------------------------------------------------
+# 组合评价一致性：肯德尔和谐系数
+# --------------------------------------------------------------------------
+
+def kendall_w_concordance(rankings, as_scores: bool = False,
+                          higher_is_better: bool = True) -> Dict[str, object]:
+    """肯德尔和谐系数 W：判断多个评价者/多种方法的排序是否一致。
+
+    参数:
+        rankings: 形状 (k 个评价者/评价方法, m 个评价对象) 的矩阵。
+        as_scores: ``False``（默认）表示 ``rankings`` 里的数**已经是名次**，1 表示最好；
+            ``True`` 表示它是**得分/原始值**，函数会先转成平均秩。
+        higher_is_better: 仅当 ``as_scores=True`` 时有效。``True`` 表示得分越大名次越好。
+
+    返回:
+        dict，键为 ``W``（和谐系数，取值 [0, 1]，1 表示完全一致）、``chi2``（卡方统计量
+        ``k (m - 1) W``）、``df``（自由度 ``m - 1``）、``S``（各对象秩和对其均值的离差平方和）、
+        ``rank_sums``（各对象的秩和）、``rank``（**1 为最好**的**综合排序**：秩和最小者第 1）、
+        ``tie_correction``（并列修正量 ``sum_k sum_t (t^3 - t)``）、``critical_value``
+        （df <= 30 时给出 0.05 显著性水平下的卡方临界值，否则 ``None``）、``significant``
+        （``chi2 > critical_value``；临界值缺失时为 ``None``）、``note``。
+
+    算法:
+        ``S = sum_i (R_i - R_bar)^2``，其中 ``R_i`` 是第 i 个对象的秩和；
+        含并列时用修正公式
+        ``W = 12 S / (k^2 (m^3 - m) - k * sum_k sum_t (t^3 - t))``，
+        无并列时退化为 ``W = 12 S / (k^2 (m^3 - m))``。
+        显著性检验用 ``chi2 = k (m - 1) W``（df = m - 1），与 :data:`CHI2_005` 查表值比较。
+        名次必须用**平均秩**：并列时如果给"竞赛排名"（会跳号），``S`` 会被系统性高估。
+
+    复杂度:
+        时间 O(k m log m) / 空间 O(k m)。
+
+    陷阱:
+        - **W 高不代表评价准确，只代表评价者/方法之间一致**。k 个方法全都用了错的权重口径，
+          它们照样可以高度一致——W 检验的是"同向性"，不是"正确性"。论文里应当把
+          "一致性检验"和"方法本身合理性"分开论述。
+        - **``chi2 = k (m - 1) W`` 是大样本近似**。``m`` 很小时（经验上 m < 7）应当改用
+          精确分布表或 Friedman 检验的精确 p 值，卡方近似会偏乐观。本实现返回临界值但
+          不做 p 值近似，就是为了不给你一个假的精确度。
+        - ``critical_value`` **只覆盖 df <= 30**（``CHI2_005`` 的查表范围）。超出范围时本实现
+          返回 ``None`` 并把 ``significant`` 也置为 ``None``，而不是用某个公式外推——
+          ``significant is None`` 时请自行查表，不要当成"不显著"。
+        - **输入到底是"名次"还是"得分"必须说清楚**。默认 ``as_scores=False``，即按名次解释
+          1 为最好。把得分当名次传进来（或反过来）会得到一个看似正常、实则毫无意义的 W。
+        - **并列必须修正**。本实现自动计算 ``tie_correction``；如果某项为 0 而数据里确实有
+          并列，说明并列没有被识别（检查你的名次是怎么排出来的）。
+        - **``as_scores=False`` 时每一行的名次必须是"平均秩"**。``W`` 的数学上界是 1，如果你
+          把并列写成竞赛排名（``[1, 1, 3, 4]`` 而不是 ``[1.5, 1.5, 3, 4]``），
+          ``tie_correction`` 会算错、``S`` 会被虚高，``W`` 甚至能超过 1（审计实测：
+          ``[[1, 1, 3, 4], [2, 1, 4, 3]]`` 会得到 ``W = 1.0921``，明显不可能）。
+          本实现遇到 ``W > 1`` 会直接 ``raise ValueError``，而不是返回一个看似正常的数。
+          要省事就传 ``as_scores=True``，让函数自己用 :func:`_average_ranks` 编秩。
+        - ``rank`` 是**综合排序**，与 W 是两件事：W 回答"是否一致"，``rank`` 回答"综合起来谁
+          最好"。W 不显著时 ``rank`` 依然可以算出来，但它没有统计意义上的支撑。
+
+    参考:
+        Kendall & Babington Smith (1939) 和谐系数；Friedman (1937) 秩和检验。
+    """
+    R = as_matrix(rankings, "rankings")
+    k, m = R.shape
+    if k < 2:
+        raise ValueError("至少需要 2 个评价者/评价方法才能谈一致性")
+    if m < 2:
+        raise ValueError("至少需要 2 个评价对象")
+    if as_scores:
+        rows = []
+        for i in range(k):
+            rows.append(_average_ranks(-R[i] if higher_is_better else R[i]))
+        ranks = np.vstack(rows)
+    else:
+        ranks = R.astype(float).copy()
+
+    rank_sums = ranks.sum(axis=0)
+    r_bar = float(rank_sums.mean())
+    S = float(np.sum((rank_sums - r_bar) ** 2))
+
+    # 并列修正：每行内同值成组，T = sum (t^3 - t)
+    tie_total = 0.0
+    for i in range(k):
+        _, counts = np.unique(ranks[i], return_counts=True)
+        tie_total += float(np.sum(counts ** 3 - counts))
+
+    denom = k * k * (m ** 3 - m) - k * tie_total
+    if denom <= 1e-12:
+        raise ValueError("和谐系数分母非正（名次全部并列？），无法计算 W")
+    W = 12.0 * S / denom
+    if W > 1.0 + 1e-9:
+        raise ValueError(
+            f"和谐系数 W = {W:.6f} 超过 1，输入不合法：最常见的原因是某行的并列名次没有取"
+            "平均秩（并列第一应写成 [1.5, 1.5, 3, ...] 而不是 [1, 1, 3, ...]）；"
+            "也可能 as_scores 传反了")
+    chi2 = k * (m - 1) * W
+    df = m - 1
+    critical = CHI2_005.get(df)
+    significant = bool(chi2 > critical) if critical is not None else None
+
+    if critical is None:
+        note = f"df = {df} 超出查表范围（CHI2_005 只到 30），请自行查表判断显著性"
+    else:
+        note = (f"chi2 = {chi2:.6f} 与 0.05 临界值 {critical} 比较："
+                + ("达到显著" if significant else "未达到显著")
+                + "（卡方近似，m 较小时偏乐观）")
+
+    return {"W": float(W), "chi2": float(chi2), "df": int(df), "S": float(S),
+            "rank_sums": rank_sums, "rank": _ranks(-rank_sums),
+            "tie_correction": float(tie_total), "critical_value": critical,
+            "significant": significant, "note": note}
 
 
 # --------------------------------------------------------------------------
@@ -956,5 +1424,50 @@ def _self_test() -> dict:
                                    delta=0.2, n_samples=200, seed=42)
     out["sens_best_keep_prob"] = round(float(sens["best_keep_prob"]), 6)
     out["sens_max_flip_prob"] = round(float(np.max(sens["rank_flip_prob"])), 6)
+
+    # 10) 秩和比（RSR）：等权合成，m = 4 触发概率单位分档
+    rsr = rsr_evaluation(X, benefit=ben)
+    out["rsr_rank_matrix"] = [[round(float(v), 6) for v in row] for row in rsr["rank_matrix"]]
+    out["rsr_values"] = [round(float(v), 6) for v in rsr["rsr"]]
+    out["rsr_rank"] = [int(v) for v in rsr["rank"]]
+    out["rsr_best_index"] = int(np.argmin(rsr["rank"]))
+    out["rsr_probit"] = [round(float(v), 6) for v in rsr["probit"]]
+    out["rsr_probit_fit_r2"] = round(float(rsr["probit_fit"]["r2"]), 6)
+    out["rsr_probit_slope_positive"] = bool(rsr["probit_fit"]["slope"] > 0)
+    out["rsr_distribution"] = [int(v) for v in rsr["distribution"]]
+    # m = 3 时自由度不足，必须明确不做分档（返回 None）而不是硬凑档位
+    rsr_small = rsr_evaluation([[5, 3], [7, 4], [6, 5]])
+    out["rsr_small_no_distribution"] = bool(rsr_small["distribution"] is None)
+
+    # 11) PROMETHEE II：等权、线性偏好函数（p 默认取各指标极差）
+    pr = promethee_ii_ranking(X, [1, 1, 1, 1], benefit=ben)
+    out["promethee_phi_plus"] = [round(float(v), 6) for v in pr["phi_plus"]]
+    out["promethee_phi_minus"] = [round(float(v), 6) for v in pr["phi_minus"]]
+    out["promethee_phi_net"] = [round(float(v), 6) for v in pr["phi_net"]]
+    out["promethee_rank"] = [int(v) for v in pr["rank"]]
+    out["promethee_best_index"] = int(np.argmin(pr["rank"]))
+    # 净流之和恒为 0（相对量，不能跨数据集比较）
+    out["promethee_net_sum_zero"] = bool(abs(float(pr["phi_net"].sum())) < 1e-12)
+    pr_usual = promethee_ii_ranking(X, [1, 1, 1, 1], benefit=ben, preference="usual")
+    out["promethee_usual_rank"] = [int(v) for v in pr_usual["rank"]]
+
+    # 12) 肯德尔和谐系数：三个评价者给出的名次（1 为最好）
+    kw = kendall_w_concordance([[1, 2, 3, 4], [2, 1, 4, 3], [1, 3, 2, 4]])
+    out["kendall_W"] = round(float(kw["W"]), 6)
+    out["kendall_chi2"] = round(float(kw["chi2"]), 6)
+    out["kendall_df"] = int(kw["df"])
+    out["kendall_S"] = round(float(kw["S"]), 6)
+    out["kendall_rank_sums"] = [round(float(v), 6) for v in kw["rank_sums"]]
+    out["kendall_rank"] = [int(v) for v in kw["rank"]]
+    out["kendall_critical_value"] = float(kw["critical_value"])
+    out["kendall_significant"] = bool(kw["significant"])
+    out["kendall_tie_correction"] = round(float(kw["tie_correction"]), 6)
+    # 完全一致时 W 必为 1
+    kw_perfect = kendall_w_concordance([[1, 2, 3, 4], [1, 2, 3, 4]])
+    out["kendall_W_perfect"] = round(float(kw_perfect["W"]), 6)
+    # 含并列时必须走修正公式：平均秩 [1.5, 1.5, 3, 4] 的并列修正量为 6
+    kw_tie = kendall_w_concordance([[1.5, 1.5, 3, 4], [2, 1, 4, 3]])
+    out["kendall_W_with_tie"] = round(float(kw_tie["W"]), 6)
+    out["kendall_tie_correction_value"] = round(float(kw_tie["tie_correction"]), 6)
 
     return out

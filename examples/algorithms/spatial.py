@@ -1,13 +1,15 @@
 """空间与物理场建模：一维热传导有限差分（显式 FTCS / Crank-Nicolson）、二维泊松 SOR、
-森林火灾元胞自动机、Nagel-Schreckenberg 交通流、Buckingham π 量纲分析、比例缩放相似换算。
+森林火灾元胞自动机、Nagel-Schreckenberg 交通流、Buckingham π 量纲分析、比例缩放相似换算、
+全局空间自相关 Moran's I（含置换检验）。
 
-本模块共 7 个公开函数，按用途分成三组：
+本模块共 8 个公开函数，按用途分成四组：
 
 - 偏微分方程数值解：``heat_equation_1d_explicit``（FTCS，需 ``alpha*dt/dx**2 <= 0.5``）、
   ``heat_equation_1d_implicit``（Crank-Nicolson，无条件稳定）、``poisson_2d_sor``
   （二维泊松方程红黑 SOR 迭代）；
 - 元胞自动机：``forest_fire_ca``（林火蔓延）、``traffic_ca_nagel_schreckenberg``（交通流基本图）；
-- 量纲与相似：``buckingham_pi``（π 定理求无量纲组）、``scaling_similarity``（相似准则换算）。
+- 量纲与相似：``buckingham_pi``（π 定理求无量纲组）、``scaling_similarity``（相似准则换算）；
+- 空间统计：``moran_i``（全局空间自相关 + 正态近似/置换检验）。
 
 本模块是**教学透明版**：网格小、格式简单、迭代次数显式可数，目的是让论文能写清
 "我们用了什么离散格式、稳定条件是什么、误差怎么估"。真正的工程计算请换专用求解器
@@ -31,6 +33,7 @@
 
 from __future__ import annotations
 
+import itertools
 import math
 from fractions import Fraction
 from typing import Dict, List, Optional, Sequence, Tuple, Union
@@ -50,6 +53,7 @@ __all__ = [
     "traffic_ca_nagel_schreckenberg",
     "buckingham_pi",
     "scaling_similarity",
+    "moran_i",
 ]
 
 #: 支持的边界类型。
@@ -805,6 +809,162 @@ def scaling_similarity(
     return {"factors": factors, "scaled": scaled, "relative_error": rel_err}
 
 
+def moran_i(
+    values: ArrayLike,
+    weights: MatrixLike,
+    n_perm: int = 999,
+    exact: Optional[bool] = None,
+    seed: Optional[int] = None,
+) -> dict:
+    """全局空间自相关 Moran's I：点估计 + 正态近似检验 + 置换检验（含精确枚举）。
+
+    参数:
+        values: 长度 n 的观测序列（如各区县的人均 GDP、各测站的 PM2.5）。
+        weights: (n, n) 空间权重矩阵，对角线必须为 0；允许不对称（如 k 近邻权重），
+            但 (x_i - x̄)(x_j - x̄) 本身对称，所以只有 ``(W + W^T) / 2`` 参与 I 的
+            计算；``S1`` / ``S2`` 也按标准口径用 ``w_ij + w_ji`` 构造。
+        n_perm: 置换检验的置换次数（``exact=True`` 时被忽略）；必须 >= 1，默认 999。
+        exact: 是否**穷举全部 n! 个置换**。None 表示自动：n <= 8（8! = 40320）时穷举，
+            否则用 n_perm 次随机置换。
+        seed: 随机置换的种子；None 表示使用库默认种子（结果可复现）。
+
+    返回:
+        dict，键为：
+        ``I``  Moran's I 点估计；
+        ``expected``  置换分布均值 E[I] = -1 / (n - 1)；
+        ``variance_normality`` / ``z_normality`` / ``p_value_normality``  正态近似下的
+        方差、z 统计量与**双侧** p 值；方差 <= 0 时 z 与 p 返回 ``nan``（见"陷阱"3）；
+        ``variance_permutation`` / ``z_permutation``  置换分布的方差（穷举时是精确值，
+        随机置换时是蒙特卡洛估计）与对应的 z；
+        ``p_value_permutation`` / ``p_value_permutation_greater``  置换检验的双侧与单侧
+        （正相关）伪 p 值，均带 +1 修正；
+        ``n`` / ``n_permutation`` / ``exact_permutation``  样本量、实际用掉的置换个数、
+        是否穷举；
+        ``s0`` / ``s1`` / ``s2``  权重矩  S0 = ΣΣw_ij、S1 = ½ΣΣ(w_ij + w_ji)²、
+        S2 = Σ_i (Σ_j w_ij + Σ_j w_ji)²；
+        ``weights_asymmetry``  max|w_ij - w_ji|（> 0 说明权重不对称）。
+
+    算法:
+        1. 中心化 z_i = x_i - x̄，S0 = ΣΣw_ij；
+           I = (n / S0) · (ΣΣ w_ij z_i z_j) / (Σ_i z_i²)。
+        2. 正态近似（把 z 视为 iid 正态）：E[I] = -1/(n-1)，
+           Var_N = (n²S1 - n·S2 + 3S0²) / ((n-1)(n+1)S0²) - E[I]²，
+           z = (I - E[I]) / sqrt(Var_N)，双侧 p = erfc(|z| / sqrt(2))。
+        3. 置换检验：把观测值在 n 个位置上重排，保持权重矩阵与数据取值不变，
+           对每个置换重算 I；穷举时给出**精确**的置换分布，否则随机抽样。
+           伪 p = (1 + #{|I_p - E| >= |I - E|}) / (n_perm + 1)（双侧）。
+
+    复杂度:
+        时间 O(n²) 求 I + O(m·n²) 的置换（m = n! 或 n_perm）；空间 O(n²)。
+        n = 8 穷举 40320 次置换约 0.1 s；n = 25 抽 999 次约 20 ms。
+
+    陷阱:
+        1. **随机化假设下的解析方差不可照抄**：教材/软件里那套"随机化方差"闭式
+           （含峰度 k = m4/m2²的那个）只在特定权重口径下成立；本模块用实测验证过：
+           对不对称或非行标准化的 W，该闭式与穷举置换的真实方差可以差到 20% 以上，
+           甚至算出负方差。因此这里**不用**它，而是直接给置换分布方差（n <= 8 时
+           完全精确）——这也是论文里最经得起审的做法。
+        2. ``variance_normality`` 是"把数据当成 iid 正态"的近似；样本小、分布厚尾或
+           空间权重高度不均匀时它会明显偏小，从而把 p 值算得过于乐观。报告时要么用
+           ``p_value_permutation``，要么两者都给并说明差异。
+        3. n 很小时（如 n = 4 的一维链路）``variance_normality`` 可能 <= 0，此时
+           z 与 p 返回 ``nan``——这不是 bug，而是正态近似在这种情况下失效，
+           必须改用置换检验（n <= 8 可以直接穷举）。
+        4. 权重矩阵必须**由外部按研究假设给出**：邻接、距离衰减、k 近邻会得到不同的
+           I，不能把权重的选择当成无关紧要的技术细节（可做权重敏感性分析）。
+        5. 对角线必须为 0（自己和自己不算邻居）；若有自环，I 会被整体拉向 1。
+        6. 常数列（方差为 0）无法定义 Moran's I，直接抛 ValueError，不要返回 0。
+
+    参考:
+        Moran, "The interpretation of statistical maps", Biometrika 1948；
+        Cliff & Ord, "Spatial Autocorrelation", 1973（置换分布与正态近似）；
+        Anselin, "Local indicators of spatial association—LISA", 1995。
+    """
+    x = as_vector(values, "values")
+    w = as_matrix(weights, "weights")
+    n = int(x.size)
+    if w.shape != (n, n):
+        raise ValueError(f"weights 必须是 ({n}, {n}) 的方阵，得到 {w.shape}")
+    if np.any(np.abs(np.diag(w)) > 0.0):
+        raise ValueError("weights 的对角线必须全为 0（自己不算自己的邻居）")
+    if not np.all(np.isfinite(x)):
+        raise ValueError("values 必须是有限数")
+    if not np.all(np.isfinite(w)):
+        raise ValueError("weights 必须是有限数")
+    if n < 2:
+        raise ValueError(f"Moran's I 至少需要 2 个观测，得到 {n}")
+    if int(n_perm) < 1:
+        raise ValueError(f"n_perm 必须 >= 1，得到 {n_perm}")
+
+    s0 = float(np.sum(w))
+    if s0 == 0.0:
+        raise ValueError("weights 全为 0（S0 = 0），无法定义 Moran's I")
+    xc = x - float(np.mean(x))
+    ss = float(np.sum(xc * xc))
+    if ss <= 0.0:
+        raise ValueError("values 是常数列（方差为 0），Moran's I 无定义")
+    quad = float(np.sum(w * np.outer(xc, xc)))
+    i_obs = (n / s0) * quad / ss
+    expected = -1.0 / (n - 1)
+
+    ws = w + w.T
+    s1 = 0.5 * float(np.sum(ws * ws))
+    s2 = float(np.sum((np.sum(w, axis=1) + np.sum(w, axis=0)) ** 2))
+    var_norm = (n * n * s1 - n * s2 + 3.0 * s0 * s0) / ((n - 1) * (n + 1) * s0 * s0) - expected ** 2
+    if var_norm > 0.0:
+        z_norm = (i_obs - expected) / math.sqrt(var_norm)
+        p_norm = math.erfc(abs(z_norm) / math.sqrt(2.0))
+    else:  # 正态近似在这一组权重/样本量下失效，只能靠置换检验
+        z_norm = float("nan")
+        p_norm = float("nan")
+
+    if exact is None:
+        do_exact = math.factorial(n) <= 40320
+    else:
+        do_exact = bool(exact)
+    if do_exact:
+        perm_vals = np.array(
+            [
+                (n / s0) * float(np.sum(w * np.outer(xc[list(p)], xc[list(p)]))) / ss
+                for p in itertools.permutations(range(n))
+            ],
+            dtype=float,
+        )
+    else:
+        g = rng(seed)
+        perm_vals = np.empty(int(n_perm), dtype=float)
+        for k in range(int(n_perm)):
+            p = g.permutation(n)
+            perm_vals[k] = (n / s0) * float(np.sum(w * np.outer(xc[p], xc[p]))) / ss
+    m = int(perm_vals.size)
+    var_perm = float(np.var(perm_vals))
+    z_perm = float("nan") if var_perm <= 0.0 else (i_obs - expected) / math.sqrt(var_perm)
+    tol = 1e-12
+    ge_two = int(np.count_nonzero(np.abs(perm_vals - expected) >= abs(i_obs - expected) - tol))
+    ge_greater = int(np.count_nonzero(perm_vals >= i_obs - tol))
+    p_two = (1 + ge_two) / (m + 1)
+    p_greater = (1 + ge_greater) / (m + 1)
+
+    return {
+        "I": i_obs,
+        "expected": expected,
+        "variance_normality": float(var_norm),
+        "z_normality": float(z_norm),
+        "p_value_normality": float(p_norm),
+        "variance_permutation": var_perm,
+        "z_permutation": float(z_perm),
+        "p_value_permutation": float(p_two),
+        "p_value_permutation_greater": float(p_greater),
+        "n": n,
+        "n_permutation": m,
+        "exact_permutation": bool(do_exact),
+        "s0": s0,
+        "s1": s1,
+        "s2": s2,
+        "weights_asymmetry": float(np.max(np.abs(w - w.T))),
+    }
+
+
 def _self_test() -> dict:
     """跑一组小规模确定性算例，返回关键数值供 examples/run_algorithms.py 断言。
 
@@ -837,7 +997,19 @@ def _self_test() -> dict:
         / ``spatial_pi_names`` / ``spatial_pi_rank_matches`` Buckingham π 的 rank、π 个数、
         阻力无量纲组、全部规范 π 组、π 组名字，以及与 numpy 秩的交叉印证；
         ``spatial_scale_length_factor`` / ``spatial_scale_velocity_factor``
-        / ``spatial_scale_max_rel_error`` 比例缩放的因子与最大相对误差。
+        / ``spatial_scale_max_rel_error`` 比例缩放的因子与最大相对误差；
+        ``moran_cycle_*`` 4 环棋盘型样本的 I、E[I]、正态近似方差、置换方差、两种 p 值、
+        置换个数与权重矩 S1/S2（全部可手算）；``moran_path_I`` / ``moran_path_var_normality``
+        / ``moran_path_p_greater`` 链上梯度的手算 I、正态近似方差与单侧伪 p；
+        ``moran_k4_var_normality`` / ``moran_k4_var_permutation`` / ``moran_k4_z_nan``
+        / ``moran_k4_p_permutation`` 完全图退化情形（两个方差都为 0、z 为 nan、p=1）；
+        ``moran_grid_I`` / ``moran_grid_p_permutation`` / ``moran_grid_p_greater``
+        / ``moran_grid_n_permutation`` / ``moran_grid_exact`` / ``moran_grid_var_rel_gap``
+        5x5 车步邻接上的梯度场（蒙特卡洛置换检验，含两种方差的相对差）；
+        ``moran_checker_I`` / ``moran_checker_p_greater`` 5x5 棋盘型样本；
+        ``moran_asym_I`` / ``moran_asym_weights_asymmetry`` k 近邻不对称权重下的 I 与不对称度；
+        ``moran_reject_diag`` / ``moran_reject_shape`` / ``moran_reject_const``
+        / ``moran_reject_zero_weights`` / ``moran_reject_n_perm`` 五条输入校验是否都抛 ValueError。
 
     算法:
         1. 泊松：n=16、f = 2π²sin(πx)sin(πy)（此时解析解 u = sin(πx)sin(πy)），
@@ -860,9 +1032,16 @@ def _self_test() -> dict:
            同一时间窗内 flow 必须等于 density * mean_speed；p_brake 从 0 增到 0.3 后速度下降。
         9. 比例缩放：λ=100 时长度因子 100、面积因子 1e4（纯几何）、Froude 相似下速度因子 10；
            无量纲量因子恒为 1；用解析构造的 target 反算 relative_error 应当为 0。
+        10. Moran's I：4 环上取棋盘型样本（手算 I=-1、S1=16、S2=64、正态近似方差 8/90），
+            n=4 自动穷举 24 个置换，双侧伪 p 手算为 9/25=0.36、单侧为 1.0；链上梯度
+            （手算 I=1/3、方差 4/27、单侧伪 p=3/25=0.12）；完全图退化情形（两个方差都为 0、
+            z=nan、p=1）；5x5 车步邻接上行+列梯度场（手算 I=0.75，499 次随机置换 p<=0.01，
+            并要求正态近似方差与置换方差相对差 < 20%）；棋盘型样本（I≈-1）；k 近邻不对称权重
+            （不对称度 1.0）；最后五条 ValueError 校验。
 
     复杂度:
         时间最重的是泊松（n=16 时约 155 次 SOR 迭代，O(n_iter·n²) ≈ 4e4 次格点更新），
+        其次是 Moran's I 的两次置换检验（24 次穷举 + 2×499 次抽样，n=25 时每次 O(n²)），
         其余都是 ≤200 步的一维/元胞算例；整组自测在普通笔记本上 < 50 ms / 空间 O(n²)。
 
     陷阱:
@@ -877,6 +1056,12 @@ def _self_test() -> dict:
            是 (1-ρ)/ρ = 4 < 0.9 v_max，物理上不可能达到 v_max。
         5. 森林火灾的断言依赖固定种子下的具体初始布局：换种子后"无生长时终态零树"仍成立，
            但终态树占比之类的数值会变。
+        6. Moran's I 的穷举置换（n <= 8）与权重矩是**精确**判据；5x5 网格那两条是蒙特卡洛
+           估计，只在固定种子（默认种子）下可复现——改种子后 p 值允许在 1/(n_perm+1) 的量级
+           上抖动，只有"I >= 0.7""p <= 0.01"这类量级判据才稳定。
+        7. 完全图那条断言（两个方差都为 0）不是数值巧合：Σ_i (x_i - x̄) = 0 恒成立，人人相邻时
+           I 对任何置换都等于 E[I]，所以置换检验在这里**没有任何功效**。看到"p=1"要能想到
+           是权重结构退化，而不是代码写错。
 
     参考:
         本模块各函数参考文献。
@@ -1071,6 +1256,147 @@ def _self_test() -> dict:
         raise AssertionError("无量纲量的换算因子必须恒为 1")
     max_rel = max(scale["relative_error"].values())
 
+    # ---------- 9. Moran's I：手算值、正态近似、置换检验与三个退化情形 ----------
+    # 4 环上的"棋盘型"样本：x̄=1.5、ss=1、S0=8、ΣΣw_ij z_i z_j = -2，
+    # 所以 I = (4/8)·(-2)/1 = -1（强负自相关）；权重矩 S1=16、S2=64，
+    # 正态近似方差 =(16·16 - 4·64 + 3·64)/(3·5·64) - 1/9 = 8/90。
+    w_cycle = np.array([[0.0, 1.0, 1.0, 0.0],
+                        [1.0, 0.0, 0.0, 1.0],
+                        [1.0, 0.0, 0.0, 1.0],
+                        [0.0, 1.0, 1.0, 0.0]])
+    moran_cycle = moran_i([1.0, 2.0, 2.0, 1.0], w_cycle, seed=None)
+    if abs(moran_cycle["I"] + 1.0) > 1e-12:
+        raise AssertionError(f"4 环棋盘型样本的 Moran's I 手算应为 -1，得到 {moran_cycle['I']}")
+    if abs(moran_cycle["expected"] + 1.0 / 3.0) > 1e-12:
+        raise AssertionError(f"E[I] 必须恒为 -1/(n-1) = -1/3，得到 {moran_cycle['expected']}")
+    if abs(moran_cycle["variance_normality"] - 8.0 / 90.0) > 1e-12:
+        raise AssertionError(
+            f"正态近似方差手算应为 8/90，得到 {moran_cycle['variance_normality']}"
+        )
+    if (moran_cycle["s0"], moran_cycle["s1"], moran_cycle["s2"]) != (8.0, 16.0, 64.0):
+        raise AssertionError(
+            f"权重矩手算应为 S0=8, S1=16, S2=64，得到 "
+            f"{(moran_cycle['s0'], moran_cycle['s1'], moran_cycle['s2'])}"
+        )
+    if int(moran_cycle["n_permutation"]) != 24 or not moran_cycle["exact_permutation"]:
+        raise AssertionError("n=4 时应自动穷举 4! = 24 个置换并标记 exact_permutation=True")
+    # 24 个置换里恰有 8 个满足 |I_p - E| >= |I - E| = 2/3，加 1 修正后 p = 9/25 = 0.36；
+    # 而 I_p >= I = -1 恒成立，所以单侧伪 p 必为 1.0。
+    if abs(moran_cycle["p_value_permutation"] - 0.36) > 1e-12:
+        raise AssertionError(
+            f"4 环穷举置换的双侧伪 p 手算应为 0.36，得到 {moran_cycle['p_value_permutation']}"
+        )
+    if abs(moran_cycle["p_value_permutation_greater"] - 1.0) > 1e-12:
+        raise AssertionError("I 已是置换分布的最小值时，单侧伪 p 必为 1.0")
+
+    # 一维链路 1-2-3-4 上的单调梯度：I = (4/6)·2.5/5 = 1/3；
+    # S1=12、S2=40 给出正态近似方差 140/540 - 1/9 = 4/27。
+    w_path = np.array([[0.0, 1.0, 0.0, 0.0],
+                       [1.0, 0.0, 1.0, 0.0],
+                       [0.0, 1.0, 0.0, 1.0],
+                       [0.0, 0.0, 1.0, 0.0]])
+    moran_path = moran_i([1.0, 2.0, 3.0, 4.0], w_path, seed=None)
+    if abs(moran_path["I"] - 1.0 / 3.0) > 1e-12:
+        raise AssertionError(f"链上梯度的 Moran's I 手算应为 1/3，得到 {moran_path['I']}")
+    if abs(moran_path["variance_normality"] - 4.0 / 27.0) > 1e-12:
+        raise AssertionError(
+            f"链上梯度的正态近似方差手算应为 4/27，得到 {moran_path['variance_normality']}"
+        )
+    # 反转是唯一另一个 I_p >= 1/3 的置换（置换 I 与方向反转同值），故单侧伪 p = 3/25。
+    if abs(moran_path["p_value_permutation_greater"] - 0.12) > 1e-12:
+        raise AssertionError(
+            f"链上梯度穷举的单侧伪 p 手算应为 0.12，得到 {moran_path['p_value_permutation_greater']}"
+        )
+
+    # 退化情形：完全图（人人相邻）时 Σ_i z_i = 0 使 I 对任何置换都恒等于 -1/(n-1)，
+    # 置换分布方差恰为 0，正态近似方差也恰为 0 -> z/p 只能是 nan，置换检验无功效。
+    w_k4 = np.ones((4, 4)) - np.eye(4)
+    moran_k4 = moran_i([1.0, 2.0, 3.0, 4.0], w_k4, seed=None)
+    if abs(moran_k4["I"] + 1.0 / 3.0) > 1e-12:
+        raise AssertionError("完全图下 I 应恰等于 E[I] = -1/3")
+    if abs(moran_k4["variance_normality"]) > 1e-12 or abs(moran_k4["variance_permutation"]) > 1e-12:
+        raise AssertionError("完全图下正态近似方差与置换方差都应为 0")
+    if not math.isnan(moran_k4["z_normality"]):
+        raise AssertionError("方差为 0 时 z_normality 必须是 nan，不能返回 inf")
+    if abs(moran_k4["p_value_permutation"] - 1.0) > 1e-12:
+        raise AssertionError("置换分布退化为单点时双侧伪 p 必为 1.0")
+
+    # 5x5 车步邻接：行+列梯度是强正自相关（I 手算 = 0.75），棋盘型是强负自相关（I ≈ -1）。
+    n_grid = 5
+    w_grid = np.zeros((n_grid * n_grid, n_grid * n_grid))
+    for i_grid in range(n_grid):
+        for j_grid in range(n_grid):
+            k_grid = i_grid * n_grid + j_grid
+            if i_grid + 1 < n_grid:
+                w_grid[k_grid, k_grid + n_grid] = w_grid[k_grid + n_grid, k_grid] = 1.0
+            if j_grid + 1 < n_grid:
+                w_grid[k_grid, k_grid + 1] = w_grid[k_grid + 1, k_grid] = 1.0
+    grad_grid = np.array([i + j for i in range(n_grid) for j in range(n_grid)], dtype=float)
+    moran_grid = moran_i(grad_grid, w_grid, n_perm=499, seed=None)
+    if abs(moran_grid["I"] - 0.75) > 1e-12:
+        raise AssertionError(f"5x5 梯度场的 Moran's I 手算应为 0.75，得到 {moran_grid['I']}")
+    if moran_grid["exact_permutation"] or int(moran_grid["n_permutation"]) != 499:
+        raise AssertionError("n=25 时不应穷举，n_permutation 必须等于 n_perm=499")
+    if moran_grid["p_value_permutation"] > 0.01:
+        raise AssertionError(
+            f"5x5 梯度场的置换检验应当极显著，得到 p={moran_grid['p_value_permutation']}"
+        )
+    moran_grid_gap = abs(moran_grid["variance_permutation"] - moran_grid["variance_normality"]) \
+        / moran_grid["variance_normality"]
+    if moran_grid_gap > 0.2:
+        raise AssertionError(
+            f"正态近似方差与置换方差应量级一致（相对差 < 20%），得到 {moran_grid_gap}"
+        )
+    checker_grid = np.array(
+        [(-1.0) ** (i + j) for i in range(n_grid) for j in range(n_grid)], dtype=float
+    )
+    moran_checker = moran_i(checker_grid, w_grid, n_perm=499, seed=None)
+    if moran_checker["I"] > -0.999:
+        raise AssertionError(f"5x5 棋盘型的 Moran's I 应接近 -1，得到 {moran_checker['I']}")
+    if abs(moran_checker["p_value_permutation_greater"] - 1.0) > 1e-12:
+        raise AssertionError("棋盘型样本的 I 在置换分布中已是最小，单侧伪 p 必为 1.0")
+
+    # 不对称权重（k 近邻式）：只有 (W+W^T)/2 进入 I，但必须把不对称度如实报出来。
+    w_asym = np.zeros((12, 12))
+    pts_asym = rng(5).random((12, 2))
+    dist_asym = np.linalg.norm(pts_asym[:, None, :] - pts_asym[None, :, :], axis=2)
+    for i_asym in range(12):
+        for j_asym in np.argsort(dist_asym[i_asym])[1:4]:
+            w_asym[i_asym, j_asym] = 1.0
+    x_asym = np.array([1.0, 1.2, 0.9, 2.5, 2.7, 2.4, 3.1, 3.3, 3.0, 1.1, 2.6, 3.2])
+    moran_asym = moran_i(x_asym, w_asym, seed=None)
+    if abs(moran_asym["weights_asymmetry"] - 1.0) > 1e-12:
+        raise AssertionError("k 近邻权重的不对称度应被如实报出为 1.0")
+    if abs(moran_asym["I"] + 0.3205397826848931) > 1e-9:
+        raise AssertionError(f"k 近邻权重下的 I 应为 -0.3205397827，得到 {moran_asym['I']}")
+
+    # 输入校验：对角自环、形状不符、常数列、全零权重、非法置换次数都必须抛 ValueError。
+    try:
+        moran_i([1.0, 2.0], np.array([[1.0, 1.0], [1.0, 0.0]]))
+        raise AssertionError("权重矩阵带对角自环时本应抛 ValueError")
+    except ValueError:
+        moran_reject_diag = True
+    try:
+        moran_i([1.0, 2.0, 3.0], w_path)
+        raise AssertionError("values 长度与权重阶数不符时本应抛 ValueError")
+    except ValueError:
+        moran_reject_shape = True
+    try:
+        moran_i([2.0, 2.0, 2.0, 2.0], w_path)
+        raise AssertionError("常数列本应抛 ValueError")
+    except ValueError:
+        moran_reject_const = True
+    try:
+        moran_i([1.0, 2.0, 3.0, 4.0], np.zeros((4, 4)))
+        raise AssertionError("全零权重（S0=0）本应抛 ValueError")
+    except ValueError:
+        moran_reject_zero = True
+    try:
+        moran_i([1.0, 2.0, 3.0, 4.0], w_path, n_perm=0)
+        raise AssertionError("n_perm=0 本应抛 ValueError")
+    except ValueError:
+        moran_reject_nperm = True
+
     return {
         "spatial_heat_explicit_err": round(heat_exp_err, 8),
         "spatial_heat_implicit_err": round(heat_imp_err, 8),
@@ -1110,4 +1436,36 @@ def _self_test() -> dict:
         "spatial_scale_length_factor": round(float(scale["factors"]["length"]), 6),
         "spatial_scale_velocity_factor": round(float(scale["factors"]["velocity"]), 6),
         "spatial_scale_max_rel_error": round(float(max_rel), 12),
+        "moran_cycle_I": round(float(moran_cycle["I"]), 12),
+        "moran_cycle_expected": round(float(moran_cycle["expected"]), 12),
+        "moran_cycle_var_normality": round(float(moran_cycle["variance_normality"]), 12),
+        "moran_cycle_var_permutation": round(float(moran_cycle["variance_permutation"]), 12),
+        "moran_cycle_p_normality": round(float(moran_cycle["p_value_normality"]), 12),
+        "moran_cycle_p_permutation": round(float(moran_cycle["p_value_permutation"]), 12),
+        "moran_cycle_p_greater": round(float(moran_cycle["p_value_permutation_greater"]), 12),
+        "moran_cycle_n_permutation": int(moran_cycle["n_permutation"]),
+        "moran_cycle_s1": round(float(moran_cycle["s1"]), 12),
+        "moran_cycle_s2": round(float(moran_cycle["s2"]), 12),
+        "moran_path_I": round(float(moran_path["I"]), 12),
+        "moran_path_var_normality": round(float(moran_path["variance_normality"]), 12),
+        "moran_path_p_greater": round(float(moran_path["p_value_permutation_greater"]), 12),
+        "moran_k4_var_normality": round(float(moran_k4["variance_normality"]), 12),
+        "moran_k4_var_permutation": round(float(moran_k4["variance_permutation"]), 12),
+        "moran_k4_z_nan": bool(math.isnan(moran_k4["z_normality"])),
+        "moran_k4_p_permutation": round(float(moran_k4["p_value_permutation"]), 12),
+        "moran_grid_I": round(float(moran_grid["I"]), 12),
+        "moran_grid_p_permutation": round(float(moran_grid["p_value_permutation"]), 12),
+        "moran_grid_p_greater": round(float(moran_grid["p_value_permutation_greater"]), 12),
+        "moran_grid_n_permutation": int(moran_grid["n_permutation"]),
+        "moran_grid_exact": bool(moran_grid["exact_permutation"]),
+        "moran_grid_var_rel_gap": round(float(moran_grid_gap), 12),
+        "moran_checker_I": round(float(moran_checker["I"]), 12),
+        "moran_checker_p_greater": round(float(moran_checker["p_value_permutation_greater"]), 12),
+        "moran_asym_I": round(float(moran_asym["I"]), 12),
+        "moran_asym_weights_asymmetry": round(float(moran_asym["weights_asymmetry"]), 12),
+        "moran_reject_diag": bool(moran_reject_diag),
+        "moran_reject_shape": bool(moran_reject_shape),
+        "moran_reject_const": bool(moran_reject_const),
+        "moran_reject_zero_weights": bool(moran_reject_zero),
+        "moran_reject_n_perm": bool(moran_reject_nperm),
     }

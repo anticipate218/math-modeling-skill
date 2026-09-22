@@ -27,23 +27,23 @@
 
 | 题目族 | 模块 | 主要函数 | 典型赛题信号 |
 |---|---|---|---|
-| 优化与调度 | `optimization.py` | `simplex_lp` `branch_and_bound_ilp` `knapsack_dp` `assignment_hungarian` `transportation_vogel` | "如何分配/排班/选址使成本最小" |
-| 路径与图网络 | `graphs.py` | `dijkstra` `floyd_warshall` `kruskal_mst` `max_flow_edmonds_karp` `tsp_nearest_neighbor` `tsp_two_opt` `pagerank` `connected_components` | "最优路径/管网铺设/最大运力/关键节点" |
-| 组合优化与元启发式 | `heuristics.py` | `simulated_annealing` `genetic_algorithm` `particle_swarm` `ant_colony_tsp` | "NP-hard、目标不可导、规模大到精确解解不动" |
+| 优化与调度 | `optimization.py` | `simplex_lp` `lp_sensitivity` `interior_point_lp` `branch_and_bound_ilp` `knapsack_dp` `assignment_hungarian` `transportation_vogel` | "如何分配/排班/选址使成本最小" |
+| 路径与图网络 | `graphs.py` | `dijkstra` `bellman_ford` `floyd_warshall` `kruskal_mst` `max_flow_edmonds_karp` `topological_sort` `critical_path` `tsp_nearest_neighbor` `tsp_two_opt` `pagerank` `connected_components` | "最优路径/管网铺设/最大运力/关键节点" |
+| 组合优化与元启发式 | `heuristics.py` | `simulated_annealing` `genetic_algorithm` `particle_swarm` `ant_colony_tsp` `artificial_bee_colony` `benchmark_functions` `benchmark_optimizers` | "NP-hard、目标不可导、规模大到精确解解不动" |
 | 预测与时间序列 | `forecasting.py` | `moving_average` `exponential_smoothing` `holt_linear` `holt_winters` `ar_model` `adf_test` `acf` `pacf` `rolling_origin_cv` | "预测未来若干期的销量/需求/流量" |
-| 统计推断与回归 | `statistics.py` | `pearson_corr` `spearman_corr` `kendall_tau` `t_test_one_sample` `t_test_two_sample` `chi_square_test` `jarque_bera` `anderson_darling` `ks_test_normal` `ols` `vif` `ridge_regression` `logistic_regression` `bootstrap_ci` `permutation_test` | "哪些因素显著、相关性强不强、分布是否正态"（`shapiro_wilk` 刻意不实现，见 §3.5） |
-| 评价与决策 | `evaluation.py` | `ahp_weights` `entropy_weights` `critic_weights` `topsis` `vikor` `grey_relational_grade` `dea_ccr` `dea_bcc` `fuzzy_comprehensive_eval` `topsis_rank_sensitivity` | "给若干方案排序/打分/评效率" |
-| 聚类与分类 | `clustering.py` | `kmeans` `kmeans_plusplus_init` `silhouette_score` `elbow_curve` `agglomerative` `dbscan` | "把样本分成几类、客户分群" |
-| 微分方程与机理 | `differential.py` | `solve_ivp_euler` `solve_ivp_rk4` `simulate_sir` `logistic_growth` `lotka_volterra_rhs` `fit_sir_least_squares` `estimate_convergence_order` | "传染病/种群/物理过程随时间演化" |
-| 随机模型与仿真 | `stochastic.py` | `mc_pi` `mc_integrate` `mm1_metrics` `mm1_simulate` `markov_steady_state` `markov_absorption` `gamblers_ruin` | "排队/可靠性/马尔可夫状态转移/概率估计" |
-| 几何与空间 | `geometry.py` | `convex_hull` `polygon_area` `point_in_polygon` `haversine` `idw_interpolate` `ordinary_kriging` | "选址覆盖、区域面积、经纬度距离、空间插值" |
-| 博弈与网络 | `game.py` | `zero_sum_value_lp` `nash_support_enumeration` `shapley_value` `gale_shapley` `replicator_dynamics` | "对抗/合作、收益分配、稳定匹配、策略演化" |
-| 时间序列建模 | `timeseries.py` | `gm11` `arima_fit` `arima_forecast` `arima_order_select` `sarima_fit` `garch11_fit` `kalman_filter_local_level` `ljung_box` | "小样本趋势外推（灰色）、非平稳序列定阶、波动率聚集、状态空间滤波" |
-| 机器学习 | `ml.py` | `train_test_split` `confusion_matrix` `classification_metrics` `roc_auc` `kfold_indices` `knn_predict` `decision_tree_fit` `random_forest_fit` `gradient_boosting_fit` `smote` | "要把分类/回归做成可解释模型、样本不平衡、需要交叉验证与特征重要性" |
-| 多准则决策 | `multicriteria.py` | `promethee_ii` `electre_i` `electre_iii` `rank_sum_ratio` `rsr_distribution` `borda_count` `copeland_score` `rank_consensus` | "多方法排序结果打架，要出一份稳健名次表" |
-| 多目标优化 | `multiobjective.py` | `pareto_dominates` `fast_non_dominated_sort` `crowding_distance` `nsga2` `pareto_front` `hypervolume_2d` | "两个以上目标互相冲突，要交一组 Pareto 方案而不是单一最优" |
-| 灵敏度与数据清洗 | `sensitivity.py` | `oat_sensitivity` `elasticity` `morris_screening` `sobol_first_order` `sobol_total_effect` `impute_knn` `detect_outliers_iqr` | "哪些参数最关键、结论稳不稳、数据有缺失或异常值" |
-| 空间与物理场 | `spatial.py` | `heat_equation_1d_explicit` `heat_equation_1d_implicit` `poisson_2d_sor` `forest_fire_ca` `traffic_ca_nagel_schreckenberg` `buckingham_pi` `scaling_similarity` | "温度/电势场随空间演化、元胞自动机（林火/交通流）、量纲分析与相似缩放" |
+| 统计推断与回归 | `statistics.py` | `pearson_corr` `spearman_corr` `kendall_tau` `t_test_one_sample` `t_test_two_sample` `mann_whitney_u` `wilcoxon_signed_rank` `kruskal_wallis` `anova_oneway` `chi_square_test` `jarque_bera` `anderson_darling` `ks_test_normal` `newey_west_se` `ols` `vif` `ridge_regression` `logistic_regression` `bootstrap_ci` `bca_bootstrap_ci` `permutation_test` | "哪些因素显著、相关性强不强、分布是否正态"（`shapiro_wilk` 刻意不实现，见 §3.5） |
+| 评价与决策 | `evaluation.py` | `ahp_weights` `entropy_weights` `critic_weights` `topsis` `vikor` `grey_relational_grade` `rsr_evaluation` `promethee_ii_ranking` `kendall_w_concordance` `dea_ccr` `dea_bcc` `fuzzy_comprehensive_eval` `topsis_rank_sensitivity` | "给若干方案排序/打分/评效率" |
+| 聚类与分类 | `clustering.py` | `kmeans` `kmeans_plusplus_init` `kmedoids` `silhouette_score` `elbow_curve` `agglomerative` `dbscan` | "把样本分成几类、客户分群" |
+| 微分方程与机理 | `differential.py` | `solve_ivp_euler` `solve_ivp_rk4` `euler_maruyama` `simulate_sir` `logistic_growth` `lotka_volterra_rhs` `fit_sir_least_squares` `estimate_convergence_order` | "传染病/种群/物理过程随时间演化" |
+| 随机模型与仿真 | `stochastic.py` | `mc_pi` `mc_integrate` `mm1_metrics` `mm1_simulate` `mmck_metrics` `markov_steady_state` `markov_absorption` `gamblers_ruin` `geometric_brownian_motion` | "排队/可靠性/马尔可夫状态转移/概率估计" |
+| 几何与空间 | `geometry.py` | `convex_hull` `polygon_area` `point_in_polygon` `sutherland_hodgman_clip` `haversine` `idw_interpolate` `ordinary_kriging` | "选址覆盖、区域面积、经纬度距离、空间插值" |
+| 博弈与网络 | `game.py` | `zero_sum_value_lp` `nash_support_enumeration` `iterated_elimination` `ess_check` `correlated_equilibrium_lp` `shapley_value` `gale_shapley` `replicator_dynamics` | "对抗/合作、收益分配、稳定匹配、策略演化" |
+| 时间序列建模 | `timeseries.py` | `gm11` `arima_fit` `arima_forecast` `arima_order_select` `sarima_fit` `garch11_fit` `kalman_filter_local_level` `kalman_smoother_linear` `ljung_box` | "小样本趋势外推（灰色）、非平稳序列定阶、波动率聚集、状态空间滤波" |
+| 机器学习 | `ml.py` | `train_test_split` `confusion_matrix` `classification_metrics` `roc_auc` `pr_curve` `average_precision_score` `kfold_indices` `knn_predict` `decision_tree_fit` `random_forest_fit` `gradient_boosting_fit` `pca_fit` `pca_transform` `smote` | "要把分类/回归做成可解释模型、样本不平衡、需要交叉验证与特征重要性" |
+| 多准则决策 | `multicriteria.py` | `promethee_ii` `electre_i` `electre_ii` `electre_iii` `rank_sum_ratio` `rsr_distribution` `borda_count` `copeland_score` `rank_consensus` | "多方法排序结果打架，要出一份稳健名次表" |
+| 多目标优化 | `multiobjective.py` | `pareto_dominates` `fast_non_dominated_sort` `crowding_distance` `nsga2` `moead` `pareto_front` `hypervolume_2d` `igd_metric` `spacing_metric` `knee_points` | "两个以上目标互相冲突，要交一组 Pareto 方案而不是单一最优" |
+| 灵敏度与数据清洗 | `sensitivity.py` | `oat_sensitivity` `elasticity` `morris_screening` `sobol_first_order` `sobol_second_order` `sobol_total_effect` `impute_knn` `impute_mice` `detect_outliers_iqr` | "哪些参数最关键、结论稳不稳、数据有缺失或异常值" |
+| 空间与物理场 | `spatial.py` | `heat_equation_1d_explicit` `heat_equation_1d_implicit` `poisson_2d_sor` `forest_fire_ca` `traffic_ca_nagel_schreckenberg` `moran_i` `buckingham_pi` `scaling_similarity` | "温度/电势场随空间演化、元胞自动机（林火/交通流）、量纲分析与相似缩放" |
 
 ---
 
@@ -64,6 +64,8 @@
 | `scenario_robust_lp` | 先对每个情景单独调 `simplex_lp` 求 `z_s*`（后悔值的基准；任一情景不可行 就无法定义后悔值，直接抛 ValueError）。 | 时间 O((K+1) 次单纯形迭代) / 空间 O((m + K) x (n + 1))。 | 返回值 `objective` 是**最坏情景值**，而内部最小化的是混合目标；β<1 时两者不等… |
 | `chance_constrained_lp` | 约束 `P(a_i @ x <= b_i + ξ_i) >= alpha`，`ξ_i ~ N(0, sigma_i^2)` 独立。 | 时间 O(一次单纯形迭代) / 空间 O(m x n)（与 `simplex_lp` 相同）。 | 这只对**单侧**约束成立：`a@x >= b` 形式必须写成 `-a@x <= -b` 再减 z*sigma… |
 | `facility_location` | 用 `itertools.combinations` 枚举全部 `C(n_sites, p)` 个设施组合 （按字典序，保证结果确定）。 无容量约束时，每个客户在所选设施中取成本最小者（并列取下标最小者）。 | 时间 O(C(n_sites, p) * n_customers * p)（有容量时多一个排序的 log 因子）… | **组合爆炸**：这是精确枚举，n_sites=30、p=5 时 C(30,5)=142506 还能勉强跑… |
+| `lp_sensitivity` | 以 LP 最优基为基准做影子价格、RHS 与目标系数灵敏度区间分析 | 时间 O((m+n)·m) + 一次单纯形 / 空间 O((m+1)×(n+m)) | ① 只覆盖**不等式约束 + 变量上下界**，没有等式约束（等式请拆成两条不等式），上下界行在返回值里以 `source == "bound"` 标注；② 影子价格是**最小化口径**（恒 ≤ 0），最大化问题要传 `c -> -c`；退化基会让报告的区间收缩甚至缩成一点，`hi == lo` 不等于"该系数绝对不能动" |
+| `interior_point_lp` | Mehrotra 预测-校正原始-对偶内点法解 LP | 时间 O(max_iter·n³)（实测 20–50 轮收敛）/ 空间 O(n²) | ① 在顶点解/退化问题上收敛慢，且**不做不可行与无界判定**，迭代用尽时返回 `status == "max_iter"` 而不是报错；② 返回的是**内点极限**而非精确顶点，`tol` 是相对量，报数前要按精度需求取 `tol` |
 
 **外部库**：`google/or-tools`（CP-SAT、LP、MIP、TSP/VRP）、`Pyomo/pyomo`（代数建模，可接多种求解器）。正规论文若要报"全局最优"，请用求解器并写明 gap。
 
@@ -91,6 +93,9 @@
 | `a_star` | 标准 A*：`f = g + h`，用二叉堆取最小 f；节点出堆时才判定是否扩展（配合"同一节点 允许多次入堆、取最优 g"），遇到 goal 立即返回。 | 时间 O(E log V)（最坏退化为 Dijkstra）/ 空间 O(V + E)。 | 启发式必须**可采纳**（`h <= 真实剩余代价`）；不可采纳时返回的 cost 可能大于真实 |
 | `vrp_clarke_wright` | 节约法：先给每个客户一条 `depot -> i -> depot` 的独立路线，计算节约值 `s(i, j) = d(depot, i) + d(depot, j) - d(i, j)`… | 时间 O(n^2 log n)（节约值排序主导）/ 空间 O(n^2)。 | 只做"端点合并"，不做 2-opt / Or-opt 改进，因此结果一般不是最优解（Clarke-Wright |
 | `network_robustness` | 每轮在剩余图中用"非零邻接计数"选度最大的节点（同分取 `_weight_matrix` 顺序中 靠前的），标记删除；全部移除结束后用一次 BFS 全源跳数统计最大连通分量与全局效率。 | 时间 O(n_remove * V^2 + V * (V + E)) / 空间 O(V + E)。 | 移除顺序是**确定性贪心**（度最大 + 下标 tie-break），不是随机攻击；随机故障 |
+| `bellman_ford` | 逐边松弛 V-1 轮的单源最短路（可带负权） | 时间 O(V·E) / 空间 O(V+E) | ① **只能检出从源点可达的负环**：不可达的负环不会报错，`has_negative_cycle` 为 False 不代表图里没有负环；② 松弛用精确 `<` 比较、无容差，浮点权重下的"零权环"可能被误判成负环 |
+| `topological_sort` | Kahn 入度法 + 最小堆（同层按最小下标出队，结果确定） | 时间 O(V + E log V) / 空间 O(V+E) | ① **有环不算错误**：只返回 `is_dag=False` 与更短的 `order`，要定位环得自己再查；② `directed=False` 时每条无向边被当成两条互逆弧，只要有边就必然含 2-环，不能拿它给无向图"拓扑排序" |
+| `critical_path` | CPM：按拓扑序正推 ES/EF、逆推 LS/LF，取总时差为 0 的活动 | 时间 O(V + E log V) / 空间 O(V+E) | ① **含环直接抛 `ValueError`**（CPM 对环无定义），工期必须非负；② 总时差是**整条链共享**的，同一非关键链上各活动的 TF 不能相加；多个终点都按 `project_duration` 起算 LF |
 
 **外部库**：`networkx/networkx`（图算法齐全，适合交叉验证）。
 
@@ -106,6 +111,9 @@
 | `tabu_search` | 令 cur = init，清空禁忌表； 每步枚举 `neighbors_fn(cur)`，跳过非有限候选；候选若在禁忌表中且**不优于** 历史最优则丢弃（藐视准则 aspiration：优于历史最优的禁忌解仍可取用）… | 时间 O(max_iter * (\|N\| * (T_neighbor + T_objective) + \|禁忌表\|))… | **本实现禁忌的是"解"（属性禁忌）而不是"移动"**：对置换类问题，交换 (i,j) 与交换 |
 | `grey_wolf_optimizer` | 在 `[lo, hi]` 内均匀初始化 `n_wolves` 匹狼并求值，按目标值升序取 alpha / beta / delta 三匹头狼（GWO 的"等级"结构… | 时间 O(n_gen * n_wolves * n_dim)（外加等量目标函数求值）/ 空间 O(n_wolves *… | **GWO 没有显式的个体记忆**（没有 pbest）：狼的位置可以变差，只有三匹头狼保留了 |
 | `variable_neighborhood_search` | 令 cur = init，求值； 每步用 `rng` 打乱邻域顺序，对**每个**邻域各生成 1 个候选并求值… | 时间 O(max_iter * \|neighborhoods\| * (T_perturb + T_objective))… | **本实现是"下降式"VNS：只接受改进解**，因此它**不能**像禁忌搜索那样主动走差解。 |
+| `benchmark_functions` | 7 个标准测试函数（sphere/rastrigin/ackley/rosenbrock/griewank/schwefel/styblinski_tang）及其文献最优值与盒边界 | 时间 O(dim) / 空间 O(dim) | ① 文献常数**按公式现算**而不是查表：Schwefel 的最优值在 -1e-13 量级，判"成功"必须用相对容差；② 各函数尺度不可比（Rosenbrock 在高维极难、部分函数最优解落在窄谷），**不要为了好看缩小边界**，也不要把不同函数的函数值横向比较 |
+| `benchmark_optimizers` | 同一预算/种子协议下对比 SA/PSO/DE/GWO 并给确定性排名 | 时间 O(len(seeds)·len(algorithms)·budget) / 空间 O(len(seeds)·dim) | ① 排名可能因"看最好值"还是"看均值"而翻转，论文必须两者都报；默认参数下**等预算 ≠ 公平**（`step_scale` 在高维会让 SA 几乎不动）；② 成功判定用的文献最优值常已取整，会把"差一点"算成失败 |
+| `artificial_bee_colony` | 人工蜂群：雇佣蜂邻域搜索 + 观察蜂轮盘赌 + 侦查蜂重开 | 时间 O(max_iter·n_food·(dim + T_obj)) / 空间 O(n_food·dim) | ① 放弃阈值 `limit` 是最关键参数：过大早熟、过小退化成随机搜索，必须写进论文；② 观察蜂选择是**有放回**的轮盘赌，且每轮恰好 `n_food` 只，不要按"无放回抽样"理解；本函数不在 `benchmark_optimizers` 的默认算法表里 |
 
 **写论文的硬要求**：元启发式的结果**不是"答案"而是"一次搜索的结果"**。必须交代：(1) 随机种子与重复次数；(2) 参数表；(3) 至少 10–30 次独立重复的最优值分布（最好给箱线图）；(4) 与小规模精确解对照的 gap。只跑一次就给最优解，是评委最容易识破的失分点。
 
@@ -169,6 +177,12 @@
 | `durbin_watson` | 直接按定义算相邻残差差分平方和与残差平方和之比；等价形式 `DW ≈ 2(1 - rho_1)`（rho_1 为一阶样本自相关，大样本下近似）。 | 时间 O(n) / 空间 O(n)。 | 残差必须按**原始观测顺序**传入：排序过的残差会算出接近 2 的 "正常" 值… |
 | `breusch_pagan` | 取 `e2 = residual^2`； 用 `ols` 的同一套最小二乘把 e2 对 `[1, X]` 回归，得辅助 `R2`… | 时间 O(n p^2) / 空间 O(np)。 | 这是 **LM（拉格朗日乘数）版本**，不是 Koenker 的学生化版本：它对残差的 |
 | `stepwise_selection` | 从空模型（只有截距）出发； 每一轮同时评估所有"加入一个未选变量"与"剔除一个已选变量"的候选模型， 取准则值最低且**严格优于**当前模型的动作执行（这就是"逐步"而非纯前向）… | 时间 O(max_steps * p * n p^2) / 空间 O(np)。 | **逐步回归后的 p 值不可信**：变量是被数据挑出来的，常规 t 检验的名义显著性 |
+| `mann_whitney_u` | 秩和检验 U 统计量 + 并列修正的正态近似 | 时间 O(n log n) / 空间 O(n) | ① p 值来自**正态近似**（含并列修正），小样本（n < 8）请改用精确分布；② `u_statistic` 取的是 `min(u1, u2)`，**方向信息只保留在 `u1` 与 `alternative` 里**，直接拿它报"哪组更大"会出错 |
+| `wilcoxon_signed_rank` | 配对差值绝对值的符号秩检验（正态近似） | 时间 O(n log n) / 空间 O(n) | ① **差值为 0 的对全部丢弃**，`n_effective` 会小于样本量，结论随"0 怎么处理"变化，必须交代；② `n_effective < 10` 时正态近似很粗，请查精确表，且 `alternative` 的方向不要写反 |
+| `kruskal_wallis` | 多组秩和检验 H 统计量（含并列修正） | 时间 O(N log N) / 空间 O(N) | ① 是**大样本卡方近似**，各组样本量都小时要查精确表；② 拒绝原假设只说"至少有一组不同"，具体哪两组要另做事后两两比较，别把 p 小当成"每组都不同" |
+| `anova_oneway` | 单因素方差分析（组间/组内平方和分解 + F 检验） | 时间 O(N) / 空间 O(N) | ① 前提是**正态 + 方差齐性**，不满足请改 Welch 或 Kruskal-Wallis；② `ms_within == 0`（组内完全相同）时 F 为 `inf`，这不是"极显著"而是方差假设崩了，不能直接下结论 |
+| `newey_west_se` | Bartlett 核 HAC 稳健标准误（滞后截断 L） | 时间 O(L·n·p²) / 空间 O(np) | ① **只换标准误、不改变系数**：点估计与 `ols` 逐位相同，不要写成"用了 HAC 的回归"；② 截断阶 `L` 是偏差-方差权衡（默认 `floor(4·(n/100)^(2/9))`），报告里必须写明 L，且检验仍用正态近似 |
+| `bca_bootstrap_ci` | 偏差修正 + 加速度修正（BCa）的 Bootstrap 置信区间 | 时间 O((n_boot + n)·单次统计量开销) / 空间 O(n_boot) | ① 加速度来自**刀切法**，n < 10 时协方差项不稳、区间可能翻转；分母为 0 时直接抛 `ValueError`，不做兜底；② 仍是 iid 假设（时序要用块 bootstrap），且结果受 `seed` 与 `n_boot` 分辨率限制 |
 
 **为什么 `shapiro_wilk` 是抛异常而不是实现**：Shapiro-Wilk 的 W 需要正态次序统计量期望的权重表，精确 p 值依赖 Royston (1995) / AS R94 按 n 分段的多项式系数。在只允许 numpy + 标准库的前提下无法逐项核对那张表，**凭记忆写出来会得到"能跑但偏差几个百分点"的结果**——宁可少一个函数也不返回编造的 W 与 p 值。模块内还点명了一个常见误用：把 Blom 分数 `m_i/‖m‖` 当作 `a_i`，算出来的是 Shapiro-**Francia** 统计量却被标成 "Shapiro-Wilk"。替代路径：`scipy.stats.shapiro`（推荐），或本模块的 `anderson_darling` / `jarque_bera` / `ks_test_normal`。
 
@@ -195,6 +209,9 @@
 | `dea_bcc` | BCC（规模报酬可变，技术效率） | 同 CCR | 比 CCR 多一个 Σλ=1 约束——**要作为等式而不是不等式**加入，否则会得到错误的效率值（本实现早期真实踩过，与 `linprog` 对照发现最大偏差 0.807）；CCR/BCC 之比可得规模效率 |
 | `fuzzy_comprehensive_eval` | 模糊综合评判 | O(nk) | 权重维数要从 **R 的行数**推出而不是从权重自身推（否则归一化自洽、掩盖错误）；算子 `weighted`（加权平均）vs `max_min`（主因素决定）会给出不同结论，必须说明选了哪个 |
 | `topsis_rank_sensitivity` | 权重扰动下的排序稳定性 | O(n_samples·mn) | 论文"灵敏度分析"一节直接用；要报**排序翻转概率**而不是只说"基本稳定" |
+| `rsr_evaluation` | 秩和比综合评价 + probit 分档 | 时间 O(m log m + mn) / 空间 O(mn) | ① **只用秩信息**，量级差异被完全丢弃，并列会进一步降低分辨力；② 成本型指标必须先翻转（秩取 `m+1-r`），否则最优方案会排到最后；probit 分档只在 m ≥ 4 时给出，`n_levels` 是主观约定 |
+| `promethee_ii_ranking` | 偏好函数逐对比较 + 正负流净流完全排序 | 时间 O(n m²) / 空间 O(n m²) | ① 净流是**相对量**（全部方案求和恒为 0），不能跨数据集比较，也会把"不可比"压成"有高低"；② `usual` 型不接受 `q`/`p`，`linear` 型要求 `p > q`（否则抛错），阈值是主观的必须报；某指标全列相同（极差为 0）时该指标贡献恒为 0 并给出 `note` |
+| `kendall_w_concordance` | 肯德尔和谐系数 W（含并列修正）+ 卡方显著性 | 时间 O(k m log m) / 空间 O(k m) | ① 输入名次必须是**平均秩**：直接传竞赛排名会让 W 虚高甚至 > 1（本实现报 `ValueError`），偷懒可以传原始得分并置 `as_scores=True`；② `chi2 = k(m-1)W` 是**大样本近似**（m 小时用精确分布），`critical_value` 只覆盖 df ≤ 30，超出时返回 `None` 不等于"不显著" |
 
 **关于 DEA 库**：专门的 DEA Python 库（如 `janditzen/DEApy`）曾核验为 404 不可用，因此本仓库不列。请用成熟优化器（OR-Tools / Pyomo / 本模块的单纯形）自行实现 CCR/BCC，并在论文中说明这是标准模型的标准形式。
 
@@ -216,6 +233,7 @@
 | `davies_bouldin_score` | S_j = 簇 j 内样本到簇心 c_j 的**平均**欧氏距离（散度）； M_jl = \|\|c_j - c_l\|\|（簇心距离）； R_j = max_{l != j} (S_j + S_l) / M_jl… | 时间 O(n d + k^2 d) / 空间 O(n d)。 | 两个簇心完全重合（M_jl = 0）时比值发散：这里按约定返回 `inf`… |
 | `calinski_harabasz_score` | BGSS = sum_j n_j \|\|c_j - c_bar\|\|^2（簇间平方和，自由度 k-1）； WGSS = sum_j sum_{i in C_j} \|\|x_i - c_j\|\|^2（簇内平方和，自由度 n-k）… | 时间 O(n d) / 空间 O(n d)。 | k = n 时 WGSS = 0、n-k = 0，公式 0/0：这里返回 0.0，不要当成最优。 |
 | `gap_statistic` | 对 k = 1..k_max 在**原数据**上跑 `kmeans`，W_k = sum_j sum_{i in C_j}\|\|x_i-c_j\|\|^2 （用簇内距离**和**，与原论文一致，而不是方差或均值）… | 时间 O(n_refs * k_max * n k d * iters) / 空间 O(n d + n k_max)。 | **参考分布必须与原数据同尺度**：对每一维用观测的 [min, max] 做均匀采样… |
+| `kmedoids` | PAM（BUILD + SWAP）迭代，中心必须是真实样本点 | 时间 O(n²d) 建距离 + O(max_iter·k·n²) / 空间 O(n²) | ① 返回的 `cost`（距离）与 `inertia`（距离平方）**不可互换**，`labels` 是排序后中位点列表中的位置而不是样本下标；② 必须先标准化（同 `kmeans`），本实现未做 FastPAM 加速，n 大时会很慢 |
 
 **外部库**：`scikit-learn/scikit-learn`（有 KD 树加速与全套评估指标）。
 
@@ -239,6 +257,7 @@
 | `solve_ivp_rk45` | 7 级 Dormand-Prince 格式：k1..k7，五阶解 `y5 = y + h Σ b5_i k_i`， 嵌入四阶解 `y4 = y + h Σ b4_i k_i`，误差估计 `err = y5 - y4`… | 时间 O(7 * n_steps * m) / 空间 O(n_steps * m)。 | **不做稠密输出**：返回的 t 是非均匀的求解器步点，画图/比较前要用 |
 | `jacobian_stability` | 逐分量中心差分 `J[:, j] = (f(y + eps e_j) - f(y - eps e_j)) / (2 eps)`； `np.linalg.eigvals(J)` 求特征值… | 时间 O(m^2)（含 2m 次右端求值）/ 空间 O(m^2)。 | 这里固定取 `t = 0` 求雅可比：**只对自治系统有意义**。非自治系统请把时刻 |
 | `logistic_map` | 先迭代 n_transient 次丢弃暂态，再记录 n_steps 个点… | 时间 O(n_steps + n_transient) / 空间 O(n_steps)。 | **对初值和暂态长度敏感**：周期检测用的是"尾巴上逐点重合"的强判据… |
+| `euler_maruyama` | 对角噪声 Itô SDE 的 Euler-Maruyama 路径模拟 | 时间 O(n_paths·n_steps·d) / 空间 O(n_paths·n_steps·d) | ① **强阶只有 0.5**（弱阶 1.0），要更精确请用 Milstein；这是 Itô 口径，不含 Stratonovich 的 `(1/2)σσ'` 修正项；② `drift`/`diffusion` 必须支持**批量状态输入**，且只支持对角噪声；蒙特卡洛误差按 1/√n_paths 下降，路径数要报 |
 
 **外部库**：`SciML/DifferentialEquations.jl`（Julia，含自适应步长与刚性求解器）、`usnistgov/FiPy`（有限体积）、`FEniCS/dolfinx`（有限元，PDE）。
 
@@ -262,6 +281,8 @@
 | `gaussian_copula` | 对 U 每列取平均秩得到 Spearman 相关矩阵 ρ_s，换算成 Pearson 相关 ρ； Cholesky 分解 ρ = LLᵀ，抽 Z = L*N(0, I)，则 Z ~ N(0, ρ)… | 时间 O(n d log n + d^3 + n_draws * d^2) / 空间 O(n_draws * d)。 | **高斯 copula 没有尾部相依**（λ_U = λ_L = 0）：它无法刻画"极端事件同时 |
 | `t_copula` | 同 `gaussian_copula` 估计 ρ 并做 Cholesky… | 时间 O(n d log n + d^3 + n_draws * d * max_iter) / 空间 O(n_draw… | λ 只在 ρ>0 时非零：ρ<=0 时 t copula 也没有下尾相依（公式会给出 |
 | `Z95` | (常量) | — | — |
+| `mmck_metrics` | M/M/c/K 生死过程的稳态分布与排队指标 | 时间 O(K) / 空间 O(K) | ① 用 Little 公式时必须代**有效到达率** `λ_eff = λ(1-p_K)`，直接用 λ 会把等待时间系统性算小；② ρ ≥ 1 时 Erlang-C 公式失效（有限 K 下系统仍稳定，但不能照抄公式），λ = 0 时返回的 W = Wq = 0 是极限值而非"无等待" |
+| `geometric_brownian_motion` | GBM 精确解抽样（对数增量累加，无离散化偏差） | 时间 O(n_paths·n_steps) / 空间 O(n_paths·(n_steps+1)) | ① `E[S_T] = s0·e^{μT}` 而**中位数**是 `s0·e^{(μ-σ²/2)T}`，两者不能混报；② μ/σ/t 必须同单位（σ 按年、t 按月会让 σ√t 差 √12 倍），分位数（如 VaR）需要远多于估均值所需的路径数 |
 
 **仿真类题目的硬要求**：**不要把仿真当证明**。必须给样本量、标准误/置信区间、收敛性诊断（如 running mean 图），以及与解析解或已知特例的对照。只跑一次就下结论等于没做。
 
@@ -284,6 +305,7 @@
 | `point_to_segment_distance` | 设 ab = b-a。若 \|ab\|² = 0（线段退化为点）返回 \|p-a\|… | 时间 O(1) / 空间 O(1)。 | **不要漏掉 t 的截断**：直接算 \|(p-a)×ab\|/\|ab\| 得到的是到**直线**的距离… |
 | `voronoi_nearest` | 构造 (m, n) 的距离矩阵 D_jk = ‖q_j - p_k‖。 每行取最小值下标。 | 时间 O(mn) / 空间 O(mn)。暴力实现，n、m 都上千时请改用 KD 树或 Delaunay 对偶。 | **Voronoi 胞元只由最近距离定义，不含任何障碍/路网约束**：把站点当设施… |
 | `EARTH_RADIUS_KM` | (常量) | — | — |
+| `sutherland_hodgman_clip` | Sutherland-Hodgman 多边形裁剪（逐边半平面裁剪） | 时间 O((n+m)·m) / 空间 O(n+m) | ① **裁剪窗口必须凸**：非凸窗口或自交的被裁剪多边形结果无意义；② 共线顶点会被保留（`n_vertices` 偏大），相切时可能返回 `is_empty=False` 的零面积多边形 |
 
 **外部库**：`pysal/pysal`（空间统计与空间权重）、`Toblerity/Shapely`（几何运算与谓词）。
 
@@ -299,6 +321,9 @@
 | `minimax_alpha_beta` | 带 (alpha, beta) 窗口的递归极小极大： `depth == 0` 或 `children_fn(node)` 为空 → `evaluate_fn(node)`，叶子计数 +1… | 时间：最坏（子节点顺序最差）O(b^d)，与不剪枝的极小极大相同… | `n_pruned` 是**剪枝事件次数**，不是"省下的求值次数"。被剪掉的子树只有真的展开才知道多大… |
 | `stackelberg_lp` | 跟随者问题：给定 x，解 `max_y c_follower @ y s.t. A_follower y <= b_follower - A_leader x… | 时间 O(n_grid^m * 一次 LP)；空间 O(k n + n_grid)（不存储全部网格结果，只留当前最好）。 | **这是网格近似，不是精确解**。领导者收益作为 x 的函数是分片线性的（一般还不凹）… |
 | `nash_bargaining_solution` | 离散点集：逐点算纳什积，取最大值（严格大于才替换，并列取输入顺序在前的点，保证确定性）… | 时间：离散 O(N)；多边形 O(k^2)（顶点枚举）+ O(k) 条边的二次求根 + 4 次辅助 LP（有界性检查）… | **纳什解要求可行集里有严格优于 d 的点**。若 d 本身就在帕累托前沿上（没有合作剩余）… |
+| `iterated_elimination` | 逐轮同时剔除被严格/弱支配的**纯策略** | 时间 O((m+n)(m²n + n²m)) / 空间 O(mn) | ① **只比较纯策略之间的支配关系，不做"被混合策略支配"的检查**（本函数刻意不实现），所以幸存策略集可能大于可理性化结果；② 严格/弱两模式的比较是精确浮点比较、无容差，且 `weak` 模式的迭代剔除**不保持纳什均衡**，行与列必须分别传各自的收益矩阵 |
+| `ess_check` | 按 Maynard Smith 定义判定 ESS（先测纳什，再在最优响应面上枚举子集比稳定项） | 时间最坏 O(2ⁿ·n³)（`\|B\| > 14` 直接抛 `ValueError`）/ 空间 O(n²) | ① 判据顺序不能反：必须先比 `xᵀAx` 与 `yᵀAx`，再比 `xᵀAy` 与 `yᵀAy`（简写成先比 `xᵀAy` 是**错的**）；② 混合策略是否为 ESS 完全取决于博弈（协调博弈的内点混合均衡不是 ESS，鹰鸽博弈的是），不能用通用结论代替逐个代入，容差是 1e-9 绝对量 |
+| `correlated_equilibrium_lp` | 相关均衡多面体上的 LP（目标：最大福利 / 行收益 / 列收益） | 时间 O(一次 LP) + O(m²n + mn²) 回代 / 空间 O(m²n + mn²) | ① 相关均衡是**一族**而非一个点，LP 只返回给定目标下的一个顶点，论文必须写明目标函数；② 最优相关均衡的福利**可以严格高于任何纳什均衡**（斗鸡博弈 16/3 > 5），且返回的 `p` 是联合分布不是行/列的混合策略 |
 
 **外部库**：`drvinceknight/Nashpy`（双人矩阵博弈纳什均衡）、`mesa/mesa`（ABM 演化）。
 
@@ -319,6 +344,7 @@
 | `kalman_filter_linear` | 标准 Kalman 递推（前向）： 预测 `a = F x`、`P = F P F' + Q`； 新息 `v = y_t - H a`、`S = H P H' + R`； 增益 `K = P H' S^{-1}`… | 时间 O(T (k^3 + m k^2 + m^3)) / 空间 O(T (k^2 + m))。 | `S` 用显式求逆（`np.linalg.inv`），数值上不如 Cholesky 稳定；`R` 接近奇异或 |
 | `ljung_box` | `x = residual - mean(residual)`； `rho_k = (1/n) sum_{t=k+1..n} x_t x_{t-k} / rho_0`（统一用 1/n，等价于带均值修正）… | 时间 O(L n) / 空间 O(n)。 | **自由度口径**：严谨做法是 `df = L - (已估参数个数)`；本实现取 `df = L`… |
 
+| `kalman_smoother_linear` | 线性高斯状态空间的 Kalman 滤波 + RTS 固定区间平滑 | 时间 O(T(k³ + mk² + m³)) / 空间 O(T(k² + m)) | ① 平滑值用到了**全样本**（每个时刻都用到了之后的数据），拿它当"预测"画图会严重高估精度，在线场景只能用 `filtered_mean`；② `P_pred` 奇异（`Q = 0` 且 `P0` 退化）时直接抛 `ValueError`，不做伪逆兜底；平滑协方差只在 Loewner 序下不增，非对角元不一定逐个变小 |
 
 ### 3.13 机器学习（树模型/降维/分类器） —— `examples/algorithms/ml.py`
 
@@ -348,6 +374,10 @@
 | `smote` | 统计各类样本数 `n_c`，多数类为 `n_max`； 对每个 `n_c < n_max` 的类，在其自身样本间算欧氏距离， 取 `k' = min(k, n_c-1)` 个最近邻… | 时间 O(Σ_c n_c^2 d + 合成数·d) / 空间 O(Σ_c n_c^2 + n_total d)。 | **必须在划分训练/测试之后做**：先 SMOTE 再划分会让同一少数类样本的近邻 |
 | `class_weight_balanced` | 统计每类样本数 n_c 与类别数 K； `w_c = n / (K · n_c)`。 | 时间 O(n) / 空间 O(K)。 | 这个口径下权重之**和不为 1**（等于 `(1/K)Σ n/n_c`）… |
 
+| `pr_curve` | 精确率-召回率曲线（并列分数合并为同一阈值点） | 时间 O(n log n) / 空间 O(n) | ① `precision`/`recall` 比 `thresholds` **恰好长一个**（末尾点 precision = 1、recall = 0），画图与积分时不能逐元素对齐；② 并列分数必须合并（拆开会出现人为的 precision 阶梯），`recall` 是递减序列；本函数**没有外部库交叉验证**，只靠自检里的解析特例兜底 |
+| `average_precision_score` | PR 曲线的阶梯式积分（不插值） | 时间 O(n log n) / 空间 O(n) | ① **不做线性插值**，与"PR 曲线下梯形面积"是两个不同的量（插值口径系统性偏高）；② 完全随机打分下 AP ≈ 正类比例（不平衡数据上基线很低），不要按 0.5 理解 |
+| `pca_fit` | 中心化 + 经济型 SVD 的主成分分解 | 时间 O(n d min(n,d)) / 空间 O(n d + k d) | ① 主成分的**符号只是约定**（本实现取绝对值最大的载荷为正），与 sklearn 可能整体反号，对拍时只比绝对值；② 方差用 `s²/(n-1)`，`explained_variance_ratio` 的分母含被截断的分量（取不满 min(n,d) 个时比例之和 < 1）；本函数与 `pr_curve` 一样**没有外部库交叉验证** |
+| `pca_transform` | 减训练均值后投影到主成分空间 | 时间 O(n d k) / 空间 O(n k) | ① **必须平移**：直接 `X @ components.T` 会保留训练均值，得分不再零均值、重建误差也会算错；② 输出列数由 `components` 的行数决定（不做目标维数对齐），要截断请在 `pca_fit` 时就定好 |
 
 ### 3.14 多准则决策（PROMETHEE/ELECTRE/RSR/共识） —— `examples/algorithms/multicriteria.py`
 
@@ -362,6 +392,7 @@
 | `copeland_score` | 校验形状方阵、取值只含 {-1, 0, 1}、对角线为 0、反对称。 `score_i = Σ_j W[i, j]`（因为平局贡献 0，求和恰好等于胜场数减负场数）。 按得分降序编秩。 | 时间 O(m²) / 空间 O(m²)。 | 反对称是硬要求：很多"胜场矩阵"只有 0/1（不分平局与负），传进来会被拒绝——那种矩阵 |
 | `rank_consensus` | 解析每份排名为下标列表（同一份排名内不允许重复下标）。 对每一对排名，取**共同出现**的方案，各自在原文里的位次（1 为最好）作为秩向量， 用秩向量的 Pearson 相关算 Spearman（并列名次不影响正确性）。 | 时间 O(K² m) / 空间 O(K² + Km)。 | 共同方案少于 2 个时直接抛 ValueError，而不是返回 0：两段几乎不相交的排名之间 |
 
+| `electre_ii` | 级别高于关系（concordance/discordance 双阈值）+ 升降蒸馏排序 | 时间 O(m³ + m²n) / 空间 O(m² + mn) | ① 两套阈值不是同一把尺子：强关系要求 `c_strong ≥ c_weak` 且 `d_strong ≤ d_weak`（方向写反会被拒绝），默认取均值 ± 0.1 只是惯例，结论对阈值极敏感，必须配敏感性分析；② 强关系**不传递**，蒸馏要逐轮重算极大集；关系成环时兜底把剩余方案整体归为一组，出现这种情况必须如实说明 |
 
 ### 3.15 多目标优化（Pareto/NSGA-II/MOEA-D） —— `examples/algorithms/multiobjective.py`
 
@@ -377,6 +408,10 @@
 | `hypervolume_2d` | 丢掉 `F[i, 0] >= r[0]` 或 `F[i, 1] >= r[1]` 的点； 剩下的点按第 1 个目标升序排序… | 时间 O(n log n) / 空间 O(n)。 | **参考点必须固定**才能跨代比较超体积。换参考点会让超体积数值失去可比性… |
 | `ideal_point_distance` | `ideal_j = min_i F[i, j]`，`anti_j = max_i F[i, j]`， `d_plus_i = sqrt(sum_j w_j (F[i,j] - ideal_j)^2)`… | 时间 O(n m) / 空间 O(n)。 | 理想点由**当前解集自身**决定，所以加入或删除一个解就会改变所有解的贴近度。 |
 
+| `moead` | 切比雪夫分解的多目标进化（每个权重子问题保留一个解） | 时间 O(n_iter·n_sub·(T·m + T_obj)) / 空间 O(n_sub² + n_sub(n_dim+m)) | ① 邻域替换按**自己的权重**贪心，`history`（第一前沿规模）会忽大忽小，**不能用它判断收敛**，要收敛请用超体积/IGD；② `ideal` 取所有求值过的点（含被拒绝的子代）的最小值，想报"种群达到的理想点"要自己用 `F.min(axis=0)`；种群规模由 `n_partitions` 决定，不能直接指定 |
+| `igd_metric` | 参考前沿逐点到近似集最小距离的均值（覆盖度） | 时间 O(n_approx·n_ref·m) / 空间 O(n_approx·n_ref) | ① 方向别反：**对参考集逐点取最近邻**是 IGD，对近似集取最近邻是 GD，两者要配合看；② IGD 数值依赖参考前沿的采样密度与分布，且这里不做量纲归一化，量级大的目标会主导距离 |
+| `spacing_metric` | 各点到最近邻距离的样本标准差（Schott 均匀性） | 时间 O(n²m) / 空间 O(n²) | ① 标准差分母是 **n-1**（与 Schott 原文一致），跨实现比较前要先确认分母口径差 `sqrt(n/(n-1))`；② 只度量均匀性、完全不度量收敛性，只能对**同一条前沿**调用，且近似重复点会显著抬高它，评价前先去重 |
+| `knee_points` | 二维前沿拐点：转角最大 / 到端点连线距离最大 | 时间 O(n log n) / 空间 O(n) | ① 只支持 **m == 2**（更高维拐点无唯一定义，直接抛错），输入必须是去重的非支配前沿；② "到端点连线距离"对长尾前沿敏感（拐点会滑向尾部中段），两种口径的 `scores` 量纲不同（弧度 vs 目标量纲），不要混用 |
 
 ### 3.16 灵敏度分析与缺失数据 —— `examples/algorithms/sensitivity.py`
 
@@ -394,6 +429,8 @@
 | `detect_outliers_iqr` | 分位数用 numpy 的线性插值口径（`np.percentile` 默认）， IQR = Q3 - Q1，栅栏外即为异常。 | 时间 O(n log n)（排序取分位数）/ 空间 O(n)。 | IQR 对**偏态**分布仍会误报：右偏数据的上栅栏往往被压得过低… |
 | `detect_outliers_mad` | `med = median(x)`，`MAD = median(\|x - med\|)`… | 时间 O(n log n) / 空间 O(n)。 | MAD 用中位数而非均值，抗污染能力强，但**对 n 很敏感**：n 小于约 10 时 MAD |
 
+| `sobol_second_order` | Saltelli 2010 估计量的纯二阶 Sobol 指数 S_ij | 时间 O(N·d²·C_fn) / 空间 O(Nd) | ① 对样本量要求远高于一阶：实测 N = 512 时 `\|ΔS2\|` 可达 0.20（N = 32768 才降到约 0.03），下结论请把 N 提到 16384 以上；② `S2` 对角线是 `np.nan`（求和用 `S2_sum`），小负值只是估计噪声（本实现不截断），`interaction_residual` **不该期望为 0** |
+| `impute_mice` | 链式方程插补（逐列 OLS/Logistic，Gauss-Seidel 迭代至收敛） | 时间 O(max_iter·p·n·p²) / 空间 O(np) | ① 这是**单点插补的简化版**：不含 Rubin 合并、不反映插补不确定性，seed 只影响列顺序，不能当多重插补用；② 默认 `max_iter=10, tol=1e-6` 常不足以收敛（tol 是绝对量），未收敛要如实报 `n_iter`；返回键是 `imputed`/`n_missing`，与其它插补函数不同 |
 
 ### 3.17 空间与物理场建模（热传导/Poisson/元胞自动机/量纲） —— `examples/algorithms/spatial.py`
 
@@ -407,6 +444,7 @@
 | `buckingham_pi` | 把 dims 组装成量纲矩阵 D（行 = 基本量纲，列 = 物理变量）。 | 时间 O(k * n^2)（k 为基本量纲数，n 为变量数，精确有理数运算） / 空间 O(k * n)。 | **基本量纲必须线性无关且完整**：若把 M 和"力"同时当基本量纲（力本身 = MLT^-2）… |
 | `scaling_similarity` | factor_v = λ^{e_v}（量纲幂次换算：长度量纲按 λ、面积按 λ^2、速度按 λ^{1/2} …）。 scaled_v = measurements_v * factor_v。 | 时间 O(k) / 空间 O(k)（k 为物理量个数）。 | **相似比的方向**：λ 定义为"原型 / 模型"。若误用"模型 / 原型"，所有因子会整体取 |
 
+| `moran_i` | 全局 Moran's I + 正态近似 + 置换检验（n! ≤ 40320 时精确枚举） | 时间 O(n²) 求 I + O(m·n²) 置换 / 空间 O(n²) | ① 只做了正态近似方差（`variance_normality ≤ 0` 时 z/p 返回 NaN），**刻意不用随机化闭式方差**（本实现注释记录了它可以差 20% 以上甚至为负）；结论请以 `p_value_permutation` 为准；② 权重矩阵必须由研究假设给出（换权重会换结论），对角线必须为 0，常数列直接抛 `ValueError` |
 
 ---
 

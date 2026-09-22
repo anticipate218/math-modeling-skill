@@ -1,12 +1,15 @@
 """灵敏度分析与数据清洗：OAT/弹性系数、Morris 筛选、Sobol 一阶与总效应、缺失值插补、异常检测。
 
-本模块共 11 个公开函数，按用途分成两组：
+本模块共 13 个公开函数，按用途分成两组：
 
 - **建模后诊断（参数灵敏度）**：``oat_sensitivity``（单因子扰动曲线）、``elasticity``
   （点弹性系数）、``morris_screening``（基本效应筛选）、``sobol_first_order``
-  （Saltelli 一阶指数 S1）与 ``sobol_total_effect``（Jansen 总效应指数 ST，均带置信半宽）；
-- **建模前处理（数据清洗）**：插补 ``impute_mean`` / ``impute_knn`` / ``impute_regression``，
-  异常检测 ``detect_outliers_zscore`` / ``detect_outliers_iqr`` / ``detect_outliers_mad``。
+  （Saltelli 一阶指数 S1）、``sobol_total_effect``（Jansen 总效应指数 ST）与
+  ``sobol_second_order``（Saltelli 2010 二阶指数 S_ij，成对交互的纯二阶贡献）；
+  前两个 Sobol 函数附带置信半宽，二阶指数不提供（逐对求值次数少，半宽没有参考价值）。
+- **建模前处理（数据清洗）**：插补 ``impute_mean`` / ``impute_knn`` /
+  ``impute_regression`` / ``impute_mice``（链式方程），异常检测
+  ``detect_outliers_zscore`` / ``detect_outliers_iqr`` / ``detect_outliers_mad``。
 
 本模块的定位
 ------------
@@ -23,8 +26,8 @@
 - ``bounds`` 形状为 (d, 2)，第 i 行是第 i 个参数的下界与上界，下界必须严格小于上界。
 - 灵敏度全部按**物理单位**报告：Morris 的步长与 Sobol 的抽样都换算回真实参数尺度，
   因此对线性函数 f = Σ c_i x_i，基本效应与弹性系数能直接对上解析值。
-- 随机性一律走 ``_common.rng``（Saltelli 抽样、Morris 轨迹），不使用全局随机状态；
-  插补与异常检测本身不含随机过程。
+- 随机性一律走 ``_common.rng``（Saltelli 抽样、Morris 轨迹、MICE 的列顺序洗牌），
+  不使用全局随机状态；均值/KNN/回归插补与异常检测本身不含随机过程。
 """
 
 from __future__ import annotations
@@ -45,9 +48,11 @@ __all__ = [
     "morris_screening",
     "sobol_first_order",
     "sobol_total_effect",
+    "sobol_second_order",
     "impute_mean",
     "impute_knn",
     "impute_regression",
+    "impute_mice",
     "detect_outliers_zscore",
     "detect_outliers_iqr",
     "detect_outliers_mad",
@@ -250,6 +255,82 @@ def _design_matrix(X: np.ndarray) -> np.ndarray:
         无。
     """
     return np.column_stack([np.ones(X.shape[0], dtype=float), X])
+
+
+def _sigmoid(z: np.ndarray) -> np.ndarray:
+    """数值安全的 logistic 函数 ``1/(1+exp(-z))``。
+
+    参数:
+        z: 任意实数数组。
+
+    返回:
+        与 z 同形状的数组，取值在 (0, 1)。
+
+    算法:
+        先把 z 截断到 [-500, 500] 再取指数，避免 ``exp`` 上溢时只发警告、
+        静默返回 inf/nan。
+
+    复杂度:
+        时间 O(|z|) / 空间 O(|z|)。
+
+    陷阱:
+        直接写 ``1/(1+np.exp(-z))`` 在 |z|>709 时会溢出发出 RuntimeWarning；
+        本函数不做 np.errstate 抑制，而是靠截断把溢出消灭掉。
+
+    参考:
+        无。
+    """
+    return 1.0 / (1.0 + np.exp(-np.clip(z, -500.0, 500.0)))
+
+
+def _logistic_irls(X: np.ndarray, y: np.ndarray, max_iter: int = 50,
+                   tol: float = 1e-10, ridge: float = 1e-8) -> np.ndarray:
+    """用迭代重加权最小二乘（IRLS）拟合带截距的 logistic 回归。
+
+    参数:
+        X: 已含截距列的设计矩阵，形状 (n, p+1)。
+        y: 取值 {0, 1} 的响应，形状 (n,)。
+        max_iter: 牛顿迭代上限，>= 1。
+        tol: 系数最大绝对增量 <= tol 时提前停止。
+        ridge: 岭惩罚系数（> 0），用于在完全分离或共线时稳住 Hessian。
+
+    返回:
+        长度 p+1 的系数数组。
+
+    算法:
+        牛顿法解 ``max Σ[y·z - log(1+e^z)] - ridge·||w||²/2``：
+        ``w ← w + (XᵀWX + ridge·I)⁻¹(Xᵀ(y-p) - ridge·w)``，其中 ``p = sigmoid(Xw)``、
+        ``W = diag(p(1-p))``（下界截断到 1e-12）。Hessian 奇异时用 lstsq 兜底。
+
+    复杂度:
+        时间 O(max_iter·n·(p+1)²) / 空间 O(n(p+1))。
+
+    陷阱:
+        1. 数据完全分离（某一列能把两类完美分开）时极大似然解发散，这里靠 ridge 与
+           max_iter 双保险，返回的是"惩罚后的有限解"，不是 MLE。
+        2. 因此预测概率会向 0/1 靠拢但不是精确 0/1；二值列的插补值就是**概率**，
+           下游若需要类别必须再卡阈值，本模块不替调用方决定阈值。
+
+    参考:
+        McCullagh & Nelder (1989) 第 4.4 节；van Buuren (2018) 第 4 章。
+    """
+    w = np.zeros(X.shape[1], dtype=float)
+    eye = np.eye(X.shape[1], dtype=float)
+    for _ in range(max_iter):
+        p = _sigmoid(X @ w)
+        wt = np.maximum(p * (1.0 - p), 1e-12)
+        hess = X.T @ (X * wt[:, None]) + ridge * eye
+        grad = X.T @ (y - p) - ridge * w
+        try:
+            step = np.linalg.solve(hess, grad)
+        except np.linalg.LinAlgError:
+            step = np.linalg.lstsq(hess, grad, rcond=None)[0]
+        w_new = w + step
+        delta = float(np.max(np.abs(w_new - w)))
+        w = w_new
+        if delta <= tol:
+            break
+    return w
 
 
 # --------------------------------------------------------------------------
@@ -664,6 +745,104 @@ def sobol_total_effect(fn: Callable[[np.ndarray], float], bounds: MatrixLike,
     return {"ST": st, "ST_conf": conf}
 
 
+def sobol_second_order(fn: Callable[[np.ndarray], float], bounds: MatrixLike,
+                       n_base: int = 512, seed: Optional[int] = None) -> dict:
+    """Saltelli 2010 估计量计算 Sobol 二阶指数 S_ij（成对交互的纯二阶方差占比）。
+
+    参数:
+        fn: ``fn(x)->float``。
+        bounds: (d, 2) 参数边界，要求 d >= 2（一维参数谈不上成对交互）。
+        n_base: 基样本量 N，与 ``sobol_first_order`` 的 ``n_samples`` **同义**
+            （只是名字不同），>= 2；
+            总求值次数为 ``N·(d+2) + N·d·(d-1)``，随 d 平方增长。
+        seed: 随机种子；None 表示使用 ``DEFAULT_SEED``。
+
+    返回:
+        dict，键为：
+        ``S2``                   (d, d) 二阶指数矩阵，**对角线为 np.nan**，
+                                 ``S2[i, j] == S2[j, i]`` 为纯二阶指数 S_ij；
+        ``S1``                   长度 d 的一阶指数（与 ``sobol_first_order`` 同 seed 逐位一致）；
+        ``ST``                   长度 d 的总效应指数（与 ``sobol_total_effect`` 同 seed 逐位一致）；
+        ``S2_sum``               ``Σ_{i<j} S2[i, j]``，全部成对交互的纯二阶贡献之和；
+        ``interaction_residual`` ``ΣST - ΣS1 - S2_sum``，高阶交互指示量，见"陷阱"第 3 条；
+        ``n_eval``               函数求值总次数。
+
+    算法:
+        1. 复用 ``_sobol_common`` 的 A、B、AB_i 设计（同一 seed 下与另两个 Sobol 函数
+           抽样完全一致），由 ``fA``、``fB``、``fAB_i`` 直接算出 S1、ST，不额外求值
+           ——本模块没有 ``sobol_indices`` 这个总入口，故复用的是私有骨架而非它。
+        2. 对每一对 (i, j) 构造两个混合矩阵：``AB_ij``（A 的第 i、j 列换成 B 的）与
+           ``BA_ij``（B 的第 i、j 列换成 A 的），求值后
+           ``V_ij = 0.5·[mean(fAB_ij·fB) + mean(fBA_ij·fA)] - mean(fA)·mean(fB)``。
+           这是"仅由 (i, j) 两参数共同解释"的方差分量，减去的 ``mean(fA)·mean(fB)``
+           是 f0² 的无偏替代（A、B 独立）。
+        3. ``S2[i, j] = V_ij / V - S1_i - S1_j``：从成对方差分量中扣掉两个参数各自的
+           主效应，剩下的才是 Sobol' 意义下的**纯二阶**指数。
+
+    复杂度:
+        时间 O(N·d²·C_fn) / 空间 O(Nd)（逐对构造混合矩阵并立即求值，不缓存 d² 个矩阵）。
+
+    陷阱:
+        1. 对样本量的要求远高于一阶指数：``V_ij`` 要先做两个均值、再减主效应，误差被放大。
+           本仓库实测（d=2、遍历 20 组 seed）N=512（默认值）时 ``|ΔS2|`` 最大可达 0.20，
+           N=16384 时约 0.04，N=32768 时约 0.03；要下结论请把 N 放大到 16384 以上。
+        2. 出现小的负值属于估计噪声，与 S1/ST 一样本模块不做截断：S2 的真值下界是 0，
+           但估计量关于 0 对称，报告里写"≈0"，不要写成"负交互"。
+        3. ``interaction_residual`` **不是应当恒为 0 的量**，它指示三阶及以上的交互：
+           对真值有 ``ΣST - ΣS1 = 2·Σ_{i<j}S_ij + 3·Σ_{i<j<k}S_ijk + …``，故
+           ``residual = Σ_{i<j}S_ij + 3·Σ_{i<j<k}S_ijk + …``。
+           二参数模型没有三阶项，此时它约等于 ``S2_sum`` 本身——例如 ``f = x_0·x_1``
+           （x~U(0,1)²）的解析值是 1/7 ≈ 0.143，绝不该期待它接近 0；只有可加模型
+           才同时有 ``S2_sum ≈ 0`` 与 ``residual ≈ 0``。另外该恒等式对真值成立，
+           对有限样本的两个估计量并不严格成立（本仓库实测 d=2、N=32768 时差约 0.02）。
+        4. 对角线是 ``np.nan`` 而不是 0（S_ii 无定义），做 ``S2.sum()`` 之类的矩阵运算前
+           必须自己处理；已提供 ``S2_sum`` 以免调用方掉进这个坑。
+
+    参考:
+        Saltelli et al. (2010) 式 (15)；Homma & Saltelli (1996)；
+        Sobol' (2001) "Global sensitivity indices for nonlinear mathematical models"。
+    """
+    bnd = _check_bounds(bounds)
+    d = bnd.shape[0]
+    if d < 2:
+        raise ValueError(f"sobol_second_order 需要 d >= 2，得到 d={d}")
+    _a, f_a, f_b, f_ab, var, n_eval = _sobol_common(fn, bnd, n_base, seed)
+    # 同一个 seed 再取一次设计矩阵，得到与 _sobol_common 内部完全相同的 A、B
+    # （_sobol_design 只依赖 (bounds, n_samples, seed)，是纯函数）。
+    a, b_mat = _sobol_design(bnd, n_base, seed)
+
+    s1 = np.empty(d, dtype=float)
+    st = np.empty(d, dtype=float)
+    for i in range(d):
+        s1[i] = (f_b * (f_ab[i] - f_a)).mean() / var
+        st[i] = ((f_a - f_ab[i]) ** 2).mean() / (2.0 * var)
+
+    s2 = np.full((d, d), np.nan, dtype=float)
+    m0 = float(f_a.mean()) * float(f_b.mean())
+    n_pair_eval = 0
+    for i in range(d):
+        for j in range(i + 1, d):
+            ab_ij = a.copy()
+            ab_ij[:, [i, j]] = b_mat[:, [i, j]]
+            ba_ij = b_mat.copy()
+            ba_ij[:, [i, j]] = a[:, [i, j]]
+            f_ab_ij = _eval_fn_matrix(fn, ab_ij)
+            f_ba_ij = _eval_fn_matrix(fn, ba_ij)
+            n_pair_eval += 2 * n_base
+            v_ij = 0.5 * float((f_ab_ij * f_b).mean()) + 0.5 * float((f_ba_ij * f_a).mean()) - m0
+            s2[i, j] = s2[j, i] = v_ij / var - s1[i] - s1[j]
+
+    s2_sum = float(s2[np.triu_indices(d, k=1)].sum())
+    return {
+        "S2": s2,
+        "S1": s1,
+        "ST": st,
+        "S2_sum": s2_sum,
+        "interaction_residual": float(st.sum() - s1.sum() - s2_sum),
+        "n_eval": int(n_eval + n_pair_eval),
+    }
+
+
 # --------------------------------------------------------------------------
 # 缺失值插补
 # --------------------------------------------------------------------------
@@ -862,6 +1041,144 @@ def impute_regression(X: MatrixLike, max_iter: int = 10, tol: float = 1e-6) -> d
     return {"X": filled, "n_imputed": n_imputed, "n_iter": n_iter, "converged": converged}
 
 
+def impute_mice(data: MatrixLike, max_iter: int = 10, seed: Optional[int] = None,
+                tol: float = 1e-6) -> dict:
+    """链式方程插补（MICE 的**简化版**）：逐列用其余列回归，循环迭代至收敛。
+
+    参数:
+        data: 样本矩阵，形状 (n_samples, n_features)，缺失位置用 np.nan 表示；列数须 >= 2
+              （不足 2 列一律 ``ValueError``，与是否有缺失无关）。
+        max_iter: 最大迭代轮数，>= 1。
+        seed: 随机种子，只用来打乱**每轮插补列的顺序**；None 表示使用 ``DEFAULT_SEED``。
+        tol: 收敛判据——本轮与上轮所有被插补值的最大绝对变化 <= tol 即认为收敛。
+             注意这是**绝对**阈值、与量纲无关，默认值在真实数据上通常偏严，见"陷阱"第 4 条。
+
+    返回:
+        dict，键为：
+        ``imputed``           (n, p) 完整矩阵（副本），保证不含 nan；
+        ``n_missing``         被插补元素总数；
+        ``per_column_missing`` 长度 p 的列表，逐列缺失个数（无缺失的列为 0）；
+        ``history``           长度 = 实际轮数的列表，每项为
+                              ``{"iter": 轮号, "rmse": [逐列训练残差 RMSE], "change": 本轮最大变化}``；
+                              ``rmse`` 长度等于列数，**无缺失的列填占位符 0.0**（该列本轮
+                              没有拟合，0.0 不代表残差为零）。
+        ``converged``         bool，是否在 max_iter 内达到 tol；
+        ``n_iter``            实际迭代轮数；
+        ``method``            固定字符串 ``"mice"``；
+        ``binary_columns``    被判为二值（观测值只有 0/1 两个）的列下标，其中含缺失的列
+                              才真正走 logistic 回归；整份数据无缺失时提前返回，此时为 ``[]``。
+
+    算法:
+        1. 逐列判定类型：观测值恰好是两个且都落在 {0, 1} 的列走 logistic 回归（IRLS），
+           其余列走含截距 OLS；初值用观测均值（二值列用观测均值四舍五入到 0/1）。
+        2. 每一轮按 ``rng(seed)`` 给出的随机排列逐列更新：以**其余所有列**（含本轮已
+           更新过的列，即 Gauss-Seidel 风格）为自变量，只用该列的已观测行拟合，
+           再对被插补行预测回填。
+        3. 一轮结束后记录逐列训练 RMSE 与本轮最大变化；<= tol 则提前结束。
+
+    复杂度:
+        时间 O(max_iter · p · n · p²)（每列一次 OLS 分解，占主项）/ 空间 O(np)。
+
+    陷阱:
+        1. 这是**链式方程的单点插补**，不含 Rubin 合并：它给出一条完整数据，不反映插补的
+           不确定性。要报告不确定性，请自行以多个 seed/多组初值重复并合并（本函数的
+           ``seed`` 只改列顺序，收敛到同一不动点时结果几乎不变，**不能**当多重插补用）。
+           另一面同样要紧：回填的是**条件均值**，与其余列弱相关或近似独立的列，其缺失部分
+           会被压成近常数，插补后该列方差可低到真值的 5% 以下；若下游要用插补后的方差、
+           相关系数或显著性检验，务必改用多重插补 + Rubin 合并，或只把本函数当"补齐缺失
+           以便跑通流程"的工具。
+        2. 二值列回填的是**概率**（``[0, 1]`` 内的实数）而不是类别；完全分离时可饱和到
+           恰好 0 或 1，下游若取 ``log(p / (1 - p))`` 请先做 epsilon 截断。若下游必须
+           是 0/1，请自己卡阈值，本函数不替调用方决定。
+        3. 迭代回归会把变量间关系"越描越真"：两列高度线性相关时缺失会被填得过于完美，
+           下游 R² 会虚高（与 ``impute_regression`` 同一个坑）。
+        4. 未收敛（``converged`` 为 False）时必须报告实际 ``n_iter``，不能假装收敛；
+           本实现不抛错、也不自行加大轮数。要注意**默认参数 ``max_iter=10, tol=1e-6``
+           在列数较多或量纲较大时通常不足以收敛**（``change`` 是绝对值，量纲约 5、
+           400x4 的 MCAR 数据在 60 轮时仍有 1e-3 量级），此时会如实返回
+           ``converged=False``；实用的取法是令 ``tol`` 与各列标准差的量级相当
+           （如 ``tol = 1e-3 * sd``），并把 ``max_iter`` 提高到 50~100。
+        5. 返回键名是 ``imputed`` / ``n_missing``，与 ``impute_mean`` 等函数的
+           ``X`` / ``n_imputed`` **不同**，几者混用时注意别取错键（本函数保证
+           ``imputed`` 不含 nan）。
+
+    参考:
+        van Buuren & Groothuis-Oudshoorn (2011) "mice: Multivariate Imputation by
+        Chained Equations in R"；Azur et al. (2011) 关于 MICE 的实操综述。
+    """
+    if max_iter < 1:
+        raise ValueError(f"max_iter 必须 >= 1，得到 {max_iter}")
+    if tol <= 0:
+        raise ValueError(f"tol 必须为正，得到 {tol}")
+    arr = _as_float_matrix(data, "data")
+    mask = _check_missing_layout(arr, "data")
+    n_missing = int(mask.sum())
+    n_col = arr.shape[1]
+    per_column_missing = [int(v) for v in mask.sum(axis=0)]
+    # 列数检查必须放在"无缺失提前返回"之前：单列矩阵的任何一个缺失格都等价于整行缺失，
+    # 若放在后面，单列有缺失时会误报"整行缺失"、单列无缺失时又会被静默接受，口径不一致。
+    if n_col < 2:
+        raise ValueError(f"impute_mice 需要至少 2 列，得到 {n_col}")
+    if n_missing == 0:
+        return {"imputed": arr.copy(), "n_missing": 0, "per_column_missing": per_column_missing,
+                "history": [], "converged": True, "n_iter": 0, "method": "mice",
+                "binary_columns": []}
+
+    binary_cols = []
+    for j in range(n_col):
+        vals = np.unique(arr[~mask[:, j], j])
+        if vals.size == 2 and bool(np.all(np.isin(vals, (0.0, 1.0)))):
+            binary_cols.append(j)
+
+    cols_with_missing = [int(j) for j in range(n_col) if mask[:, j].any()]
+    filled = arr.copy()
+    for j in cols_with_missing:
+        obs_vals = arr[~mask[:, j], j]
+        fill = float(np.mean(obs_vals))
+        if j in binary_cols:
+            fill = float(np.round(fill))
+        filled[mask[:, j], j] = fill
+
+    gen = rng(seed)
+    others_of = {j: [c for c in range(n_col) if c != j] for j in cols_with_missing}
+    prev = filled[mask].copy()
+    history: List[dict] = []
+    n_iter = 0
+    converged = False
+    for it in range(max_iter):
+        n_iter = it + 1
+        rmse_col = [0.0] * n_col
+        for j in gen.permutation(cols_with_missing).tolist():
+            j = int(j)
+            others = others_of[j]
+            obs = ~mask[:, j]
+            design_obs = _design_matrix(filled[np.ix_(obs, others)])
+            design_miss = _design_matrix(filled[np.ix_(~obs, others)])
+            y_obs = filled[obs, j]
+            if j in binary_cols:
+                coef = _logistic_irls(design_obs, y_obs)
+                fitted = _sigmoid(design_obs @ coef)
+                filled[~obs, j] = np.clip(_sigmoid(design_miss @ coef), 0.0, 1.0)
+            else:
+                coef = np.linalg.lstsq(design_obs, y_obs, rcond=None)[0]
+                filled[~obs, j] = design_miss @ coef
+                fitted = design_obs @ coef
+            rmse_col[j] = float(np.sqrt(np.mean((y_obs - fitted) ** 2)))
+        cur = filled[mask]
+        change = float(np.max(np.abs(cur - prev)))
+        prev = cur
+        history.append({"iter": n_iter,
+                        "rmse": [round(v, 10) for v in rmse_col],
+                        "change": round(change, 12)})
+        if change <= tol:
+            converged = True
+            break
+    return {"imputed": filled, "n_missing": n_missing,
+            "per_column_missing": per_column_missing, "history": history,
+            "converged": converged, "n_iter": n_iter, "method": "mice",
+            "binary_columns": binary_cols}
+
+
 # --------------------------------------------------------------------------
 # 异常检测
 # --------------------------------------------------------------------------
@@ -1025,8 +1342,8 @@ def _self_test() -> dict:
 
     返回:
         dict，键名以 ``sens_`` 开头，值均为 int/float/bool/list，固定种子下两次调用完全一致；
-        键覆盖 OAT 斜率与最大变化、弹性、Morris 的 μ/μ*/σ/排序、Sobol 的一阶/总效应与
-        求值次数、插补 RMSE、三种异常检测的下标集合。
+        键覆盖 OAT 斜率与最大变化、弹性、Morris 的 μ/μ*/σ/排序、Sobol 的一阶/总效应/二阶
+        与求值次数、四种插补的 RMSE，以及三种异常检测的下标集合。
 
     算法:
         全部算例都配上**解析闭式解**，而不是只看数字是否好看：
@@ -1042,13 +1359,19 @@ def _self_test() -> dict:
            本 seed 下实际误差 0.012（约容差的 1/4）。交互算例样本量只需 2048。
            ``sobol_total_effect`` 在同一可加函数上应满足 ST ≈ S1（差 < 0.05），
            而在交互函数 ``y = x_0·x_1`` 上必须 ST > S1（解析值约 0.571 > 0.429）。
-        4. 插补：把列间近似线性的 60×3 矩阵挖掉 10%（18 个格子），
-           ``impute_regression`` 的 RMSE 必须小于 ``impute_mean`` 的 RMSE。
-        5. 异常检测：31 个点的等差序列 + 一个远端离群点，三种方法必须抓到同一下标。
+        4. ``sobol_second_order`` 用三个解析算例：``y = x_0·x_1`` 于 [0,1]²
+           （解析 S1 = 3/7、ST = 4/7、S2 = 1/7、residual = S12 = 1/7）、
+           同一函数于 [-1,1]²（解析 S1 = 0、ST = 1、S2 = 1，且 S1 恒为 0 才是"对称性"的正确检验）、
+           可加函数（解析 S2 = 0、residual = 0，且 S1/ST 必须与 §3 逐位一致）；
+           再加三维 Ishigami 验证"只有 (0,2) 这一对非零"（解析 S2(0,2) = 0.243684）。
+        5. 插补：把列间近似线性的 60×3 矩阵挖掉 10%（18 个格子），
+           ``impute_regression`` 与 ``impute_mice`` 的 RMSE 都必须小于 ``impute_mean``；
+           MICE 另补无缺失原样返回、常数列精确回填、二值列走 logistic 并能区分两类三个性质。
+        6. 异常检测：31 个点的等差序列 + 一个远端离群点，三种方法必须抓到同一下标。
         Sobol 的样本量按容差要求取值（见下方常量），已在报告里说明。
 
     复杂度:
-        时间 O(n_samples·d)（Sobol 占主要部分）/ 空间 O(n_samples·d)。
+        时间 O(n_samples·d²)（二阶 Sobol 占主要部分，约 0.3 s）/ 空间 O(n_samples·d)。
 
     陷阱:
         1. Sobol 断言对随机数敏感：样本量太小时 S1 的抽样误差会超过 0.05 容差，
@@ -1057,10 +1380,13 @@ def _self_test() -> dict:
            断言用 1e-9 而不是严格等于 0。
         3. 插补 RMSE 的比较依赖"列间确实近似线性"这一构造；若把噪声加大到与信号同量级，
            ``impute_regression`` 就不再优于均值插补。
+        4. 二阶指数的解析值容易记错：``y = x_0·x_1`` 于 [0,1]² 的 S1 不是 0（而是 3/7），
+           于 [-1,1]² 才是 0；且 d=2 时 ``interaction_residual`` 的解析值是 S2 本身而非 0，
+           这两点都在 ``sobol_second_order`` 的"陷阱"里展开。
 
     参考:
-        Sobol' (2001)；Saltelli et al. (2010)；Morris (1991)；
-        Iglewicz & Hoaglin (1993)；Troyanskaya et al. (2001)。
+        Sobol' (2001)；Saltelli et al. (2010)；Homma & Saltelli (1996)；Morris (1991)；
+        Iglewicz & Hoaglin (1993)；Troyanskaya et al. (2001)；van Buuren (2018)。
     """
     # ---- 1. OAT 与弹性（闭式解对拍）----
     def lin32(x: np.ndarray) -> float:
@@ -1163,6 +1489,132 @@ def _self_test() -> dict:
     if mad["index"] != [out_idx]:
         raise AssertionError(f"mad 抓到 {mad['index']}，期望 [{out_idx}]")
 
+    # ---- 6. Sobol 二阶指数：与解析闭式解对拍 ----
+    # f = x0·x1 于 [0,1]²：Var = 1/144 - 1/16·... 的闭式结果为 S1 = 3/7、ST = 4/7、S2 = 1/7；
+    # 注意 d=2 时 ΣST - ΣS1 - ΣS2 的解析值就是 S12 = 1/7 ≈ 0.143（不是 0，见函数陷阱第 3 条）。
+    n_sob_2nd = 32768     # 二阶估计量误差约为一阶的两倍，故用与可加算例同样的 N
+    n_sob_pair = 16384    # 三维 Ishigami：求值次数 = N·(d+2) + N·d·(d-1) = 11N
+    s2_prod = sobol_second_order(inter, [[0.0, 1.0], [0.0, 1.0]], n_base=n_sob_2nd, seed=11)
+    exp_s1_prod = 3.0 / 7.0
+    exp_st_prod = 4.0 / 7.0
+    exp_s2_prod = 1.0 / 7.0
+    if abs(float(s2_prod["S2"][0, 1]) - exp_s2_prod) > 0.05:
+        raise AssertionError(f"S2[0,1]={s2_prod['S2'][0, 1]} 与解析值 1/7 不符（容差 0.05）")
+    if float(s2_prod["S2"][0, 1]) != float(s2_prod["S2"][1, 0]):
+        raise AssertionError("S2 不对称")
+    if not math.isnan(float(s2_prod["S2"][0, 0])):
+        raise AssertionError(f"S2 对角线应为 nan，得到 {s2_prod['S2'][0, 0]}")
+    if np.max(np.abs(np.asarray(s2_prod["S1"]) - exp_s1_prod)) > 0.05:
+        raise AssertionError(f"S1={np.asarray(s2_prod['S1']).tolist()} 与解析值 3/7 不符")
+    if np.max(np.abs(np.asarray(s2_prod["ST"]) - exp_st_prod)) > 0.04:
+        raise AssertionError(f"ST={np.asarray(s2_prod['ST']).tolist()} 与解析值 4/7 不符")
+    if abs(float(s2_prod["S2_sum"]) - exp_s2_prod) > 0.05:
+        raise AssertionError(f"S2_sum={s2_prod['S2_sum']} 与解析值 1/7 不符")
+    if abs(float(s2_prod["interaction_residual"]) - exp_s2_prod) > 0.06:
+        raise AssertionError(
+            f"d=2 时 interaction_residual≈S2_sum≈1/7，得到 {s2_prod['interaction_residual']}")
+    if abs(float(s2_prod["interaction_residual"]) - float(s2_prod["S2_sum"])) > 0.05:
+        raise AssertionError("d=2 无三阶交互，interaction_residual 应约等于 S2_sum")
+    if int(s2_prod["n_eval"]) != n_sob_2nd * 6:
+        raise AssertionError(f"n_eval={s2_prod['n_eval']} != 6N={n_sob_2nd * 6}")
+
+    # 对称区间 [-1,1]² 上 x0·x1 的两个主效应解析为 0，方差全在交互上：S1=0、ST=1、S2=1。
+    s2_sym = sobol_second_order(inter, [[-1.0, 1.0], [-1.0, 1.0]], n_base=n_sob_2nd, seed=11)
+    if np.max(np.abs(np.asarray(s2_sym["S1"]))) > 0.05:
+        raise AssertionError(f"对称区间上 S1 解析为 0，得到 {np.asarray(s2_sym['S1']).tolist()}")
+    if abs(float(s2_sym["S2"][0, 1]) - 1.0) > 0.05:
+        raise AssertionError(f"对称区间上 S2[0,1] 应 ≈1，得到 {s2_sym['S2'][0, 1]}")
+    if np.max(np.abs(np.asarray(s2_sym["ST"]) - 1.0)) > 0.05:
+        raise AssertionError(f"对称区间上 ST 应 ≈1，得到 {np.asarray(s2_sym['ST']).tolist()}")
+
+    # 可加函数：S2 解析为 0，且 S1/ST 必须与 §3 的 sobol_first_order/sobol_total_effect 逐位一致。
+    s2_add = sobol_second_order(lin21, [[0.0, 1.0], [0.0, 1.0]], n_base=n_sob_add, seed=11)
+    if abs(float(s2_add["S2"][0, 1])) > 0.05:
+        raise AssertionError(f"可加函数 S2[0,1]={s2_add['S2'][0, 1]} 应 ≈0（容差 0.05）")
+    if abs(float(s2_add["interaction_residual"])) > 0.05:
+        raise AssertionError(f"可加函数 residual={s2_add['interaction_residual']} 应 ≈0")
+    if np.max(np.abs(np.asarray(s2_add["S1"]) - s1)) > 1e-12:
+        raise AssertionError("sobol_second_order 的 S1 与 sobol_first_order 不一致（应同种子逐位一致）")
+    if np.max(np.abs(np.asarray(s2_add["ST"]) - st_add)) > 1e-12:
+        raise AssertionError("sobol_second_order 的 ST 与 sobol_total_effect 不一致（应同种子逐位一致）")
+
+    # 三维 Ishigami（a=7, b=0.1, x~U(-π,π)³）：解析 V=13.844588，
+    # S2(0,1)=S2(1,2)=0，S2(0,2)=D13/V=0.243684 —— 用来验证"只有真正成对的参数才非零"。
+    def ishigami(x: np.ndarray) -> float:
+        return math.sin(x[0]) + 7.0 * math.sin(x[1]) ** 2 + 0.1 * x[2] ** 4 * math.sin(x[0])
+
+    s2_ish = sobol_second_order(ishigami, [[-math.pi, math.pi]] * 3, n_base=n_sob_pair, seed=13)
+    exp_s2_ish = 0.243684
+    if abs(float(s2_ish["S2"][0, 2]) - exp_s2_ish) > 0.05:
+        raise AssertionError(f"Ishigami S2(0,2)={s2_ish['S2'][0, 2]} 与解析值 {exp_s2_ish} 不符")
+    if abs(float(s2_ish["S2"][0, 1])) > 0.05 or abs(float(s2_ish["S2"][1, 2])) > 0.05:
+        raise AssertionError(
+            f"Ishigami 只有 (0,2) 对存在交互，得到 S2(0,1)={s2_ish['S2'][0, 1]}、"
+            f"S2(1,2)={s2_ish['S2'][1, 2]}")
+
+    # ---- 7. MICE：与均值插补对拍 + 无缺失/常数列两个边角性质 ----
+    # max_iter/tol 与 impute_regression 保持一致：本数据上回归插补第 33 轮收敛（tol=1e-6），
+    # MICE 因每轮列顺序随机、近似 Gauss-Seidel，本 seed 下要 40 轮，故 max_iter 取 60。
+    mice = impute_mice(damaged, max_iter=60, seed=20240115, tol=1e-6)
+    rmse_mice = _rmse(mice["imputed"])
+    if int(mice["n_missing"]) != int(flat_idx.size):
+        raise AssertionError(f"impute_mice n_missing={mice['n_missing']} != {flat_idx.size}")
+    if sum(int(v) for v in mice["per_column_missing"]) != int(mice["n_missing"]):
+        raise AssertionError("per_column_missing 之和与 n_missing 不符")
+    if not rmse_mice < rmse_mean:
+        raise AssertionError(f"MICE 插补 RMSE {rmse_mice} 未优于均值插补 {rmse_mean}")
+    if np.isnan(np.asarray(mice["imputed"], dtype=float)).any():
+        raise AssertionError("impute_mice 输出仍含 nan")
+    if not mice["converged"]:
+        raise AssertionError(f"impute_mice 未收敛，n_iter={mice['n_iter']}")
+    if len(mice["history"]) != int(mice["n_iter"]):
+        raise AssertionError("history 长度与实际迭代轮数不符")
+    if len(mice["history"][-1]["rmse"]) != full.shape[1]:
+        raise AssertionError("history 的 rmse 应逐列给出")
+
+    mice_full = impute_mice(full, max_iter=5, seed=7)
+    if not np.array_equal(np.asarray(mice_full["imputed"], dtype=float), full):
+        raise AssertionError("无缺失输入时 impute_mice 应逐元素原样返回")
+    if int(mice_full["n_missing"]) != 0 or mice_full["history"]:
+        raise AssertionError("无缺失输入时 n_missing 应为 0 且 history 为空")
+
+    # 单列矩阵必须一律 ValueError：列数检查先于"无缺失提前返回"，口径才与 docstring 一致
+    single_col_ok = 0
+    for bad in (np.array([[1.0], [np.nan], [3.0]]), np.array([[1.0], [2.0], [3.0]])):
+        try:
+            impute_mice(bad, max_iter=3, seed=1)
+        except ValueError:
+            single_col_ok += 1
+    if single_col_ok != 2:
+        raise AssertionError(f"单列（含有/不含缺失）都应抛 ValueError，实际只拦下 {single_col_ok} 例")
+
+    const_case = np.array([[1.0, 7.0, np.nan], [2.0, 7.0, 2.0], [3.0, 7.0, np.nan],
+                           [4.0, 7.0, 4.0], [5.0, 7.0, np.nan]])
+    mice_const = impute_mice(const_case, max_iter=20, seed=3)
+    const_err = float(np.max(np.abs(np.asarray(mice_const["imputed"], dtype=float)[:, 1] - 7.0)))
+    if const_err > 1e-9:
+        raise AssertionError(f"常数列插补偏差 {const_err} 过大，应精确等于 7")
+
+    # 二值列必须走 logistic 路径，且回填的是 [0,1] 内的概率，并能区分两类
+    # （b 由 z 生成：b = 1{z + 噪声 > 0}，故 P(b=1|z) 随 z 递增）。
+    gen_b = rng(6)
+    z_b = gen_b.standard_normal(80)
+    b_b = (z_b + gen_b.standard_normal(80) > 0.0).astype(float)
+    bin_case = np.column_stack([z_b, b_b])
+    bin_holes = np.asarray(gen_b.choice(bin_case.shape[0], size=8, replace=False), dtype=int)
+    bin_case[bin_holes, 1] = np.nan
+    mice_bin = impute_mice(bin_case, max_iter=20, seed=9, tol=1e-8)
+    if [int(j) for j in mice_bin["binary_columns"]] != [1]:
+        raise AssertionError(f"第 1 列应判为二值列，得到 {mice_bin['binary_columns']}")
+    bin_pred = np.asarray(mice_bin["imputed"], dtype=float)[bin_holes, 1]
+    if bin_pred.min() < 0.0 or bin_pred.max() > 1.0:
+        raise AssertionError(f"二值列插补值应落在 [0,1]，得到 {bin_pred.tolist()}")
+    bin_true = b_b[bin_holes]
+    bin_gap = float(bin_pred[bin_true > 0.5].mean()) - float(bin_pred[bin_true < 0.5].mean())
+    if not bin_gap > 0.1:
+        raise AssertionError(
+            f"二值列的 logistic 插补未能区分两类（均值差 {bin_gap}），预测={bin_pred.tolist()}")
+
     return {
         "sens_oat_slopes": [round(float(v), 6) for v in slopes],
         "sens_oat_max_abs_change": round(float(oat["max_abs_change"]), 6),
@@ -1181,11 +1633,47 @@ def _self_test() -> dict:
         "sens_sobol_s1_interaction": [round(float(v), 6) for v in s1_int],
         "sens_sobol_st_interaction": [round(float(v), 6) for v in st_int],
         "sens_sobol_interaction_gap": round(float(np.min(st_int - s1_int)), 6),
+        "sens_sobol2_s1_prod01": [round(float(v), 6) for v in s2_prod["S1"]],
+        "sens_sobol2_st_prod01": [round(float(v), 6) for v in s2_prod["ST"]],
+        "sens_sobol2_s2_prod01": round(float(s2_prod["S2"][0, 1]), 6),
+        "sens_sobol2_s2_sum_prod01": round(float(s2_prod["S2_sum"]), 6),
+        "sens_sobol2_residual_prod01": round(float(s2_prod["interaction_residual"]), 6),
+        "sens_sobol2_s1_sym": [round(float(v), 6) for v in s2_sym["S1"]],
+        "sens_sobol2_st_sym": [round(float(v), 6) for v in s2_sym["ST"]],
+        "sens_sobol2_s2_sym": round(float(s2_sym["S2"][0, 1]), 6),
+        "sens_sobol2_s2_additive": round(float(s2_add["S2"][0, 1]), 6),
+        "sens_sobol2_residual_additive": round(float(s2_add["interaction_residual"]), 6),
+        "sens_sobol2_s1_matches_first_order": bool(
+            np.max(np.abs(np.asarray(s2_add["S1"]) - s1)) <= 1e-12),
+        "sens_sobol2_st_matches_total_effect": bool(
+            np.max(np.abs(np.asarray(s2_add["ST"]) - st_add)) <= 1e-12),
+        "sens_sobol2_ishigami_s2": [round(float(s2_ish["S2"][0, 1]), 6),
+                                    round(float(s2_ish["S2"][0, 2]), 6),
+                                    round(float(s2_ish["S2"][1, 2]), 6)],
+        "sens_sobol2_n_eval": int(s2_prod["n_eval"]),
+        "sens_sobol2_symmetric": bool(
+            np.allclose(np.asarray(s2_prod["S2"]), np.asarray(s2_prod["S2"]).T, equal_nan=True)),
+        "sens_sobol2_diag_nan": bool(np.all(np.isnan(np.diag(np.asarray(s2_prod["S2"]))))),
         "sens_impute_n_missing": int(im_reg["n_imputed"]),
         "sens_impute_mean_rmse": round(rmse_mean, 6),
         "sens_impute_knn_rmse": round(rmse_knn, 6),
         "sens_impute_regression_rmse": round(rmse_reg, 6),
         "sens_impute_regression_iter": int(im_reg["n_iter"]),
+        "sens_mice_n_missing": int(mice["n_missing"]),
+        "sens_mice_rmse": round(rmse_mice, 6),
+        "sens_mice_iter": int(mice["n_iter"]),
+        "sens_mice_converged": bool(mice["converged"]),
+        "sens_mice_beats_mean": bool(rmse_mice < rmse_mean),
+        "sens_mice_history_len": int(len(mice["history"])),
+        "sens_mice_per_column_missing": [int(v) for v in mice["per_column_missing"]],
+        "sens_mice_no_missing_identical": bool(
+            np.array_equal(np.asarray(mice_full["imputed"], dtype=float), full)),
+        "sens_mice_single_col_ok": int(single_col_ok),
+        "sens_mice_constant_err": round(const_err, 12),
+        "sens_mice_binary_columns": [int(j) for j in mice_bin["binary_columns"]],
+        "sens_mice_binary_prob_min": round(float(bin_pred.min()), 6),
+        "sens_mice_binary_prob_max": round(float(bin_pred.max()), 6),
+        "sens_mice_binary_gap": round(bin_gap, 6),
         "sens_outlier_index_zscore": [int(i) for i in zs["index"]],
         "sens_outlier_index_iqr": [int(i) for i in iq["index"]],
         "sens_outlier_index_mad": [int(i) for i in mad["index"]],

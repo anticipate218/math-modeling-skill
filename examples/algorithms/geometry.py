@@ -47,6 +47,7 @@ __all__ = [
     "polygon_centroid",
     "point_to_segment_distance",
     "voronoi_nearest",
+    "sutherland_hodgman_clip",
     "EARTH_RADIUS_KM",
 ]
 
@@ -925,6 +926,138 @@ def voronoi_nearest(points: MatrixLike, queries: MatrixLike) -> Dict[str, np.nda
     }
 
 
+def _signed_area(points: np.ndarray) -> float:
+    """内部工具：多边形的带符号面积（逆时针为正），不取绝对值。"""
+    x = points[:, 0]
+    y = points[:, 1]
+    return float(0.5 * np.sum(x * np.roll(y, -1) - np.roll(x, -1) * y))
+
+
+def _sh_intersect(p: np.ndarray, q: np.ndarray, a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """内部工具：线段 pq 与直线 ab 的交点（调用方保证两端点分居直线两侧）。"""
+    edge = b - a
+    d1 = float(edge[0] * (p[1] - a[1]) - edge[1] * (p[0] - a[0]))
+    d2 = float(edge[0] * (q[1] - a[1]) - edge[1] * (q[0] - a[0]))
+    denom = d1 - d2
+    if denom == 0.0:  # 平行（数值上几乎不可能走到这里，兜底取 p）
+        return p.copy()
+    t = d1 / denom
+    return p + t * (q - p)
+
+
+def sutherland_hodgman_clip(subject_polygon: MatrixLike, clip_polygon: MatrixLike) -> Dict[str, object]:
+    """Sutherland-Hodgman 多边形裁剪：求"被裁剪多边形"落在"裁剪窗口"内的部分。
+
+    参数:
+        subject_polygon: 形状 (n, 2) 的被裁剪多边形顶点，n >= 3，按顺序给出（闭合点不要重复写）。
+            允许是任意**简单**多边形（凹的也可以，凹点在裁剪后会正确分裂为多条共线边）。
+        clip_polygon: 形状 (m, 2) 的裁剪窗口顶点，m >= 3，必须是**凸**多边形。
+            函数内部会按带符号面积自动把顶点顺序统一成逆时针，顺时针输入也能正确处理。
+
+    返回:
+        dict，键为：
+        ``polygon`` 形状 (k, 2) 的裁剪结果顶点（逆时针，k=0 表示空集）；
+        ``area`` 裁剪结果的面积（鞋带公式，非负）；
+        ``n_vertices`` 结果顶点数 k；
+        ``is_empty`` 结果是否为空（bool）；
+        ``signed_area`` 结果的带符号面积（逆时针为正，用于判断方向是否被翻转）；
+        ``clip_orientation_flipped`` 输入的裁剪窗口是否为顺时针（需要被翻转过，bool）。
+
+    算法:
+        逐边裁剪：对裁剪窗口的每一条有向边 ab（逆时针方向，内侧 = 叉积 (b-a)×(p-a) >= 0），
+        遍历当前结果多边形的每条边 p→q：
+        - p 在内、q 在内：保留 q；
+        - p 在内、q 在外：保留 pq 与直线 ab 的交点；
+        - p 在外、q 在内：先保留交点、再保留 q；
+        - p 在外、q 在外：都不保留。
+        一条边处理完后得到新的顶点序列，四条边依次处理即得结果。复杂度与裁剪窗口边数线性相关。
+
+    复杂度:
+        时间 O((n+m)·m)（m 条裁剪边，每条扫描当前顶点数，最坏 O(n+m)）/ 空间 O(n+m)。
+
+    陷阱:
+        1. **裁剪窗口必须是凸的**。凹窗口（例如 L 形）用本算法会产生"连接不同分量的伪边"，
+            结果多边形面积会明显偏大。要裁凹窗口请把窗口分解成若干凸块分别裁剪再合并。
+        2. 结果里会保留**共线顶点**（裁剪窗口顶点落在被裁多边形边上时），这些点不影响面积与
+            形状，但会让 `n_vertices` 偏大；论文里报顶点数前应先做共线点剔除。
+        3. 被裁剪多边形**自交**时结果无意义（鞋带面积会正负抵消），与其他多边形算法口径一致。
+        4. 边界正好相切（只有一条边贴住裁剪窗口边）时结果退化为一条线，面积为 0、
+           但 `is_empty` 为 False——这是"面积为零的非空多边形"，判空要用 `area == 0`
+            或 `n_vertices < 3`，不要只看 `is_empty`。
+        5. 坐标量级极大或极小（如经纬度直接代入）时交点计算会有浮点误差，建议先归一化到
+            相近量级；本函数不自动做数值预处理。
+
+    参考:
+        Sutherland & Hodgman 1974, "Reentrant Polygon Clipping", Communications of the ACM 17(1)。
+    """
+    subject = _as_points(subject_polygon, "subject_polygon")
+    clip = _as_points(clip_polygon, "clip_polygon")
+    if subject.shape[0] < 3 or clip.shape[0] < 3:
+        return {
+            "polygon": np.zeros((0, 2), dtype=float),
+            "area": 0.0,
+            "n_vertices": 0,
+            "is_empty": True,
+            "signed_area": 0.0,
+            "clip_orientation_flipped": False,
+        }
+
+    orientation_flipped = _signed_area(clip) < 0.0
+    if orientation_flipped:
+        clip = clip[::-1].copy()
+
+    output = subject.copy()
+    n_clip = clip.shape[0]
+    for i in range(n_clip):
+        if output.shape[0] == 0:
+            break
+        a = clip[i]
+        b = clip[(i + 1) % n_clip]
+        edge = b - a
+        n_in = output.shape[0]
+        new_pts: List[np.ndarray] = []
+        for j in range(n_in):
+            cur = output[j]
+            prev = output[j - 1]
+            cur_in = float(edge[0] * (cur[1] - a[1]) - edge[1] * (cur[0] - a[0])) >= 0.0
+            prev_in = float(edge[0] * (prev[1] - a[1]) - edge[1] * (prev[0] - a[0])) >= 0.0
+            if cur_in:
+                if not prev_in:
+                    new_pts.append(_sh_intersect(prev, cur, a, b))
+                new_pts.append(cur)
+            elif prev_in:
+                new_pts.append(_sh_intersect(prev, cur, a, b))
+        output = np.array(new_pts, dtype=float) if new_pts else np.zeros((0, 2), dtype=float)
+
+    if output.shape[0] > 1:
+        keep = [True]
+        for j in range(1, output.shape[0]):
+            keep.append(float(np.max(np.abs(output[j] - output[j - 1]))) > 1e-12)
+        if output.shape[0] > 1 and float(np.max(np.abs(output[0] - output[-1]))) <= 1e-12:
+            keep[0] = False
+        output = output[np.array(keep, dtype=bool)]
+
+    if output.shape[0] == 0:
+        return {
+            "polygon": np.zeros((0, 2), dtype=float),
+            "area": 0.0,
+            "n_vertices": 0,
+            "is_empty": True,
+            "signed_area": 0.0,
+            "clip_orientation_flipped": bool(orientation_flipped),
+        }
+
+    signed = _signed_area(output)
+    return {
+        "polygon": output,
+        "area": float(abs(signed)),
+        "n_vertices": int(output.shape[0]),
+        "is_empty": False,
+        "signed_area": float(signed),
+        "clip_orientation_flipped": bool(orientation_flipped),
+    }
+
+
 def _self_test() -> dict:
     """跑一组小规模确定性算例，返回关键数值供 examples/run_algorithms.py 断言。
 
@@ -932,7 +1065,7 @@ def _self_test() -> dict:
         无。
 
     返回:
-        dict（int/float/list，固定种子下两次调用完全一致），共 46 个键，按族分组：
+        dict（int/float/list，固定种子下两次调用完全一致），共 58 个键，按族分组：
 
         - **凸包与多边形**（7 个）：``hull_size`` 单位正方形 + 4 个共线边中点 + 2 个内部点
           的凸包顶点数（应为 4）；``hull_indices`` 凸包顶点下标（升序）；
@@ -966,6 +1099,13 @@ def _self_test() -> dict:
           ``seg_cross_point`` 正常交叉；``seg_disjoint_intersect`` 完全分离。
         - **Voronoi 最近站点**（2 个）：``voronoi_index`` 最近站点下标（暴力法）；
           ``voronoi_distance`` 对应距离。
+        - **多边形裁剪**（12 个）：``sh_tri_area`` 正方形 [0,2]² 被三角形 (0,0)-(3,0)-(0,3)
+          裁剪后的面积（手算 3.5）与顶点数、带符号面积；``sh_inside_area`` /
+          ``sh_inside_signed_area`` 被完全包含时的面积与方向（应分别为 1.0、正）；
+          ``sh_empty_is_empty`` / ``sh_empty_n_vertices`` 无交集时为空多边形；
+          ``sh_cw_area`` / ``sh_cw_flipped`` 裁剪窗口按顺时针给出时结果不变并报告翻转；
+          ``sh_twice_area`` 重复裁剪的幂等性；``sh_l_area`` / ``sh_l_n_vertices``
+          凹 L 形与正方形 [0.5,3]² 的交（手算 1.25）。
 
     算法:
         点集与数值全部硬编码，不含随机量，因此天然可复现；克里金用默认参数
@@ -1080,6 +1220,44 @@ def _self_test() -> dict:
     if abs(float(vor["distance"][0]) - math.hypot(0.4, 0.4)) > 1e-12:
         raise AssertionError(f"最近距离 {vor['distance'][0]} 应为 {math.hypot(0.4, 0.4)}")
 
+    # 6) Sutherland-Hodgman 裁剪：三个手算面积 + 方向无关 + 面积恒等式
+    # (a) 正方形 [0,2]^2 被三角形 (0,0)-(3,0)-(0,3) 裁掉 x+y>3 的角：
+    #     4 - (直角边 1 的角三角形面积 0.5) = 3.5
+    sh_tri = sutherland_hodgman_clip(
+        np.array([[0.0, 0.0], [2.0, 0.0], [2.0, 2.0], [0.0, 2.0]]),
+        np.array([[0.0, 0.0], [3.0, 0.0], [0.0, 3.0]]),
+    )
+    sh_tri_area_expected = 3.5
+    if abs(float(sh_tri["area"]) - sh_tri_area_expected) > 1e-12:
+        raise AssertionError(f"正方形被三角形裁剪的面积 {sh_tri['area']} 应为 3.5")
+    # (b) 完全包含：结果面积必须等于原多边形面积，且以逆时针给出
+    sh_inside = sutherland_hodgman_clip(square, np.array([[-1.0, -1.0], [2.0, -1.0], [2.0, 2.0], [-1.0, 2.0]]))
+    if abs(float(sh_inside["area"]) - 1.0) > 1e-12:
+        raise AssertionError(f"被完全包含时面积 {sh_inside['area']} 应等于 1.0")
+    if float(sh_inside["signed_area"]) <= 0.0:
+        raise AssertionError("裁剪结果必须按逆时针给出（带符号面积应为正）")
+    # (c) 无交集：空集
+    sh_empty = sutherland_hodgman_clip(square, np.array([[2.0, 2.0], [3.0, 2.0], [3.0, 3.0], [2.0, 3.0]]))
+    if not bool(sh_empty["is_empty"]) or int(sh_empty["n_vertices"]) != 0 or float(sh_empty["area"]) != 0.0:
+        raise AssertionError(f"无交集时应返回空多边形，实际 {sh_empty['n_vertices']} 个顶点、面积 {sh_empty['area']}")
+    # (d) 裁剪窗口顺时针输入必须得到同一结果（内部自动翻转为逆时针），并报告翻转标志
+    sh_cw = sutherland_hodgman_clip(square, np.array([[-1.0, -1.0], [-1.0, 2.0], [2.0, 2.0], [2.0, -1.0]]))
+    if abs(float(sh_cw["area"]) - float(sh_inside["area"])) > 1e-12:
+        raise AssertionError(f"顺时针裁剪窗口的面积 {sh_cw['area']} 应与逆时针一致")
+    if not bool(sh_cw["clip_orientation_flipped"]):
+        raise AssertionError("顺时针裁剪窗口必须报告 clip_orientation_flipped=True")
+    # (e) 面积恒等式：area 必须等于用 polygon_area 重算的结果；再裁剪一次面积不变（幂等）
+    if abs(float(sh_tri["area"]) - polygon_area(sh_tri["polygon"])) > 1e-12:
+        raise AssertionError("裁剪结果的 area 与 polygon_area(polygon) 不一致")
+    sh_twice = sutherland_hodgman_clip(sh_tri["polygon"], np.array([[0.0, 0.0], [3.0, 0.0], [0.0, 3.0]]))
+    if abs(float(sh_twice["area"]) - float(sh_tri["area"])) > 1e-12:
+        raise AssertionError("对同一窗口重复裁剪必须幂等")
+    # (f) 凹多边形（L 形，面积 3）与正方形 [0.5,3]^2 的交：0.75 + 0.5 = 1.25
+    l_shape = np.array([[0.0, 0.0], [2.0, 0.0], [2.0, 1.0], [1.0, 1.0], [1.0, 2.0], [0.0, 2.0]])
+    sh_l = sutherland_hodgman_clip(l_shape, np.array([[0.5, 0.5], [3.0, 0.5], [3.0, 3.0], [0.5, 3.0]]))
+    if abs(float(sh_l["area"]) - 1.25) > 1e-12:
+        raise AssertionError(f"L 形被正方形裁剪的面积 {sh_l['area']} 应为 1.25")
+
     return {
         "hull_size": len(hull),
         "hull_indices": sorted(int(i) for i in hull),
@@ -1136,4 +1314,16 @@ def _self_test() -> dict:
         "seg_disjoint_intersect": int(seg_dis["intersect"]),
         "voronoi_index": [int(i) for i in vor["index"]],
         "voronoi_distance": [round(float(v), 9) for v in vor["distance"]],
+        "sh_tri_area": round(float(sh_tri["area"]), 12),
+        "sh_tri_n_vertices": int(sh_tri["n_vertices"]),
+        "sh_tri_signed_area": round(float(sh_tri["signed_area"]), 12),
+        "sh_inside_area": round(float(sh_inside["area"]), 12),
+        "sh_inside_signed_area": round(float(sh_inside["signed_area"]), 12),
+        "sh_empty_is_empty": int(bool(sh_empty["is_empty"])),
+        "sh_empty_n_vertices": int(sh_empty["n_vertices"]),
+        "sh_cw_area": round(float(sh_cw["area"]), 12),
+        "sh_cw_flipped": int(bool(sh_cw["clip_orientation_flipped"])),
+        "sh_twice_area": round(float(sh_twice["area"]), 12),
+        "sh_l_area": round(float(sh_l["area"]), 12),
+        "sh_l_n_vertices": int(sh_l["n_vertices"]),
     }

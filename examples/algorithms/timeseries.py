@@ -8,19 +8,21 @@ Yule-Walker AR、ACF/PACF、ADF 与精度指标。这里给出四类"更进一�
 3. **条件异方差**：GARCH(1,1) 的正态拟极大似然（QML）估计与多步方差预测；
 4. **状态空间**：局部水平模型与一般线性高斯模型的卡尔曼滤波，以及 Ljung-Box 残差检验。
 
-函数清单（与 ``__all__`` 一致，共 12 个）
+函数清单（与 ``__all__`` 一致，共 13 个）
 ----------------------------------------
 - ``gm11``：GM(1,1) 一次累加—紧邻均值—最小二乘—累减还原与样本外预测；
 - ``gm11_posterior_check``：后验差检验（方差比 C、小误差概率 P、精度等级）；
 - ``difference_series``：d 阶差分，**保持长度**（前 d 位为 ``NaN``）；
 - ``arima_fit``：ARIMA(p,d,q) 的条件最小二乘拟合与 AIC/BIC；
-- ``arima_forecast``：多步点预测与预测标准差（仅支持 ``D == 0``）；
+- ``arima_forecast``：多步点预测与预测标准差（支持普通差分 ``d >= 0`` 的逐阶累加反差分，
+  仅季节差分 ``D == 0`` 不支持）；
 - ``arima_order_select``：``(p,d,q)`` 网格上的 AIC/BIC 选阶；
 - ``sarima_fit``：SARIMA(p,d,q)(P,D,Q)_s 的扩展条件最小二乘拟合；
 - ``garch11_fit``：GARCH(1,1) 的 QML 估计（多起点模式搜索）；
 - ``garch11_forecast``：GARCH(1,1) 的多步条件方差预测；
 - ``kalman_filter_local_level``：局部水平模型的单变量卡尔曼滤波；
 - ``kalman_filter_linear``：一般线性高斯状态空间模型的卡尔曼滤波；
+- ``kalman_smoother_linear``：一般线性高斯模型的卡尔曼滤波 + RTS 固定区间平滑；
 - ``ljung_box``：Ljung-Box 白噪声（自相关）检验。
 
 关键约定
@@ -60,6 +62,7 @@ __all__ = [
     "garch11_forecast",
     "kalman_filter_local_level",
     "kalman_filter_linear",
+    "kalman_smoother_linear",
     "ljung_box",
 ]
 
@@ -1309,19 +1312,26 @@ def garch11_forecast(model: Dict[str, object], n_ahead: int = 1) -> Dict[str, ob
 
     返回:
         dict，键为：
-        ``variance``         形状 (n_ahead,) 的条件方差预测，第 h 项对应未来第 h 期；
+        ``variance``         形状 (n_ahead,) 的条件方差预测，第 h 项对应未来第 h 期
+                             （``variance[0] == model["sigma2_next"]``）；
         ``volatility``       其平方根（条件标准差）；
         ``long_run_variance``  长期方差 ``omega / (1 - alpha - beta)``。
 
     算法:
-        对 GARCH(1,1) 有 ``E[sigma2_{T+h} | F_T] = LR + (alpha+beta)^h (sigma2_T - LR)``，
-        其中 ``LR = omega/(1-persistence)``、``sigma2_T`` 是模型给出的下一期一步向前方差
-        （``model["sigma2_next"]``）。直接向量化计算 h = 1..n_ahead。
+        对 GARCH(1,1) 有 ``E[sigma2_{T+h} | F_T] = LR + (alpha+beta)^{h-1} (E[sigma2_{T+1}|F_T] - LR)``
+        （h >= 1），其中 ``LR = omega/(1-persistence)``，而基准项
+        ``E[sigma2_{T+1}|F_T]`` 正是 ``garch11_fit`` 给出的 **下一期一步向前方差**
+        ``model["sigma2_next"] = omega + alpha*eps_T^2 + beta*sigma2_T``。
+        因此 ``variance[0] == model["sigma2_next"]``（h = 1 时指数为 0）。
+        直接向量化计算 h = 1..n_ahead。
 
     复杂度:
         时间 O(n_ahead) / 空间 O(n_ahead)。
 
     陷阱:
+        - **指数是 h-1 而不是 h**：基准必须是一步向前方差 ``sigma2_next``。若把时间 T
+          **已实现**的条件方差 ``sigma2_T`` 当基准传进来（``garch11_fit`` 也返回该键），
+          整条预测曲线会整体前移一期，第 1 项将被错误地当成 h = 2 的结果。
         - 该公式是**条件方差的期望**，不是"波动率的期望"：``E[sigma_{T+h}] <= sqrt(E[sigma2])``
           （Jensen 不等式），所以 ``volatility`` 是下偏的。
         - 只对线性 GARCH(1,1) 严格成立；换成 GJR/EGARCH 或多变量模型，均值回复形式不同。
@@ -1346,7 +1356,8 @@ def garch11_forecast(model: Dict[str, object], n_ahead: int = 1) -> Dict[str, ob
     if persistence >= 1.0:
         raise ValueError(f"alpha + beta = {persistence} >= 1，方差过程非平稳，无长期方差")
     long_run = omega / (1.0 - persistence)
-    hh = np.arange(1, h_len + 1, dtype=float)
+    # 指数 h-1：variance[0] 必须等于一步向前方差 sigma2_next（E[sigma2_{T+1}|F_T]）。
+    hh = np.arange(0, h_len, dtype=float)
     var_h = long_run + np.power(persistence, hh) * (s2_next - long_run)
     return {
         "variance": var_h,
@@ -1567,6 +1578,124 @@ def kalman_filter_linear(
         "predicted": predicted,
         "innovation": innov,
         "loglik": float(loglik),
+    }
+
+
+def kalman_smoother_linear(
+    y: ArrayLike,
+    transition: MatrixLike,
+    observation: MatrixLike,
+    process_cov: MatrixLike,
+    obs_cov: MatrixLike,
+    initial_state: ArrayLike,
+    initial_cov: MatrixLike,
+) -> Dict[str, object]:
+    """一般线性高斯状态空间模型的卡尔曼滤波 + RTS 固定区间平滑。
+
+    参数:
+        y: 观测值。一维 (T,) 表示单通道；二维 (T, m) 表示 m 个通道。
+        transition: 状态转移矩阵 F，形状 (k, k)。
+        observation: 观测矩阵 H，形状 (m, k)（传一维 ``(k,)`` 会被当成 1 行）。
+        process_cov: 状态噪声协方差 Q，形状 (k, k)。
+        obs_cov: 观测噪声协方差 R，形状 (m, m)。
+        initial_state: 初始状态均值 x0，形状 (k,)，解释为 t=0 的**先验**。
+        initial_cov: 初始状态协方差 P0，形状 (k, k)。
+
+    返回:
+        dict，键为：
+        ``filtered_states``   (T, k) 滤波均值 ``E[alpha_t | y_{1..t}]``；
+        ``filtered_covs``     (T, k, k) 滤波协方差 ``Var[alpha_t | y_{1..t}]``；
+        ``smoothed_states``   (T, k) 平滑均值 ``E[alpha_t | y_{1..T}]``（用到全样本）；
+        ``smoothed_covs``     (T, k, k) 平滑协方差 ``Var[alpha_t | y_{1..T}]``；
+        ``log_likelihood``    预测误差分解的高斯对数似然（标量，与
+                              ``kalman_filter_linear`` 的 ``loglik`` 完全一致）；
+        ``predicted_states``  (T, k) 一步向前预测均值 ``E[alpha_t | y_{1..t-1}]``；
+        ``predicted_covs``    (T, k, k) 一步向前预测协方差 ``F P_{t-1} F' + Q``
+                              （``predicted_covs[0] = F P0 F' + Q``，与滤波器的先验口径一致）；
+        ``innovations``       (T, m) 新息 ``y_t - H alpha_t^{pred}``；
+        ``smoother_gain``     (T-1, k, k) RTS 平滑增益 ``J_t``（``T == 1`` 时为空数组）。
+
+    算法:
+        前向滤波与 ``kalman_filter_linear`` 完全相同（直接复用该函数，保证两者口径逐位一致）：
+        预测 ``a_t = F x_{t-1}``、``P_t = F P_{t-1} F' + Q``，更新
+        ``x_t = a_t + K_t v_t``、``P_t = P_t^{pred} - K_t H P_t^{pred}``。
+        反向平滑（Rauch–Tung–Striebel, RTS）从 ``t = T-1`` 往前递推，初值
+        ``x^s_{T-1} = x_{T-1}``、``P^s_{T-1} = P_{T-1}``：
+        ``J_t = P_t F' (P_{t+1}^{pred})^{-1}``；
+        ``x^s_t = x_t + J_t (x^s_{t+1} - a_{t+1})``；
+        ``P^s_t = P_t + J_t (P^s_{t+1} - P_{t+1}^{pred}) J_t'``。
+        由于前向滤波已经算过一次，``P_{t+1}^{pred}`` 在第 2 步独立重算（不重复滤波循环）。
+        对 ``P^s_t`` 做强制对称化 ``(X + X')/2`` 以抑制舍入误差。
+
+    复杂度:
+        时间 O(T (k^3 + m k^2 + m^3)) / 空间 O(T (k^2 + m))。
+
+    陷阱:
+        - **初值口径**：``initial_state``/``initial_cov`` 是先验，t=0 先预测再加 Q（即
+          ``P_pred(0) = F P0 F' + Q``），与 ``kalman_filter_linear`` 完全一致；要与
+          ``kalman_filter_local_level`` 对齐必须取 ``P0 = 0``（见那两个函数的陷阱说明）。
+        - 平滑协方差**在 Loewner（半正定）序下**才保证 ``P^s_t <= P_t``：对角元（各分量的
+          后验方差）逐元素满足，非对角元（协方差）不一定逐元素变小；不要拿"元素逐个变小"
+          当通用结论。
+        - ``P_{t+1}^{pred}`` 需要求逆；``Q = 0`` 且 ``P0`` 退化时它可能奇异，此时本函数抛
+          ``ValueError``（与滤波器的 ``S`` 非正定检查同口径），不做伪逆回退。
+        - 平滑用到全样本，因此**不能用于实时在线预测**：``smoothed_states`` 在每个时刻都用
+          到了该时刻之后的数据，把它当"预测值"画图会严重高估精度。
+        - 不做缺失值处理（``y`` 中不能有 NaN）。``T == 1`` 时平滑结果等于滤波结果，
+          ``smoother_gain`` 为空数组。
+
+    参考:
+        Rauch, Tung & Striebel (1965)；Durbin & Koopman §4.3；Särkkä, Ch. 8。
+    """
+    filt = kalman_filter_linear(
+        y, transition, observation, process_cov, obs_cov, initial_state, initial_cov
+    )
+    f_state = np.asarray(filt["state"], dtype=float)
+    f_cov = np.asarray(filt["cov"], dtype=float)
+    pred_state = np.asarray(filt["predicted"], dtype=float)
+    innov = np.asarray(filt["innovation"], dtype=float)
+    t_len, k = f_state.shape
+
+    Fm = as_matrix(transition, "transition")
+    Qm = as_matrix(process_cov, "process_cov")
+    P0m = as_matrix(initial_cov, "initial_cov")
+
+    # 重算一步向前预测协方差：P_pred(0) = F P0 F' + Q，P_pred(t) = F P_f(t-1) F' + Q
+    pred_cov = np.empty((t_len, k, k), dtype=float)
+    p_prev = P0m
+    for t in range(t_len):
+        pred_cov[t] = Fm @ p_prev @ Fm.T + Qm
+        p_prev = f_cov[t]
+
+    s_state = np.empty((t_len, k), dtype=float)
+    s_cov = np.empty((t_len, k, k), dtype=float)
+    gain = np.empty((max(t_len - 1, 0), k, k), dtype=float)
+    s_state[t_len - 1] = f_state[t_len - 1]
+    s_cov[t_len - 1] = f_cov[t_len - 1]
+    for t in range(t_len - 2, -1, -1):
+        pp_next = pred_cov[t + 1]
+        sign, logdet = np.linalg.slogdet(pp_next)
+        if sign <= 0.0:
+            raise ValueError(
+                f"t={t + 1} 时预测协方差 P_pred 非正定（logdet={logdet}），"
+                "Q=0 且 P0 退化时 RTS 平滑无定义，检查 process_cov/initial_cov 的设定"
+            )
+        rhs = f_cov[t] @ Fm.T
+        j_mat = np.linalg.solve(pp_next.T, rhs.T).T
+        s_state[t] = f_state[t] + j_mat @ (s_state[t + 1] - pred_state[t + 1])
+        sc = f_cov[t] + j_mat @ (s_cov[t + 1] - pp_next) @ j_mat.T
+        s_cov[t] = 0.5 * (sc + sc.T)
+        gain[t] = j_mat
+    return {
+        "filtered_states": f_state,
+        "filtered_covs": f_cov,
+        "smoothed_states": s_state,
+        "smoothed_covs": s_cov,
+        "log_likelihood": float(filt["loglik"]),
+        "predicted_states": pred_state,
+        "predicted_covs": pred_cov,
+        "innovations": innov,
+        "smoother_gain": gain,
     }
 
 
@@ -2083,6 +2212,10 @@ def _self_test() -> Dict[str, object]:
     out["ts_garch_fc_volatility_head"] = [round(float(v), 6) for v in gfc["volatility"][:3]]
     _expect(float(out["ts_garch_fc_long_run_err"]) < 1e-12, "长期方差闭式为 omega/(1-alpha-beta)")
     _expect(
+        float(out["ts_garch_fc_first_err"]) < 1e-12,
+        "variance[0] 必须等于一步向前方差 sigma2_next（回复指数是 h-1 而不是 h）",
+    )
+    _expect(
         abs(float(gfc["variance"][-1]) - lr) < abs(float(gfc["variance"][0]) - lr),
         "多步方差预测应单调靠近长期方差",
     )
@@ -2220,6 +2353,181 @@ def _self_test() -> Dict[str, object]:
     lb_per = ljung_box(per_res, 12)
     out["ts_lb_periodic_p"] = round(float(lb_per["p_value"]), 12)
     _expect(float(lb_per["p_value"]) < 1e-6, "强周期残差必须被拒绝为白噪声")
+
+    # ---------------- ARIMA：d >= 1 反差分的独立校验 ----------------
+    # 这些检查放在所有既有 gen 抽样之后：新增抽样不会移动上面任何既有键的随机数。
+    # 反差分恒等式：d=1 直接拟合与"先手动差分、再对差分序列按 d=0 拟合"必须给出同一
+    # 系数，且点预测满足逐阶累加的定义式 y_hat_h = y_T + Σ_{j<=h} diff_hat_j。
+    m_rw1 = arima_fit(rw, 1, 1, 0)
+    m_diff1 = arima_fit(np.diff(rw), 1, 0, 0)
+    fc_rw1 = arima_forecast(m_rw1, h_fc)
+    fc_diff1 = arima_forecast(m_diff1, h_fc)
+    back_integrated = float(rw[-1]) + np.cumsum(np.asarray(fc_diff1["forecast"]))
+    out["ts_arima_fc_d1_backdiff_err"] = round(
+        float(np.max(np.abs(np.asarray(fc_rw1["forecast"]) - back_integrated))), 12
+    )
+    out["ts_arima_fc_d1_phi_diff_err"] = round(
+        abs(float(np.asarray(m_rw1["phi"])[0]) - float(np.asarray(m_diff1["phi"])[0])), 12
+    )
+    out["ts_arima_fc_d1_mean_diff_err"] = round(
+        abs(float(m_rw1["mean"]) - float(m_diff1["mean"])), 12
+    )
+    out["ts_arima_fc_d1_forecast"] = [round(float(v), 6) for v in fc_rw1["forecast"]]
+    _expect(
+        float(out["ts_arima_fc_d1_backdiff_err"]) < 1e-10
+        and float(out["ts_arima_fc_d1_phi_diff_err"]) < 1e-12
+        and float(out["ts_arima_fc_d1_mean_diff_err"]) < 1e-12,
+        "d=1 的反差分恒等式 y_hat_h = y_T + Σ_{j<=h} diff_hat_j 必须逐位成立",
+    )
+
+    # d 用错会系统性滞后：线性趋势 + 噪声上，留出 RMSE 必须 d=1 << d=0。
+    n_tr, h_tr = 300, 40
+    tr_series = 10.0 + 0.5 * np.arange(n_tr) + 0.3 * gen.standard_normal(n_tr)
+    tr_fit_s = tr_series[: n_tr - h_tr]
+    tr_true = tr_series[n_tr - h_tr :]
+    f_d0 = np.asarray(arima_forecast(arima_fit(tr_fit_s, 1, 0, 0), h_tr)["forecast"])
+    f_d1 = np.asarray(arima_forecast(arima_fit(tr_fit_s, 1, 1, 0), h_tr)["forecast"])
+    rmse_d0 = float(np.sqrt(np.mean((f_d0 - tr_true) ** 2)))
+    rmse_d1 = float(np.sqrt(np.mean((f_d1 - tr_true) ** 2)))
+    out["ts_arima_fc_trend_rmse_d0"] = round(rmse_d0, 6)
+    out["ts_arima_fc_trend_rmse_d1"] = round(rmse_d1, 6)
+    out["ts_arima_fc_trend_rmse_ratio"] = round(rmse_d0 / rmse_d1, 3)
+    _expect(
+        rmse_d1 < 0.2 * rmse_d0,
+        "线性趋势上 d=1 的留出 RMSE 必须远小于 d=0（否则反差分路径有误）",
+    )
+
+    # d=2、p=q=0 的 se 闭式：h 步误差系数为 h, h-1, ..., 1（两次累加各贡献一层前向求和），
+    # 故 se_h = sigma * sqrt(h(h+1)(2h+1)/6)。
+    m_d2 = arima_fit(tr_series, 0, 2, 0)
+    fc_d2 = arima_forecast(m_d2, 5)
+    hh_d2 = np.arange(1.0, 6.0)
+    se_d2_closed = math.sqrt(float(m_d2["sigma2"])) * np.sqrt(
+        hh_d2 * (hh_d2 + 1.0) * (2.0 * hh_d2 + 1.0) / 6.0
+    )
+    out["ts_arima_fc_d2_se_closed_err"] = round(
+        float(np.max(np.abs(np.asarray(fc_d2["se"]) - se_d2_closed))), 12
+    )
+    out["ts_arima_fc_d2_se"] = [round(float(v), 6) for v in fc_d2["se"]]
+    _expect(
+        float(out["ts_arima_fc_d2_se_closed_err"]) < 1e-10,
+        "d=2 的预测标准差应为 sigma*sqrt(h(h+1)(2h+1)/6)",
+    )
+
+    # ---------------- 卡尔曼 RTS 平滑 ----------------
+    # (d) 手写展开的 T=3、一维 RTS 递推（不调用 kalman_smoother_linear）
+    Fs = np.array([[1.0]])
+    Hs = np.array([[1.0]])
+    Qs = np.array([[0.5]])
+    Rs = np.array([[0.7]])
+    x0s = np.array([0.0])
+    P0s = np.array([[1.0]])
+    ys3 = np.array([1.0, 2.0, 3.0])
+    a_h: List[np.ndarray] = []
+    p_pred_h: List[np.ndarray] = []
+    xf_h: List[np.ndarray] = []
+    pf_h: List[np.ndarray] = []
+    ll_h = 0.0
+    a_c, p_c = x0s.copy(), P0s.copy()
+    for t_h in range(3):
+        a_p = Fs @ a_c
+        p_p = Fs @ p_c @ Fs.T + Qs
+        v_h = ys3[t_h : t_h + 1] - Hs @ a_p
+        s_h = Hs @ p_p @ Hs.T + Rs
+        k_h = p_p @ Hs.T @ np.linalg.inv(s_h)
+        a_c = a_p + k_h @ v_h
+        p_c = p_p - k_h @ Hs @ p_p
+        a_h.append(a_p)
+        p_pred_h.append(p_p)
+        xf_h.append(a_c)
+        pf_h.append(p_c)
+        _sgn, _ld = np.linalg.slogdet(s_h)
+        ll_h += -0.5 * (
+            math.log(2.0 * math.pi) + _ld + float(v_h @ np.linalg.solve(s_h, v_h))
+        )
+    xs_h = [np.zeros(1), np.zeros(1), xf_h[2].copy()]
+    ps_h = [np.zeros((1, 1)), np.zeros((1, 1)), pf_h[2].copy()]
+    for t_h in (1, 0):
+        j_h = pf_h[t_h] @ Fs.T @ np.linalg.inv(p_pred_h[t_h + 1])
+        xs_h[t_h] = xf_h[t_h] + j_h @ (xs_h[t_h + 1] - a_h[t_h + 1])
+        ps_h[t_h] = pf_h[t_h] + j_h @ (ps_h[t_h + 1] - p_pred_h[t_h + 1]) @ j_h.T
+    rts = kalman_smoother_linear(ys3, Fs, Hs, Qs, Rs, x0s, P0s)
+    out["ts_kfs_hand_state_err"] = round(
+        float(np.max(np.abs(np.asarray(rts["smoothed_states"]).ravel() - np.array(xs_h).ravel()))), 12
+    )
+    out["ts_kfs_hand_cov_err"] = round(
+        float(np.max(np.abs(np.asarray(rts["smoothed_covs"]).ravel() - np.array(ps_h).ravel()))), 12
+    )
+    out["ts_kfs_hand_filter_err"] = round(
+        float(np.max(np.abs(np.asarray(rts["filtered_states"]).ravel() - np.array(xf_h).ravel()))), 12
+    )
+    out["ts_kfs_hand_loglik_err"] = round(abs(float(rts["log_likelihood"]) - ll_h), 12)
+    out["ts_kfs_hand_smoothed"] = [
+        round(float(v), 6) for v in np.asarray(rts["smoothed_states"]).ravel()
+    ]
+    out["ts_kfs_hand_smoothed_cov"] = [
+        round(float(v), 6) for v in np.asarray(rts["smoothed_covs"]).ravel()
+    ]
+    out["ts_kfs_shapes"] = [list(np.asarray(rts[k]).shape) for k in (
+        "filtered_states", "filtered_covs", "smoothed_states", "smoothed_covs", "smoother_gain"
+    )]
+    _expect(
+        float(out["ts_kfs_hand_state_err"]) < 1e-12
+        and float(out["ts_kfs_hand_cov_err"]) < 1e-12
+        and float(out["ts_kfs_hand_filter_err"]) < 1e-12
+        and float(out["ts_kfs_hand_loglik_err"]) < 1e-12,
+        "RTS 平滑必须与手写展开的 T=3 一维递推逐位一致（含滤波段与似然）",
+    )
+    _expect(
+        list(np.asarray(rts["smoothed_states"]).shape) == [3, 1]
+        and list(np.asarray(rts["smoothed_covs"]).shape) == [3, 1, 1]
+        and list(np.asarray(rts["smoother_gain"]).shape) == [2, 1, 1],
+        "平滑返回形状应为 (T,k)、(T,k,k) 与 (T-1,k,k)",
+    )
+
+    # (c) 平滑后验方差不得大于滤波后验方差（对角元逐元素 + 协方差差半正定）。
+    rts2 = kalman_smoother_linear(y2, F2, H2, Q2, R2, np.zeros(2), P02)
+    fc_f = np.asarray(rts2["filtered_covs"], dtype=float)
+    fc_s = np.asarray(rts2["smoothed_covs"], dtype=float)
+    var_gap = np.array([np.diag(fc_f[t] - fc_s[t]) for t in range(fc_f.shape[0])])
+    loewner = np.array([
+        np.linalg.eigvalsh(0.5 * ((fc_f[t] - fc_s[t]) + (fc_f[t] - fc_s[t]).T))
+        for t in range(fc_f.shape[0])
+    ])
+    out["ts_kfs_var_min_gap"] = round(float(var_gap.min()), 12)
+    out["ts_kfs_cov_loewner_min_eig"] = round(float(loewner.min()), 12)
+    out["ts_kfs_var_leq_filtered"] = bool(float(var_gap.min()) >= -1e-9)
+    out["ts_kfs_last_endpoint_err"] = round(
+        float(np.max(np.abs(np.asarray(rts2["smoothed_states"])[-1] - np.asarray(rts2["filtered_states"])[-1]))), 15
+    )
+    _expect(
+        bool(out["ts_kfs_var_leq_filtered"]) and float(loewner.min()) >= -1e-9,
+        "平滑后验方差必须逐元素 <= 滤波后验方差，且两者之差在半正定序下非负",
+    )
+    _expect(
+        float(out["ts_kfs_last_endpoint_err"]) < 1e-14,
+        "末时刻没有未来信息，平滑值必须等于滤波值",
+    )
+
+    # (a) 两个极限：观测噪声 -> 0 时平滑退化到观测值；过程噪声 -> 0（状态恒为常数）时
+    # 各时刻的平滑均值被拉平到同一水平。
+    rts_r0 = kalman_smoother_linear(y_k, [[1.0]], [[1.0]], [[1.0]], [[1e-12]], [0.0], [[1.0]])
+    out["ts_kfs_no_obs_noise_max_diff"] = round(
+        float(np.max(np.abs(np.asarray(rts_r0["smoothed_states"])[:, 0] - y_k))), 12
+    )
+    _expect(
+        float(out["ts_kfs_no_obs_noise_max_diff"]) < 1e-8,
+        "观测噪声 -> 0 时平滑状态应退化到观测值",
+    )
+    rts_q0 = kalman_smoother_linear(y_j, [[1.0]], [[1.0]], [[0.0]], [[1.0]], [0.0], [[1e6]])
+    sm_q0 = np.asarray(rts_q0["smoothed_states"])[:, 0]
+    out["ts_kfs_constant_state_spread"] = round(float(sm_q0.max() - sm_q0.min()), 12)
+    out["ts_kfs_constant_state_mean_err"] = round(abs(float(sm_q0[0]) - float(y_j.mean())), 9)
+    _expect(
+        float(out["ts_kfs_constant_state_spread"]) < 1e-9
+        and float(out["ts_kfs_constant_state_mean_err"]) < 1e-4,
+        "过程噪声 -> 0 时平滑序列应被拉平且趋于全样本均值（扩散先验下即样本均值）",
+    )
 
     # ---------------- 输入校验（把限制写成被测行为） ----------------
     bad = 0

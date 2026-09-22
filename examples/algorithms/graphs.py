@@ -1,13 +1,14 @@
 """图与网络算法：最短路、最小生成树、最大流、TSP 启发式、PageRank、连通分量。
 
-本模块共 20 个公开函数，按用途分成六组：
-- 最短路：``dijkstra`` / ``floyd_warshall`` / ``a_star`` / ``reconstruct_path``；
+本模块共 23 个公开函数，按用途分成七组：
+- 最短路：``dijkstra`` / ``bellman_ford`` / ``floyd_warshall`` / ``a_star`` / ``reconstruct_path``；
 - 最小生成树：``kruskal_mst`` / ``prim_mst``；
 - 流与匹配：``max_flow_edmonds_karp`` / ``min_cut_edges`` / ``min_cost_flow`` / ``bipartite_matching``；
 - 路径启发式与配送：``tsp_nearest_neighbor`` / ``tsp_two_opt`` / ``vrp_clarke_wright``；
 - 中心性与社区：``pagerank`` / ``degree_centrality`` / ``closeness_centrality``
   / ``betweenness_centrality`` / ``louvain_communities``；
-- 连通性与可靠性：``connected_components`` / ``network_robustness``。
+- 连通性与可靠性：``connected_components`` / ``network_robustness``；
+- 拓扑与工期：``topological_sort`` / ``critical_path``。
 
 这一组是数学建模里出现频率最高的一类"结构模型"：
 - 最短路（Dijkstra / Floyd）用于路网、管网、换乘、依赖排序；
@@ -50,6 +51,7 @@ Node = Hashable
 
 __all__ = [
     "dijkstra",
+    "bellman_ford",
     "floyd_warshall",
     "reconstruct_path",
     "kruskal_mst",
@@ -69,6 +71,8 @@ __all__ = [
     "a_star",
     "vrp_clarke_wright",
     "network_robustness",
+    "topological_sort",
+    "critical_path",
 ]
 
 
@@ -310,6 +314,360 @@ def reconstruct_path(prev_or_next, src, dst) -> list:
         path.append(p)
         cur = p
     raise ValueError("prev 含环，路径无法还原")
+
+
+def _edge_arcs(n_nodes, edges, directed: bool = True) -> List[Tuple[int, int, float]]:
+    """把 ``(u, v, w)`` 边列表或 (m, 3) 数组统一成**有向弧**列表，并做边界校验。
+
+    ``directed=False`` 时每条边额外补一条反向弧（自环只保留一条）。
+    """
+    if not isinstance(n_nodes, (int, np.integer)) or n_nodes <= 0:
+        raise ValueError("n_nodes 必须是正整数")
+    n = int(n_nodes)
+
+    if isinstance(edges, np.ndarray):
+        if edges.ndim == 1 and edges.size == 3:
+            items: Sequence = [edges]
+        elif edges.ndim == 2 and edges.shape[1] == 3:
+            items = list(edges)
+        elif edges.ndim == 2 and edges.shape[0] == 3:
+            raise ValueError(f"edges 形状 {edges.shape} 疑似 (3, m) 转置，请传 (m, 3)")
+        else:
+            raise ValueError(f"edges 必须是 (m, 3) 数组，得到形状 {edges.shape}")
+    else:
+        items = list(edges)
+
+    arcs: List[Tuple[int, int, float]] = []
+    for item in items:
+        try:
+            if len(item) != 3:
+                raise ValueError(f"每条边必须是 (u, v, w)，得到 {item!r}")
+        except TypeError:
+            raise ValueError(f"每条边必须是 (u, v, w)，得到 {item!r}") from None
+        try:
+            uf, vf, wf = (float(x) for x in item)
+        except (TypeError, ValueError):
+            raise ValueError(f"每条边必须是三个数 (u, v, w)，得到 {item!r}") from None
+        if uf != int(uf) or vf != int(vf):
+            raise ValueError(f"边的端点必须是整数下标，得到 ({uf}, {vf})")
+        ui, vi = int(uf), int(vf)
+        if not (0 <= ui < n and 0 <= vi < n):
+            raise ValueError(f"边 ({ui}, {vi}) 的端点超出 0..{n - 1}")
+        if not np.isfinite(wf):
+            raise ValueError(f"边 ({ui}, {vi}) 的权重必须是有限值，得到 {wf}")
+        arcs.append((ui, vi, float(wf)))
+        if not directed and ui != vi:
+            arcs.append((vi, ui, float(wf)))
+    return arcs
+
+
+def _pred_cycle(pred: List[Optional[int]], weight_of: Dict[Tuple[int, int], float]) -> Optional[List[int]]:
+    """在 ``pred`` 函数图上找一条**总权为负**的环，按弧方向返回节点列表。
+
+    自环（``pred[x] == x``）返回 ``[x]``。找到的候选环会用 ``weight_of`` 里的弧权复核，
+    总权不为负就不采用（``pred`` 环本身不保证是负环）。
+    """
+    state = [0] * len(pred)
+    for start in range(len(pred)):
+        if state[start] != 0:
+            continue
+        path: List[int] = []
+        x: Optional[int] = start
+        while x is not None and state[x] == 0:
+            state[x] = 1
+            path.append(x)
+            x = pred[x]
+        if x is not None and state[x] == 1:
+            cycle = path[path.index(x):]
+            cycle.reverse()  # pred 链是逆弧方向的，反过来才是弧方向
+            total = 0.0
+            ok = True
+            for k in range(len(cycle)):
+                w = weight_of.get((cycle[k], cycle[(k + 1) % len(cycle)]))
+                if w is None:
+                    ok = False
+                    break
+                total += w
+            if ok and total < 0:
+                return cycle
+        for y in path:
+            state[y] = 2
+    return None
+
+
+def bellman_ford(n_nodes: int, edges, source: int, directed: bool = True) -> dict:
+    """Bellman-Ford 单源最短路（允许负权，并能报告负环）。
+
+    参数:
+        n_nodes: 节点数，节点编号为 ``0..n_nodes-1``。
+        edges: 边 ``(u, v, w)`` 的列表或 ``(m, 3)`` 数组，``w`` 可以为负但必须有限。
+        source: 源点下标。
+        directed: ``True``（默认）按有向边处理；``False`` 时每条边视为双向。
+
+    返回:
+        ``{"dist": dict, "pred": dict, "has_negative_cycle": bool, "negative_cycle": list|None}``。
+        ``dist[i]`` 是 source->i 的最短路长度（不可达为 ``float("inf")``）；``pred[i]`` 是
+        最短路树上 i 的前驱（无前驱为 ``None``，可直接喂给 :func:`reconstruct_path`）；
+        ``has_negative_cycle`` 表示**从 source 可达**的负环存在；``negative_cycle`` 是环上
+        节点按弧方向列出的列表（无负环为 ``None``）。
+
+    算法:
+        对所有弧做 ``n_nodes - 1`` 轮松弛：``dist[v] = min(dist[v], dist[u] + w)``；某一轮不再
+        更新就提前退出。随后再扫一遍：仍有弧可松弛就说明存在可达负环。取出负环用的是
+        ``pred`` 函数图：沿 ``pred`` 走必然会撞回已访问的点，把那段回环按弧方向列出并用弧权
+        复核总权是否为负（必要时再松弛几轮让 ``pred`` 指针真正落进环里）。这个取法对
+        **负自环**（长度 1 的环）同样有效。
+
+    复杂度:
+        时间 O(V·E) / 空间 O(V + E)。
+
+    陷阱:
+        1. **负环只报"从 source 可达"的那些**：与 source 不连通的负环不会被发现，
+           此时 ``dist`` 仍是那些分量的最短距离。
+        2. ``has_negative_cycle=True`` 时 ``dist`` 只是中间结果（正常是"最多用 V-1 条边"的值，
+           取负环时可能又额外松弛了几轮），**不是**最短距离（负环上可以无限下降）；
+           别拿它当路长用。
+        3. 松弛用严格 ``<`` 比较，没有容差：权重里混进 1e-16 级的浮点噪声时，一个本该
+           是零权的环可能被误报为负环；真实含负环时该比较不会漏报。
+        4. 稠密图上比 :func:`dijkstra` 慢一个量级（O(VE) vs O(E log V)），非负权请优先用
+           ``dijkstra``。
+
+    参考:
+        Bellman 1958 / Ford 1956；《算法导论》第 24 章。
+    """
+    arcs = _edge_arcs(n_nodes, edges, directed)
+    n = int(n_nodes)
+    if not (0 <= int(source) < n):
+        raise ValueError(f"source={source!r} 越界（应为 0..{n - 1}）")
+    s = int(source)
+
+    dist = [float("inf")] * n
+    pred: List[Optional[int]] = [None] * n
+    dist[s] = 0.0
+    for _ in range(n - 1):
+        changed = False
+        for u, v, w in arcs:
+            if dist[u] == float("inf"):
+                continue
+            cand = dist[u] + w
+            if cand < dist[v]:
+                dist[v] = cand
+                pred[v] = u
+                changed = True
+        if not changed:
+            break
+
+    has_negative_cycle = False
+    for u, v, w in arcs:
+        if dist[u] != float("inf") and dist[u] + w < dist[v]:
+            has_negative_cycle = True
+            break
+
+    negative_cycle: Optional[List[int]] = None
+    if has_negative_cycle:
+        weight_of: Dict[Tuple[int, int], float] = {}
+        for u, v, w in arcs:
+            if (u, v) not in weight_of or w < weight_of[(u, v)]:
+                weight_of[(u, v)] = w
+        negative_cycle = _pred_cycle(pred, weight_of)
+        # 兜底：pred 指针还没落到环上时，再多松弛几轮直到能取出一条负环
+        extra = 0
+        while negative_cycle is None and extra < n:
+            for u, v, w in arcs:
+                if dist[u] != float("inf") and dist[u] + w < dist[v]:
+                    dist[v] = dist[u] + w
+                    pred[v] = u
+            negative_cycle = _pred_cycle(pred, weight_of)
+            extra += 1
+
+    return {
+        "dist": {i: float(dist[i]) for i in range(n)},
+        "pred": {i: pred[i] for i in range(n)},
+        "has_negative_cycle": bool(has_negative_cycle),
+        "negative_cycle": negative_cycle,
+    }
+
+
+# --------------------------------------------------------------------------- #
+# 拓扑排序与关键路径
+# --------------------------------------------------------------------------- #
+def topological_sort(n_nodes: int, edges, directed: bool = True) -> dict:
+    """Kahn 算法的拓扑排序（同层按最小下标优先，结果确定）。
+
+    参数:
+        n_nodes: 节点数，节点编号为 ``0..n_nodes-1``。
+        edges: 边 ``(u, v, w)`` 的列表或 ``(m, 3)`` 数组；排序**只用** ``u, v``，``w`` 会被忽略。
+        directed: ``True``（默认）按有向边处理；``False`` 时每条边视为双向约束。
+
+    返回:
+        ``{"order": list, "is_dag": bool, "n_components": int}``。``order`` 是拓扑序
+        （有环时只含被成功输出的那些点，长度 < n_nodes）；``is_dag`` 表示整张图无环；
+        ``n_components`` 是**弱连通分量**个数（孤立点各算一个）。
+
+    算法:
+        统计入度，把入度为 0 的点放进**最小堆**；每次弹出下标最小的点加入 ``order``，把它
+        的出边终点入度减 1，减到 0 就入堆。堆保证同层按最小下标出队，因此同一张图的
+        结果与输入边的书写顺序无关。最后 ``len(order) == n_nodes`` 即无环。
+
+    复杂度:
+        时间 O(V + E log V)（堆操作）/ 空间 O(V + E)。
+
+    陷阱:
+        1. **有环不报错**：只返回 ``is_dag=False`` 和更短的 ``order``，想定位环请自己再查。
+        2. ``directed=False`` 时每条边变成一对互逆弧，只要有边就必然含 2-环（``is_dag=False``）；
+           无向图请用 :func:`connected_components`，不要指望它做无向"排序"。
+        3. 多重边会让入度被重复计数，但减边时也按数量减，结果不受影响；自环会让该点入度
+           永远不为 0，从而被计入"环"。
+        4. 多个合法拓扑序时这里返回的是"最小下标优先"的**那一个**，只是选定的规范序，
+           不代表唯一解。
+
+    参考:
+        Kahn 1962；《算法导论》第 20.4 节。
+    """
+    arcs = _edge_arcs(n_nodes, edges, directed)
+    n = int(n_nodes)
+
+    indeg = [0] * n
+    out: List[List[int]] = [[] for _ in range(n)]
+    for u, v, _ in arcs:
+        out[u].append(v)
+        indeg[v] += 1
+
+    heap = [i for i in range(n) if indeg[i] == 0]
+    heapq.heapify(heap)
+    order: List[int] = []
+    while heap:
+        u = heapq.heappop(heap)
+        order.append(u)
+        for v in out[u]:
+            indeg[v] -= 1
+            if indeg[v] == 0:
+                heapq.heappush(heap, v)
+
+    parent = list(range(n))
+    for u, v, _ in arcs:
+        ru, rv = _find(parent, u), _find(parent, v)
+        if ru != rv:
+            parent[rv] = ru
+    n_components = len({_find(parent, i) for i in range(n)})
+
+    return {
+        "order": [int(x) for x in order],
+        "is_dag": bool(len(order) == n),
+        "n_components": int(n_components),
+    }
+
+
+def critical_path(n_nodes: int, edges, durations) -> dict:
+    """CPM 关键路径法：正推 ES/EF、逆推 LS/LF、总时差与关键活动。
+
+    参数:
+        n_nodes: 节点数，节点编号为 ``0..n_nodes-1``。
+        edges: **有向**边（紧前关系）``(u, v, w)`` 列表或 ``(m, 3)`` 数组；``w`` 只用于
+           校验，不参与工期计算。
+        durations: 与 ``edges`` **位置一一对应**的工期序列，长度必须等于边数，非负有限。
+
+    返回:
+        ``{"project_duration": float, "ES": list, "LF": list, "edge_ES": list, "edge_EF": list,
+        "edge_LS": list, "edge_LF": list, "total_float": list, "critical_nodes": list,
+        "critical_edges": list, "order": list}``。
+        ``ES`` / ``LF`` 按**节点**给出（下标即节点号）；``edge_ES`` / ``edge_EF`` /
+        ``edge_LS`` / ``edge_LF`` / ``total_float`` 按**边**给出（下标即 ``edges`` 的位置）；
+        ``critical_nodes`` / ``critical_edges`` 是总时差 ``<= 1e-9`` 的下标列表（升序）；
+        ``order`` 是拓扑序（保证结果可复现）。
+
+    算法:
+        活动在弧上（AOA）：先做 :func:`topological_sort`，按拓扑序正推节点最早开始
+        ``ES[v] = max(ES[u] + d)``；工期 ``project_duration = max(ES)``；再逆拓扑序推
+        ``LF[u] = min(LF[v] - d)``（无后继的节点 ``LF = project_duration``）。对边
+        ``e=(u,v,d)`` 有 ``edge_ES = ES[u]``、``edge_EF = ES[u] + d``、``edge_LF = LF[v]``、
+        ``edge_LS = LF[v] - d``、``total_float = edge_LS - edge_ES = edge_LF - edge_EF``。
+
+    复杂度:
+        时间 O(V + E log V)（拓扑排序主导，正逆推各 O(E)）/ 空间 O(V + E)。
+
+    陷阱:
+        1. **必须无环**：含环时 ``raise ValueError``（CPM 对环没有定义），而不是返回一个
+           看起来正常的工期。
+        2. 总时差 ``TF`` 是"整条链上共享"的：同一条非关键链上的活动共用同一段浮动时间，
+           不能把每个活动的 ``TF`` 相加当总机动时间。
+        3. 工期要求**非负**（负数会让逆推出现无意义的负工期），只允许负权重的"负时差"
+           模型不在本实现范围内。
+        4. 多个终点时 ``LF`` 统一按 ``project_duration`` 起算，因此落在虚终点之外的分支
+           总时差为正；这是教科书口径，不额外加虚汇点。
+        5. 隔离点（无任何边的点）``ES=0``、``LF=project_duration``，总时差可能为正。
+
+    参考:
+         Kelley & Walker 1959；《项目管理》CPM/PERT 章节。
+    """
+    arcs = _edge_arcs(n_nodes, edges, True)
+    n = int(n_nodes)
+    try:
+        dur = [float(x) for x in durations]
+    except (TypeError, ValueError):
+        raise ValueError("durations 必须是可迭代的数值序列") from None
+    if len(dur) != len(arcs):
+        raise ValueError(f"durations 长度 {len(dur)} 与边数 {len(arcs)} 不一致")
+    for k, d in enumerate(dur):
+        if not np.isfinite(d) or d < 0:
+            raise ValueError(f"第 {k} 条边的工期必须是非负有限数，得到 {d}")
+
+    topo = topological_sort(n, arcs, directed=True)
+    if not topo["is_dag"]:
+        raise ValueError("关键路径法要求有向无环图，但输入含环")
+    order = [int(x) for x in topo["order"]]
+
+    out_edges: List[List[Tuple[int, int, float]]] = [[] for _ in range(n)]
+    for idx, (u, v, _) in enumerate(arcs):
+        out_edges[u].append((idx, v, dur[idx]))
+
+    ES = [0.0] * n
+    for u in order:
+        for _, v, d in out_edges[u]:
+            cand = ES[u] + d
+            if cand > ES[v]:
+                ES[v] = cand
+    # 工期非负时 max(ES) 一定取在某条边的终点上，因此它同时就是 max(EF)
+    project_duration = max(ES)
+
+    LF = [float(project_duration)] * n
+    for u in reversed(order):
+        for _, v, d in out_edges[u]:
+            cand = LF[v] - d
+            if cand < LF[u]:
+                LF[u] = cand
+
+    edge_ES: List[float] = []
+    edge_EF: List[float] = []
+    edge_LS: List[float] = []
+    edge_LF: List[float] = []
+    total_float: List[float] = []
+    for i, (u, v, _) in enumerate(arcs):
+        d = dur[i]
+        es = float(ES[u])
+        lf = float(LF[v])
+        edge_ES.append(es)
+        edge_EF.append(es + d)
+        edge_LF.append(lf)
+        edge_LS.append(lf - d)
+        total_float.append(lf - d - es)
+
+    critical_nodes = [i for i in range(n) if LF[i] - ES[i] <= 1e-9]
+    critical_edges = [i for i in range(len(arcs)) if total_float[i] <= 1e-9]
+
+    return {
+        "project_duration": float(project_duration),
+        "ES": [float(x) for x in ES],
+        "LF": [float(x) for x in LF],
+        "edge_ES": edge_ES,
+        "edge_EF": edge_EF,
+        "edge_LS": edge_LS,
+        "edge_LF": edge_LF,
+        "total_float": total_float,
+        "critical_nodes": critical_nodes,
+        "critical_edges": critical_edges,
+        "order": order,
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -709,8 +1067,9 @@ def tsp_two_opt(tour, dist, max_pass: int = 100) -> dict:
            论文里只能报"改进幅度"，不能宣称最优；城市多了还需多起点重启。
         2. 赚量算法（只算增量 delta）在**非对称**矩阵上不成立：反转一段会改变两端的
            方向。本实现直接重算整条回路长度，因此对非对称矩阵也正确但更慢。
-        3. 传入的 tour 若含重复点或缺点，本函数不校验，会静默给出无意义结果；
-           请先用 :func:`tsp_nearest_neighbor` 或自己保证它是 0..n-1 的一个排列。
+        3. ``tour`` 长度与 ``dist`` 规模不一致时 ``raise ValueError``（规模 ≤ 3 时直接原样
+           返回、不校验长度）；但**长度正确却含重复点/缺点**时本函数不校验，会静默给出
+           无意义结果——请先用 :func:`tsp_nearest_neighbor` 或自己保证它是 0..n-1 的排列。
         4. 浮点比较用严格小于，等长回路的交换不会发生，因此相同输入必得相同输出。
 
     参考:
@@ -1932,7 +2291,8 @@ def _self_test() -> dict:
 
     算法:
         混合覆盖：带权有向图最短路、Floyd 全源距离、Kruskal MST、
-        最大流/最小割定理、TSP 两阶段、PageRank、连通分量。
+        最大流/最小割定理、TSP 两阶段、PageRank、连通分量，
+        以及 Bellman-Ford 负权/负环、拓扑排序、CPM 关键路径。
 
     复杂度:
         时间 O(1)（固定小算例）/ 空间 O(1)。
@@ -2268,5 +2628,174 @@ def _self_test() -> dict:
         raise AssertionError("星形图上度最大的点应是中心点 0")
     if abs(float(rob2["efficiency"]) - 0.0) > 1e-12:
         raise AssertionError("只剩孤立点时全局效率应为 0")
+
+    # --- Bellman-Ford：手算含负边无负环算例（0=s,1=t,2=x,3=y,4=z），手算 dist=[0,6,4,7,2] ---
+    clrs_edges = [
+        (0, 1, 6.0), (0, 3, 7.0), (1, 3, 8.0), (1, 2, 5.0), (1, 4, -4.0),
+        (3, 2, -2.0), (3, 4, 9.0), (4, 2, 2.0), (4, 0, 7.0),
+    ]
+    bf = bellman_ford(5, clrs_edges, 0)
+    for node, want in ((0, 0.0), (1, 6.0), (2, 4.0), (3, 7.0), (4, 2.0)):
+        got = float(bf["dist"][node])
+        result[f"graphs_bf_dist_{node}"] = got
+        if abs(got - want) > 1e-9:
+            raise AssertionError(f"手算算例 dist[{node}] 应为 {want}，得到 {got}")
+    result["graphs_bf_has_negative_cycle"] = bool(bf["has_negative_cycle"])
+    if bf["has_negative_cycle"]:
+        raise AssertionError("该算例所有环的总权都为正，不应报负环")
+    chain: List[int] = []
+    cur = bf["pred"][2]
+    walked = 0
+    while cur is not None and walked <= 5:
+        chain.append(int(cur))
+        cur = bf["pred"][cur]
+        walked += 1
+    chain.reverse()
+    chain.append(2)
+    result["graphs_bf_path_x"] = chain
+    if chain != [0, 1, 4, 2]:
+        raise AssertionError("pred 应还原出手算最短路 0->1->4->2（6 + (-4) + 2 = 4）")
+    result["graphs_bf_unreachable_inf"] = bool(
+        np.isinf(bellman_ford(3, [(0, 1, 1.0)], 0)["dist"][2])
+        and bellman_ford(3, [(0, 1, 1.0)], 0)["pred"][2] is None
+    )
+    if not result["graphs_bf_unreachable_inf"]:
+        raise AssertionError("不可达节点的 dist 必须是 inf 且 pred 为 None")
+    # 与 Dijkstra 对拍：非负权图（_self_test 开头的 5 节点图）上距离必须全等
+    bf_edges = [
+        (names.index(u), names.index(v), float(w))
+        for u, nbrs in adj.items() for v, w in nbrs.items()
+    ]
+    bf_pos = bellman_ford(5, bf_edges, 0)
+    dij_pos = dijkstra(adj, "A")["dist"]
+    bf_dev = 0.0
+    for i, name in enumerate(names):
+        a, b = float(bf_pos["dist"][i]), float(dij_pos[name])
+        if np.isfinite(a) and np.isfinite(b):
+            bf_dev = max(bf_dev, abs(a - b))
+        elif not (np.isinf(a) and np.isinf(b)):
+            bf_dev = float("inf")
+    result["graphs_bf_vs_dijkstra_max_dev"] = float(bf_dev)
+    if bf_dev > 1e-9:
+        raise AssertionError("非负权图上 Bellman-Ford 必须与 Dijkstra 距离全等")
+    # 负环：3 点环 1 + (-1) + (-1) = -1 < 0
+    neg_edges = [(0, 1, 1.0), (1, 2, -1.0), (2, 0, -1.0)]
+    bf_neg = bellman_ford(3, neg_edges, 0)
+    result["graphs_bf_neg_has_cycle"] = bool(bf_neg["has_negative_cycle"])
+    result["graphs_bf_neg_cycle_nodes"] = sorted(int(x) for x in (bf_neg["negative_cycle"] or []))
+    if not bf_neg["has_negative_cycle"]:
+        raise AssertionError("总权 -1 的环必须被报为负环")
+    if result["graphs_bf_neg_cycle_nodes"] != [0, 1, 2]:
+        raise AssertionError("负环应包含 {0, 1, 2} 三个节点")
+    dist_next = dict(bf_neg["dist"])
+    for u, v, w in neg_edges:
+        if dist_next[u] + w < dist_next[v]:
+            dist_next[v] = dist_next[u] + w
+    drop = min(float(dist_next[k]) - float(bf_neg["dist"][k]) for k in dist_next)
+    result["graphs_bf_neg_cycle_dist_drop"] = float(drop)
+    if drop >= -1e-12:
+        raise AssertionError("负环上再松弛一轮必须让 dist 继续下降（最短路无下界）")
+    # 负自环（长度 1 的环）也必须被取出，而不是漏报成 None
+    bf_loop = bellman_ford(2, [(0, 1, 1.0), (1, 1, -2.0)], 0)
+    result["graphs_bf_selfloop_cycle"] = [int(x) for x in (bf_loop["negative_cycle"] or [])]
+    if not bf_loop["has_negative_cycle"] or result["graphs_bf_selfloop_cycle"] != [1]:
+        raise AssertionError("负自环 1->1 (-2) 必须报为负环，且 negative_cycle 应为 [1]")
+
+    # --- 拓扑排序：0->1,0->2,1->3,2->3,3->4，同层最小下标优先 => [0,1,2,3,4] ---
+    dag_edges = [(0, 1, 1.0), (0, 2, 1.0), (1, 3, 1.0), (2, 3, 1.0), (3, 4, 1.0)]
+    topo = topological_sort(5, dag_edges)
+    result["graphs_topo_order"] = [int(x) for x in topo["order"]]
+    result["graphs_topo_is_dag"] = bool(topo["is_dag"])
+    result["graphs_topo_n_components"] = int(topo["n_components"])
+    if not topo["is_dag"]:
+        raise AssertionError("该 DAG 应被判定为无环")
+    if result["graphs_topo_order"] != [0, 1, 2, 3, 4]:
+        raise AssertionError("最小下标优先的 Kahn 应给出 [0, 1, 2, 3, 4]")
+    if result["graphs_topo_n_components"] != 1:
+        raise AssertionError("该图弱连通，分量数应为 1")
+    topo_pos = {node: k for k, node in enumerate(topo["order"])}
+    for u, v, _ in dag_edges:
+        if topo_pos[u] >= topo_pos[v]:
+            raise AssertionError("拓扑序中每条边的 u 都必须排在 v 之前")
+    result["graphs_topo_reversed_input_equal"] = bool(
+        topological_sort(5, list(reversed(dag_edges)))["order"] == topo["order"]
+    )
+    if not result["graphs_topo_reversed_input_equal"]:
+        raise AssertionError("拓扑序不应依赖输入边的书写顺序")
+    topo_cyc = topological_sort(3, [(0, 1, 1.0), (1, 2, 1.0), (2, 0, 1.0)])
+    result["graphs_topo_cyclic_is_dag"] = bool(topo_cyc["is_dag"])
+    result["graphs_topo_cyclic_order_len"] = len(topo_cyc["order"])
+    if topo_cyc["is_dag"] or len(topo_cyc["order"]) != 0:
+        raise AssertionError("3 点有向环必须给出 is_dag=False 且 order 为空")
+    result["graphs_topo_disconnected_components"] = int(
+        topological_sort(5, [(0, 1, 1.0), (3, 4, 1.0)])["n_components"]
+    )
+    if result["graphs_topo_disconnected_components"] != 3:
+        raise AssertionError("{0,1} {2} {3,4} 共 3 个弱连通分量")
+
+    # --- 关键路径：6 节点手算 CPM（总工期 11，关键链 0->2->3->4->5）---
+    cpm_edges = [
+        (0, 1, 3.0), (0, 2, 2.0), (1, 3, 2.0), (2, 3, 4.0),
+        (3, 4, 3.0), (2, 5, 1.0), (4, 5, 2.0),
+    ]
+    durations = [3.0, 2.0, 2.0, 4.0, 3.0, 1.0, 2.0]
+    cpm = critical_path(6, cpm_edges, durations)
+    result["graphs_cpm_project_duration"] = float(cpm["project_duration"])
+    result["graphs_cpm_critical_nodes"] = [int(x) for x in cpm["critical_nodes"]]
+    result["graphs_cpm_critical_edges"] = [int(x) for x in cpm["critical_edges"]]
+    result["graphs_cpm_es"] = [float(x) for x in cpm["ES"]]
+    result["graphs_cpm_total_float"] = [float(x) for x in cpm["total_float"]]
+    result["graphs_cpm_critical_sum"] = float(sum(durations[i] for i in cpm["critical_edges"]))
+    if abs(result["graphs_cpm_project_duration"] - 11.0) > 1e-9:
+        raise AssertionError("手算总工期应为 11")
+    if result["graphs_cpm_es"] != [0.0, 3.0, 2.0, 6.0, 9.0, 11.0]:
+        raise AssertionError("正推 ES 应为 [0, 3, 2, 6, 9, 11]")
+    if result["graphs_cpm_critical_nodes"] != [0, 2, 3, 4, 5]:
+        raise AssertionError("关键节点（总时差 0）应为 [0, 2, 3, 4, 5]")
+    if result["graphs_cpm_critical_edges"] != [1, 3, 4, 6]:
+        raise AssertionError("关键边应为 1,3,4,6 号边")
+    if result["graphs_cpm_total_float"] != [1.0, 0.0, 1.0, 0.0, 0.0, 8.0, 0.0]:
+        raise AssertionError("手算总时差应为 [1, 0, 1, 0, 0, 8, 0]")
+    if abs(result["graphs_cpm_critical_sum"] - 11.0) > 1e-9:
+        raise AssertionError("关键边上工期之和应等于总工期")
+    succ = {cpm_edges[i][0]: cpm_edges[i][1] for i in cpm["critical_edges"]}
+    walk_node, walk_len = 0, 0
+    while walk_node in succ:
+        walk_node = succ[walk_node]
+        walk_len += 1
+    if walk_len != len(cpm["critical_edges"]) or walk_node != 5:
+        raise AssertionError("关键边应首尾相接成 0->5 的一条链")
+    # 性质 1：任一关键边延长 delta，总工期恰好增加 delta
+    crit_dev = 0.0
+    for eidx in cpm["critical_edges"]:
+        for delta in (0.5, 1.0):
+            stretched = [float(x) for x in durations]
+            stretched[eidx] += delta
+            got = float(critical_path(6, cpm_edges, stretched)["project_duration"])
+            crit_dev = max(crit_dev, abs(got - (11.0 + delta)))
+    result["graphs_cpm_critical_extend_dev"] = float(crit_dev)
+    if crit_dev > 1e-9:
+        raise AssertionError("关键边延长 delta 后总工期必须恰好增加 delta")
+    # 性质 2：非关键边延长量小于其总时差时，总工期不变
+    float_dev = 0.0
+    for eidx, tf in enumerate(cpm["total_float"]):
+        if tf <= 1e-9:
+            continue
+        stretched = [float(x) for x in durations]
+        stretched[eidx] += 0.5 * float(tf)
+        got = float(critical_path(6, cpm_edges, stretched)["project_duration"])
+        float_dev = max(float_dev, abs(got - 11.0))
+    result["graphs_cpm_noncritical_extend_dev"] = float(float_dev)
+    if float_dev > 1e-9:
+        raise AssertionError("非关键边延长小于总时差时总工期不应变化")
+    try:
+        critical_path(2, [(0, 1, 1.0), (1, 0, 1.0)], [1.0, 1.0])
+    except ValueError:
+        cpm_cycle_ok = True
+    else:
+        cpm_cycle_ok = False
+    result["graphs_cpm_cycle_raises"] = bool(cpm_cycle_ok)
+    if not cpm_cycle_ok:
+        raise AssertionError("含环图的 CPM 必须 raise ValueError")
 
     return result

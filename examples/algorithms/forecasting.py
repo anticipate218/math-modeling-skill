@@ -61,8 +61,11 @@ __all__ = [
 # Queen's Economics Department Working Paper No. 1227, Table 1（N = 1 的情形，
 # 即单变量的 ADF 检验；该表是 MacKinnon (1994, JBES 12(2):167-176) 响应面近似的更新版）。
 # 数值与 statsmodels 0.14.4 ``statsmodels/tsa/adfvalues.py`` 中的 ``tau_c_2010`` /
-# ``tau_ct_2010`` / ``tau_nc_2010`` 第一行逐项一致，并在本仓库中用
+# ``tau_ct_2010`` / ``tau_ctt_2010`` / ``tau_nc_2010`` 第一行逐项一致，并在本仓库中用
 # ``statsmodels.tsa.adfvalues.mackinnoncrit`` 做过数值复核（见交付报告）。
+# 注意 "n"（无常数项）一栏用的是 MacKinnon (1996) 的系数，2010 版未更新该情形。
+# 趋势项越多，临界值越负：渐近 1% 临界值依次为 -3.430 / -3.959 / -4.371（c/ct/ctt），
+# 这与"回归里多出的确定性趋势项吸收了更多信息、原假设下统计量分布左移"一致。
 _MACKINNON_2010_N1 = {
     "c": {  # 含常数项、无趋势
         0.01: (-3.43035, -6.5393, -16.786, -79.433),
@@ -79,10 +82,15 @@ _MACKINNON_2010_N1 = {
         0.05: (-1.94100, -0.2686, -3.365, 31.223),
         0.10: (-1.61682, 0.2656, -2.714, 25.364),
     },
+    "ctt": {  # 含常数项 + 线性趋势 + 二次趋势
+        0.01: (-4.37113, -11.5882, -35.819, -334.047),
+        0.05: (-3.83239, -5.9057, -12.49, -118.284),
+        0.10: (-3.55326, -3.6596, -5.293, -63.559),
+    },
 }
 
 #: ADF 检验中 ``regression`` 参数的合法取值及其含义。
-_REGRESSION_ALIASES = {"c": "c", "n": "n", "ct": "ct", "tc": "ct"}
+_REGRESSION_ALIASES = {"c": "c", "n": "n", "ct": "ct", "tc": "ct", "ctt": "ctt"}
 
 #: 用于近似 MacKinnon 临界值的样本量下限（更小的样本请直接查表或模拟）。
 _MIN_NOBS_FOR_CRIT = 5
@@ -697,7 +705,7 @@ def mackinnon_crit(
     参数:
         nobs: ADF 回归实际使用的观测数（不是原始序列长度）。
         regression: ``"c"``（含常数项、无趋势，ADF 最常用）、``"ct"``（含常数项和线性趋势）、
-            ``"n"``（无常数项）。不接受 ``"ctt"``（常数 + 线性 + 二次趋势，本模块不实现）。
+            ``"ctt"``（含常数项、线性趋势与二次趋势）、``"n"``（无常数项）。
         level: 显著性水平，仅支持 0.01 / 0.05 / 0.10。
 
     返回:
@@ -707,7 +715,8 @@ def mackinnon_crit(
         响应面回归形式 ``crit(n) = b0 + b1/n + b2/n^2 + b3/n^3``，系数取自
         MacKinnon (2010) Table 1 的 N=1 情形（本模块文件头部常量
         ``_MACKINNON_2010_N1``，每个系数旁标注了出处）；``n -> inf`` 时 ``crit -> b0``，
-        即教科书中常引用的渐近临界值（含常数项情形约为 -3.43 / -2.86 / -2.57）。
+        即教科书中常引用的渐近临界值（含常数项情形约为 -3.43 / -2.86 / -2.57，
+        含线性趋势约为 -3.96 / -3.41 / -3.13，含二次趋势约为 -4.37 / -3.83 / -3.55）。
 
     复杂度:
         时间 O(1) / 空间 O(1)。
@@ -715,6 +724,11 @@ def mackinnon_crit(
     陷阱:
         - **临界值是查表近似**：样本量很小时（例如 nobs < 20）误差较大，而且这里只有
           N=1（单变量）的系数，**不能**用于协整检验（N>1 时需要另一张表）。
+        - **趋势项越多临界值越负**：同一序列用 ``"c"`` 拒绝不了单位根，换 ``"ctt"``
+          往往更拒绝不了，因为临界值更负。选趋势形式要由经济/物理含义决定，
+          不能为了"跑出显著"而逐个试——那会严重高估检验的实际显著性水平。
+        - ``"n"``（无常数项）一栏用的是 MacKinnon (1996) 系数（2010 版未更新该情形），
+          其余三栏是 2010 版；混用两版系数不影响本实现内部一致性，但引用时应写明。
         - ``nobs`` 必须传"回归里真正用到的观测数"：差分一次、又加了 p 个滞后项之后，
           nobs 比原始序列长度小。传错会让临界值与统计量不匹配，结论可能反转。
         - 响应面给出的是**渐近分布**的分位点近似；序列有结构突变、条件异方差时，
@@ -732,7 +746,7 @@ def mackinnon_crit(
     reg = _REGRESSION_ALIASES.get(str(regression).lower())
     if reg is None:
         raise ValueError(
-            "regression 只能是 'c' / 'ct' / 'n'（'ctt' 未实现），得到 {0!r}".format(regression)
+            "regression 只能是 'c' / 'ct' / 'ctt' / 'n'，得到 {0!r}".format(regression)
         )
     lv = float(level)
     table = _MACKINNON_2010_N1[reg]
@@ -757,7 +771,9 @@ def adf_test(
         y: 一维时间序列。
         max_lag: 滞后阶数上限。``None`` 表示用 Schwert 经验规则
             ``int(ceil(12 * (n/100)^0.25))``；给定整数则在该上限内用 AIC 选阶。
-        regression: ``"c"``（含常数项）、``"ct"``（含常数项与线性趋势）、``"n"``（无常数项）。
+        regression: ``"c"``（含常数项）、``"ct"``（含常数项与线性趋势）、
+            ``"ctt"``（含常数项、线性趋势与二次趋势）、``"n"``（无常数项）；
+            大小写不敏感（``"Ctt"`` 等价于 ``"ctt"``）。
 
     返回:
         dict：
@@ -768,7 +784,8 @@ def adf_test(
 
     算法:
         回归式 ``dy_t = a + gamma * y_{t-1} + sum_{i=1}^{p} d_i * dy_{t-i} + e_t``
-        （``regression="ct"`` 时再加一个时间趋势项），用最小二乘闭式解
+        （``regression="ct"`` 时再加一个时间趋势项 ``t``，``"ctt"`` 时再加 ``t`` 与
+        ``t^2``），用最小二乘闭式解
         ``beta = (X'X)^{-1} X'y`` 估计，``se(gamma) = sqrt(sigma2 * [(X'X)^{-1}]_gg)``，
         ``sigma2 = RSS / (nobs - k)``；在 p = 0..max_lag 中选 AIC 最小的阶数，
         AIC 口径为 ``nobs * ln(RSS/nobs) + 2k``。临界值来自 ``mackinnon_crit``。
@@ -779,9 +796,18 @@ def adf_test(
     陷阱:
         - ADF 的原假设是**存在单位根（序列非平稳）**：统计量**越小（越负）**才越倾向拒绝。
           把结论说反是本类检验最常见的低级错误。
-        - 滞后阶数选法会改变统计量：本实现固定用 AIC，和 statsmodels 默认的
-          ``autolag='AIC'`` 可能差 1 阶，统计量因此可能差 0.1 以上。论文里应写明
-          ``max_lag`` 与选阶准则。
+        - **趋势形式必须由数据生成机制决定，不能穷举挑显著的**：``"ctt"`` 的临界值比
+          ``"ct"`` 更负（渐近 5% 为 -3.832 vs -3.410），对同一条序列用 ``"ctt"`` 更容易
+          "检验不出来"。而 ``t^2`` 列与 ``t`` 列高度相关，样本不长时 ``X'X`` 的条件数
+          会很差，统计量对末尾几个点极其敏感——本实现用 ``np.linalg.inv`` 且不报条件数，
+          换 ``"ctt"`` 前请先看序列图是否有真正的加速度型趋势。
+        - 滞后阶数选法会改变统计量：本实现每个候选阶数都用**该阶数自己的全部可用观测**
+          （``nobs = n - 1 - p``）算 AIC，而 statsmodels 的 ``autolag`` 是先把样本按
+          ``maxlag`` 固定裁剪再比较 IC（它注释里写明"用同样的观测数才可比"）。两种口径
+          在并列附近会选出不同的阶数：同一滞后阶数下本实现与 statsmodels 的统计量逐位一致
+          （实测差 < 1e-8），但选阶差 1 阶时，``"c"``/``"n"`` 下统计量通常差 0.1 量级，
+          ``"ct"``/``"ctt"`` 下实测可差 3 以上。论文里应写明 ``max_lag`` 与选阶准则，
+          并在附录给出该阶数下的统计量。
         - **ADF 对结构突变无能为力**：序列在样本中期发生水平跳变时，ADF 会误判为单位根
           （Perron 批评）。有突变应先做突变检验或分段处理。
         - 回归里必须包含足够的滞后项以消除残差自相关；nobs 随之减少，临界值也随 nobs 变化，
@@ -796,7 +822,7 @@ def adf_test(
     yv = as_vector(y, "y")
     reg = _REGRESSION_ALIASES.get(str(regression).lower())
     if reg is None:
-        raise ValueError("regression 只能是 'c' / 'ct' / 'n'，得到 {0!r}".format(regression))
+        raise ValueError("regression 只能是 'c' / 'ct' / 'ctt' / 'n'，得到 {0!r}".format(regression))
     n = yv.size
     if n < 10:
         raise ValueError(f"ADF 检验需要至少 10 个观测，得到 {n}")
@@ -822,10 +848,12 @@ def adf_test(
             for j in range(1, p + 1):
                 cols.append(dy[idx - j])
         cols.append(yv[idx])  # 滞后水平 y_{t-1}（0 基下标 t 即上一期水平）
-        if reg in ("c", "ct"):
+        if reg in ("c", "ct", "ctt"):
             cols.append(np.ones(idx.size, dtype=float))
-        if reg == "ct":
+        if reg in ("ct", "ctt"):
             cols.append(trend[idx])
+        if reg == "ctt":
+            cols.append(trend[idx] ** 2)
         X = np.column_stack(cols)
         return X, yy, idx.size
 
@@ -1620,6 +1648,100 @@ def _self_test() -> dict:
     out["mackinnon_c_5pct_n100"] = round(float(mackinnon_crit(100, "c", 0.05)), 6)
     out["mackinnon_ct_5pct_n100"] = round(float(mackinnon_crit(100, "ct", 0.05)), 6)
     out["mackinnon_n_5pct_n100"] = round(float(mackinnon_crit(100, "n", 0.05)), 6)
+
+    # 8b) ctt（常数 + 线性趋势 + 二次趋势）：临界值单调、趋势形式选错会漏检趋势平稳序列
+    out["mackinnon_ctt_5pct_n100"] = round(float(mackinnon_crit(100, "ctt", 0.05)), 6)
+    out["mackinnon_ctt_1pct_asym"] = round(float(mackinnon_crit(10 ** 9, "ctt", 0.01)), 5)
+    out["mackinnon_ctt_5pct_asym"] = round(float(mackinnon_crit(10 ** 9, "ctt", 0.05)), 5)
+    out["mackinnon_ctt_10pct_asym"] = round(float(mackinnon_crit(10 ** 9, "ctt", 0.10)), 5)
+    crit5_c = float(mackinnon_crit(399, "c", 0.05))
+    crit5_ct = float(mackinnon_crit(399, "ct", 0.05))
+    crit5_ctt = float(mackinnon_crit(399, "ctt", 0.05))
+    if not (crit5_c > crit5_ct > crit5_ctt):
+        raise AssertionError(
+            f"临界值应随趋势项增多而更负，得到 c/ct/ctt = {crit5_c}/{crit5_ct}/{crit5_ctt}"
+        )
+    if abs(crit5_ctt - (-3.84737)) > 1e-4:
+        raise AssertionError(f"nobs=399 的 ctt 5% 临界值异常：{crit5_ctt}")
+
+    r5 = rng(2025)
+    t_idx = np.arange(400, dtype=float)
+    ts_series = 0.5 * t_idx + r5.normal(size=400)  # 趋势平稳序列
+    adf_ts_c = adf_test(ts_series, regression="c")
+    adf_ts_ct = adf_test(ts_series, regression="ct")
+    if float(adf_ts_c["stat"]) < float(adf_ts_c["crit"]["5%"]):
+        raise AssertionError(
+            f"不含趋势项时 ADF 不该拒绝趋势平稳序列，得到 stat={adf_ts_c['stat']}"
+        )
+    if not float(adf_ts_ct["stat"]) < float(adf_ts_ct["crit"]["5%"]):
+        raise AssertionError(
+            f"含线性趋势时 ADF 应拒绝趋势平稳序列，得到 stat={adf_ts_ct['stat']}"
+        )
+    out["adf_trend_series_c_stat"] = round(float(adf_ts_c["stat"]), 6)
+    out["adf_trend_series_c_reject5"] = bool(
+        float(adf_ts_c["stat"]) < float(adf_ts_c["crit"]["5%"])
+    )
+    out["adf_trend_series_ct_stat"] = round(float(adf_ts_ct["stat"]), 6)
+    out["adf_trend_series_ct_reject5"] = bool(
+        float(adf_ts_ct["stat"]) < float(adf_ts_ct["crit"]["5%"])
+    )
+
+    quad_series = 0.5 * t_idx + 0.01 * t_idx ** 2 + r5.normal(size=400)  # 二次趋势平稳
+    adf_q_ct = adf_test(quad_series, regression="ct")
+    adf_q_ctt = adf_test(quad_series, regression="ctt")
+    if float(adf_q_ct["stat"]) < float(adf_q_ct["crit"]["5%"]):
+        raise AssertionError(
+            f"只含线性趋势时不该拒绝二次趋势平稳序列，得到 stat={adf_q_ct['stat']}"
+        )
+    if not float(adf_q_ctt["stat"]) < float(adf_q_ctt["crit"]["5%"]):
+        raise AssertionError(
+            f"含二次趋势时应拒绝二次趋势平稳序列，得到 stat={adf_q_ctt['stat']}"
+        )
+    out["adf_quad_series_ct_stat"] = round(float(adf_q_ct["stat"]), 6)
+    out["adf_quad_series_ct_reject5"] = bool(
+        float(adf_q_ct["stat"]) < float(adf_q_ct["crit"]["5%"])
+    )
+    out["adf_quad_series_ctt_stat"] = round(float(adf_q_ctt["stat"]), 6)
+    out["adf_quad_series_ctt_reject5"] = bool(
+        float(adf_q_ctt["stat"]) < float(adf_q_ctt["crit"]["5%"])
+    )
+
+    rw5 = np.cumsum(r5.normal(size=400))
+    adf_rw_c = adf_test(rw5, regression="c")
+    adf_rw_ct = adf_test(rw5, regression="ct")
+    adf_rw_ctt = adf_test(rw5, regression="ctt")
+    rw_stats = (float(adf_rw_c["stat"]), float(adf_rw_ct["stat"]), float(adf_rw_ctt["stat"]))
+    if len({round(s, 6) for s in rw_stats}) != 3:
+        raise AssertionError(f"三种趋势形式在随机游走上应给出不同统计量，得到 {rw_stats}")
+    for tag, res in (("c", adf_rw_c), ("ct", adf_rw_ct), ("ctt", adf_rw_ctt)):
+        if float(res["stat"]) < float(res["crit"]["5%"]):
+            raise AssertionError(f"随机游走在 {tag} 形式下不该拒绝单位根，得到 {res['stat']}")
+    out["adf_rw_c_stat"] = round(rw_stats[0], 6)
+    out["adf_rw_ct_stat"] = round(rw_stats[1], 6)
+    out["adf_rw_ctt_stat"] = round(rw_stats[2], 6)
+    out["adf_rw_ctt_not_reject5"] = bool(
+        float(adf_rw_ctt["stat"]) >= float(adf_rw_ctt["crit"]["5%"])
+    )
+    rw_drift = 0.5 * t_idx + np.cumsum(r5.normal(size=400))
+    adf_drift_ctt = adf_test(rw_drift, regression="ctt")
+    out["adf_rw_drift_ctt_stat"] = round(float(adf_drift_ctt["stat"]), 6)
+    out["adf_rw_drift_ctt_not_reject5"] = bool(
+        float(adf_drift_ctt["stat"]) >= float(adf_drift_ctt["crit"]["5%"])
+    )
+    if not out["adf_rw_drift_ctt_not_reject5"]:
+        raise AssertionError("带漂移的单位根过程在 ctt 形式下也不该拒绝单位根")
+    try:
+        adf_test(rw5, regression="cttt")
+        out["adf_bad_regression_raises"] = False
+    except ValueError:
+        out["adf_bad_regression_raises"] = True
+    try:
+        mackinnon_crit(100, "cttt", 0.05)
+        out["mackinnon_bad_regression_raises"] = False
+    except ValueError:
+        out["mackinnon_bad_regression_raises"] = True
+    if not (out["adf_bad_regression_raises"] and out["mackinnon_bad_regression_raises"]):
+        raise AssertionError("非法 regression 应抛 ValueError")
 
     # 9) 差分：一阶差分 + 季节差分后的长度
     series = np.arange(1.0, 25.0)

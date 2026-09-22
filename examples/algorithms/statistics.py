@@ -1,13 +1,15 @@
-"""统计推断与回归：相关系数、t 检验、卡方、正态性检验、OLS/岭回归/Lasso/logistic/泊松回归、
-Bootstrap 与置换检验、PCA 与因子分析、共线性与回归诊断、逐步回归。
+"""统计推断与回归：相关系数、t 检验、卡方、正态性检验、非参数检验与方差分析、
+OLS/Newey-West/岭回归/Lasso/logistic/泊松回归、Bootstrap 与置换检验、
+PCA 与因子分析、共线性与回归诊断、逐步回归。
 
-本模块共 23 个公开函数，按用途分组：相关 ``pearson_corr`` / ``spearman_corr`` /
+本模块共 29 个公开函数，按用途分组：相关 ``pearson_corr`` / ``spearman_corr`` /
 ``kendall_tau``，假设检验 ``t_test_one_sample`` / ``t_test_two_sample`` / ``chi_square_test`` /
 ``shapiro_wilk`` / ``jarque_bera`` / ``anderson_darling`` / ``ks_test_normal``，
-回归与诊断 ``ols`` / ``vif`` / ``ridge_regression`` / ``lasso_regression`` /
-``logistic_regression`` / ``poisson_regression`` / ``stepwise_selection`` /
-``durbin_watson`` / ``breusch_pagan``，降维 ``pca`` / ``factor_analysis``，
-重抽样 ``bootstrap_ci`` / ``permutation_test``。
+非参数检验与方差分析 ``mann_whitney_u`` / ``wilcoxon_signed_rank`` / ``kruskal_wallis`` /
+``anova_oneway``，回归与诊断 ``ols`` / ``newey_west_se`` / ``vif`` / ``ridge_regression`` /
+``lasso_regression`` / ``logistic_regression`` / ``poisson_regression`` /
+``stepwise_selection`` / ``durbin_watson`` / ``breusch_pagan``，降维 ``pca`` /
+``factor_analysis``，重抽样 ``bootstrap_ci`` / ``bca_bootstrap_ci`` / ``permutation_test``。
 
 本模块的共同约定
 ----------------
@@ -36,16 +38,22 @@ __all__ = [
     "kendall_tau",
     "t_test_one_sample",
     "t_test_two_sample",
+    "mann_whitney_u",
+    "wilcoxon_signed_rank",
+    "kruskal_wallis",
+    "anova_oneway",
     "chi_square_test",
     "shapiro_wilk",
     "jarque_bera",
     "anderson_darling",
     "ks_test_normal",
     "ols",
+    "newey_west_se",
     "vif",
     "ridge_regression",
     "logistic_regression",
     "bootstrap_ci",
+    "bca_bootstrap_ci",
     "permutation_test",
     "pca",
     "factor_analysis",
@@ -392,6 +400,67 @@ def _rank_average(x: np.ndarray) -> np.ndarray:
     return ranks
 
 
+def _norm_ppf(p: float) -> float:
+    """标准正态分位数（逆累积分布函数），二分定位 + 牛顿迭代收尾。
+
+    参数:
+        p: 概率，必须严格落在 ``(0, 1)`` 内。
+
+    返回:
+        满足 ``_norm_cdf(z) = p`` 的 z（精度约 1e-15）。
+
+    算法:
+        先按 ``p`` 落在哪一侧选区间（``p < 0.5`` 用 ``[-40, 0]`` 且以 ``_norm_sf``
+        为单调目标，避免 ``1 - cdf`` 的抵消；否则用 ``[0, 40]`` 且以 ``_norm_cdf``
+        为目标），二分 120 步把区间压到机器精度以下；再用 3 步牛顿迭代
+        （导数即标准正态密度 ``exp(-z^2/2)/sqrt(2*pi)``）做一次精修。
+
+    复杂度:
+        时间 O(1)（固定 120 步 + 3 步） / 空间 O(1)。
+
+    陷阱:
+        - **下尾不能无限往下走**：``math.erf`` 在 ``|z| > 8.4`` 附近饱和到 ±1，
+          ``p < 1e-17`` 时根会被钉在饱和边界上。BCa 的偏差校正比例请先裁剪到
+          ``[1/(B+1), B/(B+1)]`` 再调用本函数（``bca_bootstrap_ci`` 已这样做）。
+        - 参数校验失败会抛 ``ValueError``（``p = 0`` 或 ``1`` 的分位数是 ±∞，本函数不返回 inf）。
+        - 用固定步数的二分而不是查表，是为了让结果**逐位可复现**：同一 p 在任何平台上
+          都返回同一个 double。
+
+    参考:
+        Wichura, M.J. (1988) "Algorithm AS 241: The Percentage Points of the Normal
+        Distribution", Applied Statistics 37(3): 477-484（本实现只借用其精度目标，
+        迭代方式改为二分 + 牛顿）。
+    """
+    if not (0.0 < p < 1.0):
+        raise ValueError(f"_norm_ppf 要求 p 严格落在 (0,1) 内，得到 {p!r}")
+    if p < 0.5:
+        target = 1.0 - p
+        lo, hi = -40.0, 0.0
+        for _ in range(120):
+            mid = 0.5 * (lo + hi)
+            if _norm_sf(mid) > target:
+                lo = mid
+            else:
+                hi = mid
+    else:
+        target = p
+        lo, hi = 0.0, 40.0
+        for _ in range(120):
+            mid = 0.5 * (lo + hi)
+            if _norm_cdf(mid) < target:
+                lo = mid
+            else:
+                hi = mid
+    z = 0.5 * (lo + hi)
+    for _ in range(3):
+        pdf = math.exp(-0.5 * z * z) / math.sqrt(2.0 * math.pi)
+        if pdf <= 0.0:
+            break
+        err = (_norm_cdf(z) - p) if p >= 0.5 else ((1.0 - p) - _norm_sf(z))
+        z = z - err / pdf
+    return float(z)
+
+
 # --------------------------------------------------------------------------
 # 相关系数
 # --------------------------------------------------------------------------
@@ -689,6 +758,418 @@ def t_test_two_sample(
         "df": float(df),
         "p_value": float(_t_sf_two_sided(t, df)),
         "mean_diff": float(diff),
+    }
+
+
+def _normal_tail_p(z: float, alternative: str, func: str) -> float:
+    """把标准正态统计量转成指定方向的 p 值（秩检验共用）。
+
+    参数:
+        z: 标准正态统计量。对秩检验，约定 ``z > 0`` 表示第一组取值倾向更大。
+        alternative: ``"two-sided"`` / ``"greater"`` / ``"less"``。
+        func: 调用方函数名，仅用于拼报错信息。
+
+    返回:
+        p 值（已裁剪到 [0, 1]）：双侧 ``2 * P(Z > |z|)``，greater ``P(Z > z)``，
+        less ``P(Z < z)``。
+
+    算法:
+        直接调用自实现的 ``_norm_sf`` / ``_norm_cdf``（底层是标准库 math.erfc），
+        数字部分不依赖 scipy。
+
+    复杂度:
+        时间 O(1) / 空间 O(1)。
+
+    陷阱:
+        ``|z| > 8`` 时尾概率已低于双精度能表示的下限，返回的 0.0 应读作 "p < 1e-15"
+        而不是精确的 0。
+
+    参考:
+        正态近似的秩检验（Mann-Whitney / Wilcoxon）通用尾概率口径。
+    """
+    if alternative == "two-sided":
+        p = 2.0 * _norm_sf(abs(z))
+    elif alternative == "greater":
+        p = _norm_sf(z)
+    elif alternative == "less":
+        p = _norm_cdf(z)
+    else:
+        raise ValueError(
+            f"{func} 的 alternative 只能是 'two-sided'/'greater'/'less'，得到 {alternative!r}"
+        )
+    if p < 0.0:
+        p = 0.0
+    elif p > 1.0:
+        p = 1.0
+    return float(p)
+
+
+def mann_whitney_u(
+    x: Sequence[float],
+    y: Sequence[float],
+    alternative: str = "two-sided",
+    continuity: bool = True,
+) -> Dict[str, object]:
+    """Mann-Whitney U 检验（= Wilcoxon 秩和检验），正态近似 + 并列校正。
+
+    参数:
+        x, y: 两个独立样本，长度可以不同（各至少 1 个观测）。
+        alternative: 备择方向。``"two-sided"`` 双侧；``"greater"`` 备择为
+            "x 的取值倾向大于 y"；``"less"`` 反之。
+        continuity: 是否做连续性校正（把 ``u1 - n1*n2/2`` 的偏离向 0 收缩 0.5），
+            这是正态近似的常用默认口径。
+
+    返回:
+        dict：``u_statistic``（= ``min(u1, u2)``，教科书里的 U 统计量）、
+        ``u1``（x 的 U 统计量 ``R1 - n1(n1+1)/2``）、``u2``（= ``n1*n2 - u1``）、
+        ``z``（以 u1 为基准的正态统计量，z > 0 表示 x 整体偏大）、
+        ``p_value``（按 ``alternative`` 方向的近似 p 值）、
+        ``rank_sum``（x 在混合样本中的秩和）。
+
+    算法:
+        两组混合后取**平均秩**，``u1 = R1 - n1(n1+1)/2``，``u2 = n1*n2 - u1``；
+        正态近似 ``mu = n1*n2/2``，
+        ``sigma^2 = (n1*n2/12) * [ (n+1) - sum(t^3 - t) / (n(n-1)) ]``
+        （第二项即并列校正，``t`` 为每个并列组的个数，``n = n1+n2``），
+        ``z = (u1 - mu +- 0.5) / sigma``（连续性校正各向尾部方向挪半格）。
+        双侧 p 值 = ``2 * min(P(U <= u1), P(U >= u1))``，单侧 p 值取对应那一侧的
+        连续性校正尾概率；**单侧与双侧的校正方向不同**（见"陷阱"）。
+        尾概率用自实现的 ``_norm_sf`` / ``_norm_cdf``。
+
+    复杂度:
+        时间 O(n log n)（排序求秩） / 空间 O(n)。
+
+    陷阱:
+        - **这是正态近似，不是精确检验**：n1、n2 各小于 8 或并列很多时，近似 p 值
+          与精确 p 值能差出几个百分点；正式论文请用 ``scipy.stats.mannwhitneyu`` 的
+          ``method="exact"`` 复核。
+        - ``u_statistic`` 取 ``min(u1, u2)``（教科书习惯）**丢掉了方向信息**，
+          而 ``z`` 以 ``u1`` 为基准；做单侧检验时必须看 ``u1`` / ``z``，不能看
+          ``u_statistic``。
+        - 并列值必须取平均秩；按出现顺序排秩会让统计量依赖输入顺序（本实现不会）。
+        - **连续性校正的单侧口径容易踩坑**：单侧 p 值用的是 ``P(U >= u1) ~ N`` 边界
+          各挪半格后的尾概率（与 ``scipy.stats.mannwhitneyu(use_continuity=True)`` 一致），
+          而双侧 p 值把偏离向 0 收缩；因此单侧 p 值**并不等于** ``_norm_sf(z)``，
+          也不等于 ``双侧 p / 2``。要看单侧显著性请直接用 ``alternative`` 参数，
+          不要自己拿 ``z`` 反算。
+        - 检验假设两组**独立**；配对/前后测数据请用 ``wilcoxon_signed_rank``。
+
+    参考:
+        Mann, H.B. & Whitney, D.R. (1947) "On a Test of Whether one of Two Random
+        Variables is Stochastically Larger than the Other", Annals of Mathematical
+        Statistics 18(1): 50-60；Conover, "Practical Nonparametric Statistics",
+        3rd ed., Ch. 6。
+    """
+    xv = as_vector(x, "x")
+    yv = as_vector(y, "y")
+    nx = int(xv.size)
+    ny = int(yv.size)
+    if nx < 1 or ny < 1:
+        raise ValueError(f"两组样本都至少需要 1 个观测，得到 nx={nx}, ny={ny}")
+    pooled = np.concatenate([xv, yv])
+    ranks = _rank_average(pooled)
+    rank_sum = float(np.sum(ranks[:nx]))
+    u1 = rank_sum - 0.5 * nx * (nx + 1.0)
+    u2 = float(nx) * float(ny) - u1
+    n = nx + ny
+    mu = 0.5 * float(nx) * float(ny)
+    _, counts = np.unique(pooled, return_counts=True)
+    tc = counts.astype(float)
+    tie = float(np.sum(tc ** 3 - tc))
+    var = 0.0
+    if n > 1:
+        var = (float(nx) * float(ny) / 12.0) * ((n + 1.0) - tie / (float(n) * (n - 1.0)))
+    sigma = math.sqrt(var) if var > 0.0 else 0.0
+    diff = u1 - mu
+    if sigma > 0.0:
+        if continuity:
+            z_less = (diff + 0.5) / sigma
+            z_greater = (diff - 0.5) / sigma
+        else:
+            z_less = diff / sigma
+            z_greater = z_less
+        p_less = _norm_cdf(z_less)
+        p_greater = _norm_sf(z_greater)
+        if not continuity or diff == 0.0:
+            z = diff / sigma
+        elif diff > 0.0:
+            z = (diff - 0.5) / sigma
+        else:
+            z = (diff + 0.5) / sigma
+    else:
+        z = 0.0
+        p_less = 1.0
+        p_greater = 1.0
+    if alternative == "two-sided":
+        p_value = min(1.0, 2.0 * min(p_less, p_greater))
+    elif alternative == "greater":
+        p_value = p_greater
+    elif alternative == "less":
+        p_value = p_less
+    else:
+        raise ValueError(
+            "mann_whitney_u 的 alternative 只能是 'two-sided'/'greater'/'less'，"
+            f"得到 {alternative!r}"
+        )
+    if p_value < 0.0:
+        p_value = 0.0
+    elif p_value > 1.0:
+        p_value = 1.0
+    return {
+        "u_statistic": float(min(u1, u2)),
+        "u1": float(u1),
+        "u2": float(u2),
+        "z": float(z),
+        "p_value": float(p_value),
+        "rank_sum": rank_sum,
+    }
+
+
+def wilcoxon_signed_rank(
+    x: Sequence[float],
+    y: Optional[Sequence[float]] = None,
+    alternative: str = "two-sided",
+) -> Dict[str, object]:
+    """Wilcoxon 符号秩检验（单样本或配对样本），正态近似 + 并列校正。
+
+    参数:
+        x: 一维样本。``y=None`` 时做单样本检验（原假设：总体中位数为 0）。
+        y: 配对样本，长度必须与 x 相同；给出时检验的是差值 ``x - y``。
+        alternative: ``"two-sided"`` / ``"greater"``（差值倾向为正）/ ``"less"``；
+            **单侧方向始终以 x 为准**，与是否给 y 无关。
+
+    返回:
+        dict：``w_statistic``（= ``min(w_plus, w_minus)``）、``w_plus``（正差值的秩和）、
+        ``w_minus``（负差值的秩和）、``z``（以 w_plus 为基准，z > 0 表示正差值占优）、
+        ``p_value``、``n_effective``（丢弃零差值后的有效对数）。
+
+    算法:
+        令 ``d = x - y``（未给 y 时 ``d = x``），把 ``d = 0`` 的对**整体丢弃**
+        （Wilcoxon 原始口径，等价于 scipy 的 ``zero_method="wilcox"``）；
+        对 ``|d|`` 取平均秩，分别累加正、负差值的秩和得到 ``w_plus`` / ``w_minus``。
+        正态近似 ``mu = n(n+1)/4``，
+        ``sigma^2 = [ n(n+1)(2n+1) - sum(t^3 - t)/2 ] / 24``
+        （``t`` 为 ``|d|`` 的并列组大小，``n = n_effective``），
+        ``z = (w_plus - mu)/sigma``，尾概率用自实现的 ``_norm_sf`` / ``_norm_cdf``。
+
+    复杂度:
+        时间 O(n log n) / 空间 O(n)。
+
+    陷阱:
+        - **零差值的处理会改变结果**：本实现直接丢弃，``n_effective`` 会小于输入长度；
+          若改用 Pratt 法（保留零差值参与排秩）数值不同，论文里必须写明用的哪种。
+        - 这是正态近似而非精确检验：``n_effective < 10`` 时近似很粗糙
+          （本模块不提供精确分布表），并列较多时也要谨慎。
+        - 单侧方向容易搞反：``alternative="greater"`` 表示"x 倾向大于 y"，
+          即 ``w_plus`` 偏大、``z`` 偏正。
+        - 交换 x 与 y 后 ``w_plus`` / ``w_minus`` 互换、``z`` 变号，而双侧 p 值完全不变。
+
+    参考:
+        Wilcoxon, F. (1945) "Individual Comparisons by Ranking Methods", Biometrics
+        Bulletin 1(6): 80-83；Conover, "Practical Nonparametric Statistics",
+        3rd ed., Ch. 5。
+    """
+    xv = as_vector(x, "x")
+    if y is None:
+        d = xv.copy()
+    else:
+        yv = as_vector(y, "y")
+        check_same_length(xv, yv)
+        d = xv - yv
+    nz = d[d != 0.0]
+    n = int(nz.size)
+    if n < 1:
+        raise ValueError("所有差值都为 0，Wilcoxon 符号秩检验无定义")
+    ad = np.abs(nz)
+    r = _rank_average(ad)
+    w_plus = float(np.sum(r[nz > 0.0]))
+    w_minus = float(np.sum(r[nz < 0.0]))
+    mu = 0.25 * float(n) * (n + 1.0)
+    _, counts = np.unique(ad, return_counts=True)
+    tc = counts.astype(float)
+    tie = float(np.sum(tc ** 3 - tc))
+    var = (float(n) * (n + 1.0) * (2.0 * n + 1.0) - 0.5 * tie) / 24.0
+    sigma = math.sqrt(var) if var > 0.0 else 0.0
+    z = (w_plus - mu) / sigma if sigma > 0.0 else 0.0
+    return {
+        "w_statistic": float(min(w_plus, w_minus)),
+        "w_plus": w_plus,
+        "w_minus": w_minus,
+        "z": float(z),
+        "p_value": _normal_tail_p(z, alternative, "wilcoxon_signed_rank"),
+        "n_effective": n,
+    }
+
+
+def kruskal_wallis(groups: Sequence[Sequence[float]]) -> Dict[str, object]:
+    """Kruskal-Wallis H 检验（单因素方差分析的非参数版本），带并列校正。
+
+    参数:
+        groups: 由各组样本组成的序列，至少 2 组、每组至少 1 个观测，长度可以不同。
+
+    返回:
+        dict：``h_statistic``（并列校正后的 H）、``df``（= 组数 - 1）、
+        ``p_value``（卡方上尾）、``tie_correction``（并列校正因子
+        ``C = 1 - sum(t^3 - t)/(N^3 - N)``，``H = H_原始 / C``）、
+        ``rank_sums``（各组在混合样本中的秩和，与输入同序）、``n_groups``、``n_total``。
+
+    算法:
+        混合后取平均秩，``H = 12/(N(N+1)) * sum_i R_i^2 / n_i - 3(N+1)``（无并列时）；
+        令 ``C = 1 - sum(t^3 - t)/(N^3 - N)``（``t`` 为并列组大小），
+        使用 ``H_c = H / C``。p 值取自实现的卡方上尾 ``_chi2_sf(H_c, k-1)``
+        （下不完全伽马级数 + 连分式），不依赖 scipy。
+
+    复杂度:
+        时间 O(N log N) / 空间 O(N)。
+
+    陷阱:
+        - 这是**大样本卡方近似**：每组只有 3~5 个观测时偏差明显，精确分布要查表或用
+          置换检验（``permutation_test`` 可以代用）。
+        - 所有观测完全相同时 ``C = 0``，此时校正公式本身失去定义：本实现按退化输入处理，
+          返回 ``h_statistic = 0``、``p_value = 1.0``。
+        - 两组时 H 恰好等于 Mann-Whitney 的 ``z^2``（``continuity=False`` 口径），
+          即两组情形下两个检验等价；组数 >= 3 时 H 只回答"是否存在某组不同"，
+          **不指出是哪两组**，需要事后两两比较并做多重比较校正。
+        - 与 ANOVA 一样假设各组分布形状相同、只允许位置不同。
+
+    参考:
+        Kruskal, W.H. & Wallis, W.A. (1952) "Use of Ranks in One-Criterion Variance
+        Analysis", Journal of the American Statistical Association 47(260): 583-621。
+    """
+    if groups is None:
+        raise ValueError("groups 不能为 None")
+    lst = list(groups)
+    k = len(lst)
+    if k < 2:
+        raise ValueError(f"Kruskal-Wallis 至少需要 2 组，得到 {k} 组")
+    arrs = [as_vector(g, f"groups[{i}]") for i, g in enumerate(lst)]
+    n_i = [int(a.size) for a in arrs]
+    for i, cnt in enumerate(n_i):
+        if cnt < 1:
+            raise ValueError(f"groups[{i}] 至少需要 1 个观测")
+    big_n = int(sum(n_i))
+    if big_n < 3:
+        raise ValueError(f"总观测数 N={big_n} 太少，至少需要 3")
+    pooled = np.concatenate(arrs)
+    ranks = _rank_average(pooled)
+    rank_sums = []
+    off = 0
+    for cnt in n_i:
+        rank_sums.append(float(np.sum(ranks[off: off + cnt])))
+        off += cnt
+    h_raw = 12.0 / (big_n * (big_n + 1.0)) * sum(
+        rs * rs / float(cnt) for rs, cnt in zip(rank_sums, n_i)
+    ) - 3.0 * (big_n + 1.0)
+    _, counts = np.unique(pooled, return_counts=True)
+    tc = counts.astype(float)
+    tie = float(np.sum(tc ** 3 - tc))
+    denom = float(big_n ** 3 - big_n)
+    c_corr = 1.0 - tie / denom if denom > 0.0 else 0.0
+    if c_corr <= 1e-12:
+        h_stat = 0.0
+    else:
+        h_stat = h_raw / c_corr
+    if h_stat < 0.0:
+        h_stat = 0.0
+    df = float(k - 1)
+    return {
+        "h_statistic": float(h_stat),
+        "df": df,
+        "p_value": float(_chi2_sf(float(h_stat), df)),
+        "tie_correction": float(c_corr),
+        "rank_sums": rank_sums,
+        "n_groups": int(k),
+        "n_total": big_n,
+    }
+
+
+def anova_oneway(groups: Sequence[Sequence[float]]) -> Dict[str, object]:
+    """单因素方差分析（one-way ANOVA）：F 检验与平方和分解。
+
+    参数:
+        groups: 由各组样本组成的序列，至少 2 组、每组至少 1 个观测，长度可以不同；
+            组内自由度 ``N - k`` 必须 >= 1（即不能每组都只有 1 个观测）。
+
+    返回:
+        dict：``f_statistic``、``p_value``（F 上尾）、``ss_between`` / ``ss_within`` /
+        ``ss_total``（= 两者之和）、``df_between``（= k-1）、``df_within``（= N-k）、
+        ``ms_between`` / ``ms_within``（= SS/df）、``grand_mean``、``group_means``
+        （列表，与输入同序）。
+
+    算法:
+        ``SS_between = sum_i n_i (mean_i - grand_mean)^2``；
+        ``SS_within = sum_i sum_j (x_ij - mean_i)^2``（**按组中心化后求和**）；
+        ``SS_total = sum (x - grand_mean)^2``；
+        ``F = (SS_between/(k-1)) / (SS_within/(N-k))``。
+        p 值用自实现的 ``_f_sf``（正则化不完全贝塔函数的 Lentz 连分式），
+        与 ``scipy.stats.f.sf`` 的相对误差在 1e-12 量级以内，不依赖 scipy。
+
+    复杂度:
+        时间 O(N) / 空间 O(N)。
+
+    陷阱:
+        - 计算 ``SS_within`` 时**不要**用 ``SS_total - SS_between`` 去凑：均值很大、
+          方差很小时这一步会发生灾难性抵消。本实现按组中心化后直接求和，数值上更稳；
+          ``ss_total`` 则独立算出，用作分解恒等式的自检。
+        - ANOVA 假设各组**同方差、残差独立且近似正态**；方差不齐时 F 检验的名义水平
+          失效，应改用 Welch ANOVA 或 ``kruskal_wallis``。
+        - F 显著只说明"至少有一组均值不同"，具体是哪两类要用事后检验
+          （Tukey HSD / Bonferroni）并做多重比较校正。
+        - 退化情形：组间无差异且组内无变异时 ``ms_within = 0``，返回
+          ``f_statistic = 0`` 与 ``p_value = 1``；组内有差异而组间无变异时返回 ``inf``
+          与 ``p_value = 0``（"数据被理想化"的信号，不要当真实结论报告）。
+
+    参考:
+        Fisher, R.A. (1925) "Statistical Methods for Research Workers"；
+        Montgomery, "Design and Analysis of Experiments", 8th ed., Ch. 3。
+    """
+    if groups is None:
+        raise ValueError("groups 不能为 None")
+    lst = list(groups)
+    k = len(lst)
+    if k < 2:
+        raise ValueError(f"单因素方差分析至少需要 2 组，得到 {k} 组")
+    arrs = [as_vector(g, f"groups[{i}]") for i, g in enumerate(lst)]
+    n_i = [int(a.size) for a in arrs]
+    for i, cnt in enumerate(n_i):
+        if cnt < 1:
+            raise ValueError(f"groups[{i}] 至少需要 1 个观测")
+    big_n = int(sum(n_i))
+    df_between = k - 1
+    df_within = big_n - k
+    if df_within < 1:
+        raise ValueError(
+            f"组内自由度 N-k={df_within} 必须 >= 1（N={big_n}, k={k}），每组至少要有 2 个观测"
+        )
+    means = [float(a.mean()) for a in arrs]
+    allv = np.concatenate(arrs)
+    grand = float(allv.mean())
+    ss_between = float(sum(cnt * (m - grand) ** 2 for cnt, m in zip(n_i, means)))
+    ss_within = float(sum(float(np.sum((a - m) ** 2)) for a, m in zip(arrs, means)))
+    ss_total = float(np.sum((allv - grand) ** 2))
+    ms_between = ss_between / float(df_between)
+    ms_within = ss_within / float(df_within)
+    if ms_within > 0.0:
+        f_stat = ms_between / ms_within
+        p_value = float(_f_sf(float(f_stat), float(df_between), float(df_within)))
+    elif ms_between > 0.0:
+        f_stat = float("inf")
+        p_value = 0.0
+    else:
+        f_stat = 0.0
+        p_value = 1.0
+    return {
+        "f_statistic": float(f_stat),
+        "p_value": float(p_value),
+        "ss_between": ss_between,
+        "ss_within": ss_within,
+        "ss_total": ss_total,
+        "df_between": int(df_between),
+        "df_within": int(df_within),
+        "ms_between": float(ms_between),
+        "ms_within": float(ms_within),
+        "grand_mean": grand,
+        "group_means": means,
     }
 
 
@@ -1131,6 +1612,116 @@ def ols(X, y: Sequence[float], add_intercept: bool = True) -> Dict[str, object]:
     }
 
 
+def newey_west_se(
+    y: Sequence[float],
+    X,
+    lags: Optional[int] = None,
+) -> Dict[str, object]:
+    """OLS + Newey-West（Bartlett 核）异方差自相关稳健（HAC）标准误。
+
+    参数:
+        y: 因变量，长度 n。
+        X: 设计矩阵 (n, p)，**不含截距列**（截距由本函数自动加在最前面，
+           对应 ``beta[0]``）。**必须显式传二维数组**：按 ``as_matrix`` 的口径，
+           一维输入会被当成"1 行的矩阵"，而不是单变量列，请写成 ``(n, 1)``。
+        lags: 截断阶数 ``L``（>= 0）。``None`` 时用经验法则
+            ``L = floor(4 * (n/100)^(2/9))``（Newey-West 1994 的建议，n=100 时 L=4，
+            n=400 时 L=5）。
+
+    返回:
+        dict：``beta``（长度 p+1，含截距）、``se``（Newey-West 稳健标准误）、
+        ``t_stat``（= beta/se）、``p_value``（**正态近似**双侧）、
+        ``lags``（实际使用的 L）、``r_squared``（含截距的中心化 R^2）。
+
+    算法:
+        先做 OLS 取残差 ``e``，再构造 HAC "meat" 矩阵
+        ``M = sum_t x_t x_t' e_t^2
+        + sum_{l=1..L} (1 - l/(L+1)) * sum_t (x_t e_t e_{t-l} x_{t-l}' + 其转置)``
+        （权重 ``w_l = 1 - l/(L+1)`` 即 Bartlett 核），
+        ``Var(beta) = n/(n-k) * (X'X)^{-1} M (X'X)^{-1}``（k = p+1）。
+        其中 ``n/(n-k)`` 是自由度修正（与 R ``sandwich::NeweyWest(adjust=TRUE)`` 同口径）：
+        正因为有它，``lags=0`` 且残差恰好同方差时结果**严格退回经典 OLS 标准误**。
+        p 值用自实现的 ``_norm_sf`` 做正态近似。
+
+    复杂度:
+        时间 O(L * n * p^2) / 空间 O(n p)。
+
+    陷阱:
+        - **p 值用的是正态近似而不是 t 分布**：n 较小时 p 值偏小，这里返回的是渐近结果；
+          小样本又确信残差同方差、无自相关时，请用 ``ols`` 的 t 检验。
+        - ``L`` 是偏差-方差权衡：太小压不住自相关（标准误偏小、t 值虚高），太大则估计
+          噪音大甚至破坏正定性。经验法则只在几百个观测的量级上可靠；本函数**不做**
+          最优带宽的自动估计（Newey-West 1994 的迭代选取）。
+        - 稳健标准误只改标准误、**不改系数**：``beta`` 仍是 OLS 的，它既不修正遗漏变量
+          偏误，也不提高效率。
+        - 带 ``n/(n-k)`` 修正后，``lags=0`` 相当于带自由度修正的 White(1980) 异方差稳健
+          标准误（HC0 的修正版），**一般不等于**经典标准误——只有残差同方差时才相等
+          （``_self_test`` 用等模残差构造了这种算例来对齐 ``ols``）。
+        - ``X`` 里不要重复放截距列；时间序列做 HAC 时残差必须与回归对应。
+        - 单变量回归若把 ``X`` 传成一维数组，``as_matrix`` 会当成 1 行而报
+          "X 有 1 行但 y 长度 n"；请显式写 ``X.reshape(-1, 1)``。
+
+    参考:
+        Newey, W.K. & West, K.D. (1987) "A Simple, Positive Semi-Definite,
+        Heteroskedasticity and Autocorrelation Consistent Covariance Matrix",
+        Econometrica 55(3): 703-708；Newey & West (1994), Review of Economic
+        Studies 61(4): 631-653（带宽法则）。
+    """
+    Xm = as_matrix(X, "X")
+    yv = as_vector(y, "y")
+    n = int(Xm.shape[0])
+    if yv.size != n:
+        raise ValueError(f"X 有 {n} 行但 y 长度 {yv.size}")
+    Xd = np.column_stack([np.ones(n, dtype=float), Xm])
+    k = int(Xd.shape[1])
+    if n <= k:
+        raise ValueError(f"观测数 n={n} 必须大于参数个数 k={k}")
+    coef, _, rank, _ = np.linalg.lstsq(Xd, yv, rcond=None)
+    if rank < k:
+        raise ValueError(
+            f"设计矩阵秩亏（rank={rank} < 列数 {k}）：存在完全共线的列，请先删除冗余变量"
+        )
+    resid = yv - Xd @ coef
+    if lags is None:
+        lag_use = int(math.floor(4.0 * (float(n) / 100.0) ** (2.0 / 9.0)))
+    else:
+        if int(lags) != lags:
+            raise ValueError(f"lags 必须是整数，得到 {lags!r}")
+        lag_use = int(lags)
+        if lag_use < 0:
+            raise ValueError(f"lags 必须 >= 0，得到 {lags!r}")
+    if lag_use > n - 1:
+        raise ValueError(f"lags={lag_use} 超过可用上限 n-1={n - 1}")
+    xe = Xd * resid[:, None]
+    meat = xe.T @ xe
+    for lag in range(1, lag_use + 1):
+        w = 1.0 - float(lag) / float(lag_use + 1)
+        cross = xe[lag:].T @ xe[:-lag]
+        meat = meat + w * (cross + cross.T)
+    xtx_inv = np.linalg.inv(Xd.T @ Xd)
+    df_resid = n - k
+    cov = (float(n) / float(df_resid)) * (xtx_inv @ meat @ xtx_inv)
+    cov = 0.5 * (cov + cov.T)
+    se = np.sqrt(np.maximum(np.diag(cov), 0.0))
+    with np.errstate(divide="ignore", invalid="ignore"):
+        tvals = np.where(se > 0.0, coef / np.where(se > 0.0, se, 1.0), np.nan)
+    pvals = np.array(
+        [2.0 * _norm_sf(abs(float(v))) if np.isfinite(v) else float("nan") for v in tvals],
+        dtype=float,
+    )
+    rss = float(resid @ resid)
+    tss = float(np.sum((yv - yv.mean()) ** 2))
+    r2 = 1.0 - rss / tss if tss > 0.0 else 0.0
+    return {
+        "beta": coef,
+        "se": se,
+        "t_stat": tvals,
+        "p_value": pvals,
+        "lags": lag_use,
+        "r_squared": float(r2),
+    }
+
+
 def vif(X) -> Dict[str, object]:
     """方差膨胀因子（VIF）：逐列对其余列回归得到的共线性指标。
 
@@ -1475,6 +2066,134 @@ def bootstrap_ci(
         "alpha": a,
         "n_boot": nb,
         "boot_se": float(np.std(vals, ddof=1)) if nb > 1 else 0.0,
+    }
+
+
+def bca_bootstrap_ci(
+    x: Sequence[float],
+    statistic: Optional[Callable[[np.ndarray], float]] = None,
+    n_boot: int = 2000,
+    alpha: float = 0.05,
+    seed: Optional[int] = None,
+) -> Dict[str, object]:
+    """BCa（偏差校正 + 加速度）Bootstrap 置信区间。
+
+    参数:
+        x: 一维样本，至少 3 个观测（jackknife 加速度要用到三阶矩）。
+        statistic: 统计量函数，接受一维数组返回标量；``None`` 表示样本均值。
+        n_boot: 重抽样次数（>= 2，实际使用建议 >= 2000）。
+        alpha: 显著性水平，置信度为 ``1 - alpha``（如 0.05 -> 95% 区间）。
+        seed: 随机种子；``None`` 使用 ``DEFAULT_SEED``。
+
+    返回:
+        dict：``ci_lower`` / ``ci_upper``（BCa 区间端点）、``theta_hat``（原样本统计量）、
+        ``bias_correction``（偏差校正量 ``z0 = Phi^{-1}(#{theta* < theta_hat} / B)``）、
+        ``acceleration``（jackknife 加速度 ``a``）、``n_boot``。
+
+    算法:
+        1. 有放回抽 ``B = n_boot`` 个容量 n 的样本，得到重抽样分布 ``theta*``；
+        2. 偏差校正 ``z0 = Phi^{-1}(frac{theta* < theta_hat})``，比例先裁剪到
+           ``[1/(B+1), B/(B+1)]``（否则端点会变成 ±inf）；
+        3. 加速度用 jackknife 伪值：``a = sum_i (theta_bar - theta_(i))^3 /
+           (6 * [sum_i (theta_bar - theta_(i))^2]^{3/2})``；
+        4. 调整分位数
+           ``alpha_1 = Phi( z0 + (z0 + z_{alpha/2}) / (1 - a (z0 + z_{alpha/2})) )``，
+           ``alpha_2`` 把 ``z_{alpha/2}`` 换成 ``z_{1-alpha/2}``；
+           区间取 ``theta*`` 的 ``alpha_1`` / ``alpha_2`` 分位数（线性插值）。
+        ``Phi`` 与 ``Phi^{-1}`` 分别用自实现的 ``_norm_cdf`` 与 ``_norm_ppf``，
+        整条链不依赖 scipy。
+
+    复杂度:
+        时间 O((B + n) * cost(statistic)) / 空间 O(B + n)。
+
+    陷阱:
+        - **jackknife 加速度在小样本上很脆**：n < 10 时 ``a`` 基本都是噪音，BCa 可能
+          反而不如百分位法；样本很小时请直接报告 t 区间或精确分布。
+        - 当 ``a`` 接近 ``1/(z0 + z_{alpha/2})`` 时调整分位数的分母趋近 0，端点会跳到
+          极端次序统计量上；本实现检测到分母过小时抛 ``ValueError``，而不是静默返回
+          一个假的区间。
+        - 与百分位法一样要求样本**独立同分布**：时间序列或分层抽样数据直接对点重抽样
+          会破坏结构，应改用块状 / 分层 Bootstrap（本模块未实现）。
+        - ``n_boot`` 决定端点分辨率，换种子会在第 2~3 位有效数字上变动；
+          本函数的价格也是 ``O(B * n)``，B=1e4、n=1e4 时明显变慢。
+        - BCa 是"用重抽样修正百分位法"的近似方法，区间**不是**精确的置信区间，
+          覆盖率只在渐近意义下等于名义水平。
+
+    参考:
+        Efron, B. (1987) "Better Bootstrap Confidence Intervals", Journal of the
+        American Statistical Association 82(397): 171-185；
+        Efron & Tibshirani, "An Introduction to the Bootstrap", 1993, Ch. 14。
+    """
+    xv = as_vector(x, "x")
+    n = int(xv.size)
+    if n < 3:
+        raise ValueError(f"BCa 至少需要 3 个观测（jackknife 加速度要求），得到 {n}")
+    nb = int(n_boot)
+    if nb < 2:
+        raise ValueError("n_boot 必须 >= 2")
+    a = float(alpha)
+    if not (0.0 < a < 1.0):
+        raise ValueError(f"alpha 必须落在 (0,1) 内，得到 {alpha!r}")
+    stat = (lambda arr: float(np.mean(arr))) if statistic is None else statistic
+    if not callable(stat):
+        raise ValueError("statistic 必须是可调用对象（接受一维数组、返回标量）")
+    theta_hat = float(stat(xv))
+    if not math.isfinite(theta_hat):
+        raise ValueError("原样本上的统计量不是有限值")
+    gen = rng(seed)
+    vals = np.empty(nb, dtype=float)
+    for b in range(nb):
+        idx = gen.integers(0, n, size=n)
+        vals[b] = float(stat(xv[idx]))
+    if not np.all(np.isfinite(vals)):
+        raise ValueError("重抽样过程中出现非有限统计量，请检查 statistic 的定义域")
+    frac = float(np.count_nonzero(vals < theta_hat)) / float(nb)
+    lo_frac = 1.0 / float(nb + 1)
+    hi_frac = float(nb) / float(nb + 1)
+    if frac < lo_frac:
+        frac = lo_frac
+    elif frac > hi_frac:
+        frac = hi_frac
+    z0 = _norm_ppf(frac)
+    jack = np.empty(n, dtype=float)
+    for i in range(n):
+        jack[i] = float(stat(np.delete(xv, i)))
+    if not np.all(np.isfinite(jack)):
+        raise ValueError("jackknife 过程中出现非有限统计量，请检查 statistic 的定义域")
+    jbar = float(jack.mean())
+    d = jbar - jack
+    s2 = float(np.sum(d * d))
+    if s2 > 0.0:
+        acc = float(np.sum(d ** 3)) / (6.0 * s2 ** 1.5)
+    else:
+        acc = 0.0
+
+    def _adjusted(zq: float) -> float:
+        den = 1.0 - acc * (z0 + zq)
+        if abs(den) < 1e-9:
+            raise ValueError(
+                "BCa 调整分位数的分母趋近 0（加速度过大）：请增大样本量或改用百分位法"
+            )
+        p = _norm_cdf(z0 + (z0 + zq) / den)
+        if p < 0.0:
+            return 0.0
+        if p > 1.0:
+            return 1.0
+        return p
+
+    p_lo = _adjusted(_norm_ppf(0.5 * a))
+    p_hi = _adjusted(_norm_ppf(1.0 - 0.5 * a))
+    lower = float(np.percentile(vals, 100.0 * p_lo))
+    upper = float(np.percentile(vals, 100.0 * p_hi))
+    if lower > upper:
+        lower, upper = upper, lower
+    return {
+        "ci_lower": lower,
+        "ci_upper": upper,
+        "theta_hat": theta_hat,
+        "bias_correction": float(z0),
+        "acceleration": float(acc),
+        "n_boot": nb,
     }
 
 
@@ -2790,4 +3509,451 @@ def _self_test() -> dict:
     out["step_aic_full"] = round(aic_full, 6)
     out["step_n_steps"] = int(len(step["history"]))
     out["step_first_action"] = str(step["history"][0]["action"]) if step["history"] else ""
+
+    # 21) Mann-Whitney U：小样本手算。x=[1,2,3]、y=[4,5] 时 x 的秩和 = 1+2+3 = 6、
+    #     U1 = 6 - 3*4/2 = 0、U2 = 3*2 - 0 = 6；交换两组只改 z 的符号、p 值不变。
+    #     单侧 p 要按"连续性修正朝各自尾部收缩"算，所以**不是**双侧 p 的一半：
+    #     双侧 = min(1, 2*min(p_less, p_greater))，本例两个单侧各自独立自洽。
+    mw = mann_whitney_u([1.0, 2.0, 3.0], [4.0, 5.0])
+    if abs(float(mw["u_statistic"]) - 0.0) > 1e-12:
+        raise AssertionError(f"Mann-Whitney U 应为 0，实际 {mw['u_statistic']}")
+    if abs(float(mw["u1"]) - 0.0) > 1e-12 or abs(float(mw["u2"]) - 6.0) > 1e-12:
+        raise AssertionError(f"U1/U2 应为 0/6，实际 {mw['u1']}/{mw['u2']}")
+    if abs(float(mw["rank_sum"]) - 6.0) > 1e-12:
+        raise AssertionError(f"x 的秩和应为 6，实际 {mw['rank_sum']}")
+    if abs(float(mw["u1"]) + float(mw["u2"]) - 6.0) > 1e-12:
+        raise AssertionError("U1 + U2 必须等于 n1*n2 = 6")
+    if abs(float(mw["z"]) + 1.4433756729740643) > 1e-9:
+        raise AssertionError(f"z 应为 -1.443375673，实际 {mw['z']}")
+    if abs(float(mw["p_value"]) - 0.14891467317876572) > 1e-9:
+        raise AssertionError(f"双侧 p 应为 0.148914673，实际 {mw['p_value']}")
+    mw_swap = mann_whitney_u([4.0, 5.0], [1.0, 2.0, 3.0])
+    if abs(float(mw_swap["u1"]) - 6.0) > 1e-12:
+        raise AssertionError(f"交换两组后 U1 应为 6，实际 {mw_swap['u1']}")
+    if abs(float(mw_swap["z"]) + float(mw["z"])) > 1e-9:
+        raise AssertionError(f"交换两组后 z 应变号，实际 {mw_swap['z']} vs {mw['z']}")
+    if abs(float(mw_swap["p_value"]) - float(mw["p_value"])) > 1e-9:
+        raise AssertionError("交换两组后双侧 p 值必须不变")
+    mw_g = mann_whitney_u([1.0, 2.0, 3.0], [4.0, 5.0], alternative="greater")
+    mw_l = mann_whitney_u([1.0, 2.0, 3.0], [4.0, 5.0], alternative="less")
+    # 连续性修正是"朝各自被检验的尾部"收缩的，所以开启修正后两个单侧 p **不再互补**
+    # （它们有重叠，之和 > 1）；这正是它和"双侧 p / 2"不等价的原因。
+    if not (float(mw_g["p_value"]) + float(mw_l["p_value"]) > 1.0):
+        raise AssertionError(
+            f"带连续性修正的两个单侧 p 之和应大于 1：greater={mw_g['p_value']} "
+            f"less={mw_l['p_value']}"
+        )
+    mw_two = min(1.0, 2.0 * min(float(mw_g["p_value"]), float(mw_l["p_value"])))
+    if abs(mw_two - float(mw["p_value"])) > 1e-9:
+        raise AssertionError(f"双侧 p 应等于 min(1, 2*min(单侧)) = {mw_two}，实际 {mw['p_value']}")
+    if abs(float(mw_g["p_value"]) - 0.9783459285946039) > 1e-9:
+        raise AssertionError(f"小样本 greater p 应为 0.978345929，实际 {mw_g['p_value']}")
+    if abs(float(mw_l["p_value"]) - 0.0744573365893828) > 1e-9:
+        raise AssertionError(f"小样本 less p 应为 0.074457337，实际 {mw_l['p_value']}")
+    # 带结的算例：秩和 = 56.5、U1 = 56.5 - 8*7/2 = 28.5 - 8 = ... 直接与手算秩对照
+    mwt = mann_whitney_u([1.0, 2.0, 2.0, 3.0, 5.0, 5.0, 5.0, 8.0],
+                         [2.0, 3.0, 4.0, 4.0, 6.0, 7.0])
+    if abs(float(mwt["rank_sum"]) - 56.5) > 1e-9:
+        raise AssertionError(f"带结秩和应为 56.5，实际 {mwt['rank_sum']}")
+    if abs(float(mwt["u1"]) - 20.5) > 1e-9 or abs(float(mwt["u2"]) - 27.5) > 1e-9:
+        raise AssertionError(f"带结 U1/U2 应为 20.5/27.5，实际 {mwt['u1']}/{mwt['u2']}")
+    if abs(float(mwt["z"]) + 0.39162582462965073) > 1e-9:
+        raise AssertionError(f"带结 z 应为 -0.391625825，实际 {mwt['z']}")
+    if abs(float(mwt["p_value"]) - 0.6953347037749835) > 1e-9:
+        raise AssertionError(f"带结双侧 p 应为 0.695334704，实际 {mwt['p_value']}")
+    mwt_g = mann_whitney_u([1.0, 2.0, 2.0, 3.0, 5.0, 5.0, 5.0, 8.0],
+                           [2.0, 3.0, 4.0, 4.0, 6.0, 7.0], alternative="greater")
+    if abs(float(mwt_g["p_value"]) - 0.6992232365161767) > 1e-9:
+        raise AssertionError(
+            f"带结单侧 p 应朝自身尾部做连续性修正（0.699223237），实际 {mwt_g['p_value']}"
+        )
+    mwt_nc = mann_whitney_u([1.0, 2.0, 2.0, 3.0, 5.0, 5.0, 5.0, 8.0],
+                            [2.0, 3.0, 4.0, 4.0, 6.0, 7.0], continuity=False)
+    if abs(float(mwt_nc["z"]) + 0.45689679540125916) > 1e-9:
+        raise AssertionError(f"不做连续性修正的 z 应为 -0.456896795，实际 {mwt_nc['z']}")
+    if abs(float(mwt_nc["p_value"]) - 0.6477452274739963) > 1e-9:
+        raise AssertionError(f"不做连续性修正的 p 应为 0.647745227，实际 {mwt_nc['p_value']}")
+    # 关掉连续性修正后两个单侧 p 才严格互补，且双侧 = 2 * min(单侧)
+    mwt_nc_g = mann_whitney_u([1.0, 2.0, 2.0, 3.0, 5.0, 5.0, 5.0, 8.0],
+                              [2.0, 3.0, 4.0, 4.0, 6.0, 7.0], alternative="greater",
+                              continuity=False)
+    mwt_nc_l = mann_whitney_u([1.0, 2.0, 2.0, 3.0, 5.0, 5.0, 5.0, 8.0],
+                              [2.0, 3.0, 4.0, 4.0, 6.0, 7.0], alternative="less",
+                              continuity=False)
+    if abs(float(mwt_nc_g["p_value"]) + float(mwt_nc_l["p_value"]) - 1.0) > 1e-9:
+        raise AssertionError("不做连续性修正时两个单侧 p 必须互补")
+    if abs(2.0 * min(float(mwt_nc_g["p_value"]), float(mwt_nc_l["p_value"]))
+           - float(mwt_nc["p_value"])) > 1e-9:
+        raise AssertionError("不做连续性修正时双侧 p 应等于较小单侧 p 的两倍")
+    try:
+        mann_whitney_u([1.0, 2.0, 3.0], [4.0, 5.0], alternative="both")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("非法的 alternative 必须抛 ValueError")
+    out["mw_u_statistic"] = round(float(mw["u_statistic"]), 9)
+    out["mw_u1"] = round(float(mw["u1"]), 9)
+    out["mw_u2"] = round(float(mw["u2"]), 9)
+    out["mw_z"] = round(float(mw["z"]), 9)
+    out["mw_p_value"] = round(float(mw["p_value"]), 9)
+    out["mw_rank_sum"] = round(float(mw["rank_sum"]), 9)
+    out["mw_greater_p"] = round(float(mw_g["p_value"]), 9)
+    out["mw_less_p"] = round(float(mw_l["p_value"]), 9)
+    out["mw_tie_u1"] = round(float(mwt["u1"]), 9)
+    out["mw_tie_u2"] = round(float(mwt["u2"]), 9)
+    out["mw_tie_z"] = round(float(mwt["z"]), 9)
+    out["mw_tie_p_value"] = round(float(mwt["p_value"]), 9)
+    out["mw_tie_rank_sum"] = round(float(mwt["rank_sum"]), 9)
+    out["mw_nocont_z"] = round(float(mwt_nc["z"]), 9)
+    out["mw_nocont_p_value"] = round(float(mwt_nc["p_value"]), 9)
+
+    # 22) Wilcoxon 符号秩：手算 6 对。差值 [15,-7,5,20,0,-9]，去掉 0 差后绝对值
+    #     [5,7,9,15,20] 对应秩 [1,2,3,4,5]，符号 {+,-,+,-,+}（按绝对值升序），
+    #     故 W+ = 1+4+5 = 10、W- = 2+3 = 5、min(W+,W-) = 5、有效样本 n = 5。
+    #     n=5 时零分布 mean = 5*6/4 = 7.5、sd = sqrt(5*6*11/24) = 3.708099，
+    #     z = (10 - 7.5)/3.708099 = 0.674199862。
+    ws = wilcoxon_signed_rank([125.0, 115.0, 130.0, 140.0, 140.0, 115.0],
+                              [110.0, 122.0, 125.0, 120.0, 140.0, 124.0])
+    if abs(float(ws["w_statistic"]) - 5.0) > 1e-12:
+        raise AssertionError(f"W 应为 min(W+,W-) = 5，实际 {ws['w_statistic']}")
+    if abs(float(ws["w_plus"]) - 10.0) > 1e-12 or abs(float(ws["w_minus"]) - 5.0) > 1e-12:
+        raise AssertionError(f"W+/W- 应为 10/5，实际 {ws['w_plus']}/{ws['w_minus']}")
+    if int(ws["n_effective"]) != 5:
+        raise AssertionError(f"去掉 1 个零差后有效样本应为 5，实际 {ws['n_effective']}")
+    if abs(float(ws["z"]) - 0.674199862463242) > 1e-9:
+        raise AssertionError(f"z 应为 0.674199862，实际 {ws['z']}")
+    if abs(float(ws["p_value"]) - 0.5001842570707945) > 1e-9:
+        raise AssertionError(f"双侧 p 应为 0.500184257，实际 {ws['p_value']}")
+    ws_swap = wilcoxon_signed_rank([110.0, 122.0, 125.0, 120.0, 140.0, 124.0],
+                                   [125.0, 115.0, 130.0, 140.0, 140.0, 115.0])
+    if abs(float(ws_swap["w_plus"]) - 5.0) > 1e-12:
+        raise AssertionError(f"交换符号后 W+ 应为 5，实际 {ws_swap['w_plus']}")
+    if abs(float(ws_swap["z"]) + float(ws["z"])) > 1e-9:
+        raise AssertionError(f"交换符号后 z 应变号，实际 {ws_swap['z']}")
+    if abs(float(ws_swap["p_value"]) - float(ws["p_value"])) > 1e-9:
+        raise AssertionError("交换符号后双侧 p 必须不变（符号秩检验的对称性）")
+    ws1 = wilcoxon_signed_rank([1.0, 2.0, 3.5, 4.0, 6.0, 7.0, 9.0, 11.0, 14.0])
+    if abs(float(ws1["w_plus"]) - 45.0) > 1e-12 or abs(float(ws1["w_minus"]) - 0.0) > 1e-12:
+        raise AssertionError(f"单样本 W+/W- 应为 45/0，实际 {ws1['w_plus']}/{ws1['w_minus']}")
+    if abs(float(ws1["z"]) - 2.6655699499159153) > 1e-9:
+        raise AssertionError(f"单样本 z 应为 2.66556995，实际 {ws1['z']}")
+    if abs(float(ws1["p_value"]) - 0.0076857940552132725) > 1e-9:
+        raise AssertionError(f"单样本双侧 p 应为 0.007685794，实际 {ws1['p_value']}")
+    # W- = 0 说明样本整体偏大，证据方向是"大于 0"，所以 greater 的 p 小、less 的 p 大
+    ws1_g = wilcoxon_signed_rank([1.0, 2.0, 3.5, 4.0, 6.0, 7.0, 9.0, 11.0, 14.0],
+                                 alternative="greater")
+    ws1_l = wilcoxon_signed_rank([1.0, 2.0, 3.5, 4.0, 6.0, 7.0, 9.0, 11.0, 14.0],
+                                 alternative="less")
+    if abs(float(ws1_g["p_value"]) - 0.0038428970276066362) > 1e-9:
+        raise AssertionError(f"单样本单侧 greater p 应为 0.003842897，实际 {ws1_g['p_value']}")
+    if float(ws1_l["p_value"]) < 0.9:
+        raise AssertionError(f"单样本 less 的 p 应接近 1，实际 {ws1_l['p_value']}")
+    if abs(float(ws1_g["p_value"]) + float(ws1_l["p_value"]) - 1.0) > 1e-9:
+        raise AssertionError("无连续性修正时两个单侧 p 必须互补")
+    if abs(2.0 * min(float(ws1_g["p_value"]), float(ws1_l["p_value"]))
+           - float(ws1["p_value"])) > 1e-9:
+        raise AssertionError("无连续性修正时双侧 p 应恰好等于较小单侧 p 的两倍")
+    try:
+        wilcoxon_signed_rank([1.0, 2.0, 3.0], [1.0, 2.0, 3.0])
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("配对差值全为 0 时必须抛 ValueError")
+    out["wsr_w_statistic"] = round(float(ws["w_statistic"]), 9)
+    out["wsr_w_plus"] = round(float(ws["w_plus"]), 9)
+    out["wsr_w_minus"] = round(float(ws["w_minus"]), 9)
+    out["wsr_z"] = round(float(ws["z"]), 9)
+    out["wsr_p_value"] = round(float(ws["p_value"]), 9)
+    out["wsr_n_effective"] = int(ws["n_effective"])
+    out["wsr_one_w_plus"] = round(float(ws1["w_plus"]), 9)
+    out["wsr_one_z"] = round(float(ws1["z"]), 9)
+    out["wsr_one_p_value"] = round(float(ws1["p_value"]), 9)
+    out["wsr_one_greater_p"] = round(float(ws1_g["p_value"]), 9)
+    out["wsr_one_less_p"] = round(float(ws1_l["p_value"]), 9)
+
+    # 23) Kruskal-Wallis：两组时应与不做连续性修正的 Mann-Whitney 满足 H = z^2；
+    #     三组带结算例与 scipy.stats.kruskal 对拍过（H=7.874100719、p=0.019505665）
+    kwn = kruskal_wallis([[1.0, 3.0, 5.0, 7.0], [2.0, 4.0, 6.0, 8.0]])
+    if abs(float(kwn["h_statistic"]) - 1.0 / 3.0) > 1e-12:
+        raise AssertionError(f"两组 H 应为 1/3，实际 {kwn['h_statistic']}")
+    if abs(float(kwn["df"]) - 1.0) > 1e-12:
+        raise AssertionError(f"两组 H 的 df 应为 1，实际 {kwn['df']}")
+    if abs(float(kwn["p_value"]) - 0.563702861650773) > 1e-9:
+        raise AssertionError(f"两组 H 的 p 应为 0.563702862，实际 {kwn['p_value']}")
+    if abs(float(kwn["tie_correction"]) - 1.0) > 1e-12:
+        raise AssertionError(f"无结时修正因子应为 1，实际 {kwn['tie_correction']}")
+    if int(kwn["n_groups"]) != 2 or int(kwn["n_total"]) != 8:
+        raise AssertionError("两组算例的 n_groups/n_total 应为 2/8")
+    mw_nc2 = mann_whitney_u([1.0, 3.0, 5.0, 7.0], [2.0, 4.0, 6.0, 8.0], continuity=False)
+    if abs(float(kwn["h_statistic"]) - float(mw_nc2["z"]) ** 2) > 1e-6:
+        raise AssertionError(
+            f"两组时 H 应等于 MWU 的 z^2：{kwn['h_statistic']} vs {float(mw_nc2['z']) ** 2}"
+        )
+    kw_id = kruskal_wallis([[1.0, 2.0, 3.0], [1.0, 2.0, 3.0]])
+    if abs(float(kw_id["h_statistic"])) > 1e-12 or abs(float(kw_id["p_value"]) - 1.0) > 1e-12:
+        raise AssertionError(f"两组同分布时应得 H=0、p=1，实际 {kw_id['h_statistic']}/{kw_id['p_value']}")
+    kw3 = kruskal_wallis([[1.0, 2.0, 2.0, 4.0], [2.0, 3.0, 5.0, 5.0], [5.0, 6.0, 7.0, 9.0]])
+    if abs(float(kw3["h_statistic"]) - 7.874100719424467) > 1e-9:
+        raise AssertionError(f"三组带结 H 应为 7.874100719，实际 {kw3['h_statistic']}")
+    if abs(float(kw3["p_value"]) - 0.019505664669776344) > 1e-9:
+        raise AssertionError(f"三组带结 p 应为 0.019505665，实际 {kw3['p_value']}")
+    if abs(float(kw3["tie_correction"]) - 0.972027972027972) > 1e-9:
+        raise AssertionError(f"三组带结修正因子应为 0.972027972，实际 {kw3['tie_correction']}")
+    if [round(float(v), 9) for v in np.asarray(kw3["rank_sums"])] != [13.0, 24.0, 41.0]:
+        raise AssertionError(f"三组秩和应为 [13, 24, 41]，实际 {kw3['rank_sums']}")
+    # 全部观测同值 -> 修正因子 C = 0，H 的分母为 0；本实现直接返回 H=0、p=1
+    kw_flat = kruskal_wallis([[2.0, 2.0, 2.0], [2.0, 2.0, 2.0, 2.0]])
+    if abs(float(kw_flat["tie_correction"])) > 1e-12:
+        raise AssertionError(f"全部同值时 C 应为 0，实际 {kw_flat['tie_correction']}")
+    if abs(float(kw_flat["h_statistic"])) > 1e-12 or abs(float(kw_flat["p_value"]) - 1.0) > 1e-12:
+        raise AssertionError("全部同值时应返回 H=0、p=1，而不是 NaN")
+    try:
+        kruskal_wallis([[1.0, 2.0, 3.0]])
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("只有一组时必须抛 ValueError")
+    out["kw_h_statistic"] = round(float(kwn["h_statistic"]), 9)
+    out["kw_df"] = round(float(kwn["df"]), 9)
+    out["kw_p_value"] = round(float(kwn["p_value"]), 9)
+    out["kw_tie_correction"] = round(float(kwn["tie_correction"]), 12)
+    out["kw_h_over_z2"] = round(float(kwn["h_statistic"]) / (float(mw_nc2["z"]) ** 2), 12)
+    out["kw_tie_h_statistic"] = round(float(kw3["h_statistic"]), 9)
+    out["kw_tie_p_value"] = round(float(kw3["p_value"]), 9)
+    out["kw_tie_correction"] = round(float(kw3["tie_correction"]), 9)
+    out["kw_tie_rank_sums"] = [round(float(v), 9) for v in np.asarray(kw3["rank_sums"])]
+    out["kw_flat_h_statistic"] = round(float(kw_flat["h_statistic"]), 12)
+    out["kw_flat_p_value"] = round(float(kw_flat["p_value"]), 12)
+
+    # 24) 单因素方差分析：三组手算 SS 分解 + 精确 p 值。df1=2、df2=6、F=7 时
+    #     p = (1 + 2*7/6)^{-3} = (10/3)^{-3} = 0.027 恰好可用解析式独立校验。
+    anv = anova_oneway([[1.0, 2.0, 3.0], [2.0, 3.0, 4.0], [4.0, 5.0, 6.0]])
+    if abs(float(anv["f_statistic"]) - 7.0) > 1e-12:
+        raise AssertionError(f"F 应为 7，实际 {anv['f_statistic']}")
+    if abs(float(anv["p_value"]) - (10.0 / 3.0) ** -3) > 1e-12:
+        raise AssertionError(f"p 应为 (10/3)^-3 = 0.027，实际 {anv['p_value']}")
+    if abs(float(anv["ss_between"]) - 14.0) > 1e-12 or abs(float(anv["ss_within"]) - 6.0) > 1e-12:
+        raise AssertionError(f"SS 组间/组内应为 14/6，实际 {anv['ss_between']}/{anv['ss_within']}")
+    if abs(float(anv["ss_total"]) - 20.0) > 1e-12:
+        raise AssertionError(f"SS 总应为 20，实际 {anv['ss_total']}")
+    if abs(float(anv["ss_total"]) - float(anv["ss_between"]) - float(anv["ss_within"])) > 1e-12:
+        raise AssertionError("必须满足 ss_total = ss_between + ss_within")
+    if int(anv["df_between"]) != 2 or int(anv["df_within"]) != 6:
+        raise AssertionError(f"自由度应为 2/6，实际 {anv['df_between']}/{anv['df_within']}")
+    if abs(float(anv["ms_between"]) - 7.0) > 1e-12 or abs(float(anv["ms_within"]) - 1.0) > 1e-12:
+        raise AssertionError("MS 组间/组内应为 7/1")
+    if abs(float(anv["grand_mean"]) - 10.0 / 3.0) > 1e-12:
+        raise AssertionError(f"总均值应为 10/3，实际 {anv['grand_mean']}")
+    if [round(float(v), 9) for v in np.asarray(anv["group_means"])] != [2.0, 3.0, 5.0]:
+        raise AssertionError(f"组均值应为 [2, 3, 5]，实际 {anv['group_means']}")
+    anv2 = anova_oneway([[1.0, 2.0, 3.0, 4.0], [2.0, 4.0, 6.0, 8.0]])
+    tt2 = t_test_two_sample([1.0, 2.0, 3.0, 4.0], [2.0, 4.0, 6.0, 8.0], equal_var=True)
+    if abs(float(anv2["f_statistic"]) - float(tt2["stat"]) ** 2) > 1e-9:
+        raise AssertionError(
+            f"两组时 F 应等于 t^2：{anv2['f_statistic']} vs {float(tt2['stat']) ** 2}"
+        )
+    if abs(float(anv2["p_value"]) - float(tt2["p_value"])) > 1e-9:
+        raise AssertionError("两组时 F 检验的 p 必须等于等方差双侧 t 检验的 p")
+    try:
+        anova_oneway([[1.0, 2.0, 3.0]])
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("只有一组时必须抛 ValueError")
+    try:
+        anova_oneway([[1.0], [2.0]])
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("组内自由度为 0 时必须抛 ValueError")
+    out["anova_f_statistic"] = round(float(anv["f_statistic"]), 12)
+    out["anova_p_value"] = round(float(anv["p_value"]), 12)
+    out["anova_ss_between"] = round(float(anv["ss_between"]), 12)
+    out["anova_ss_within"] = round(float(anv["ss_within"]), 12)
+    out["anova_ss_total"] = round(float(anv["ss_total"]), 12)
+    out["anova_ss_identity_dev"] = round(
+        abs(float(anv["ss_total"]) - float(anv["ss_between"]) - float(anv["ss_within"])), 12
+    )
+    out["anova_df_between"] = int(anv["df_between"])
+    out["anova_df_within"] = int(anv["df_within"])
+    out["anova_ms_between"] = round(float(anv["ms_between"]), 12)
+    out["anova_ms_within"] = round(float(anv["ms_within"]), 12)
+    out["anova_grand_mean"] = round(float(anv["grand_mean"]), 12)
+    out["anova_group_means"] = [round(float(v), 12) for v in np.asarray(anv["group_means"])]
+    out["anova_f_over_t2"] = round(
+        float(anv2["f_statistic"]) / (float(tt2["stat"]) ** 2), 12
+    )
+    out["anova_two_group_p"] = round(float(anv2["p_value"]), 12)
+
+    # 25) Newey-West HAC 标准误
+    #     (a) lags=0 + 等模残差（残差恰好同方差）时必须严格退回经典 OLS 标准误；
+    #     (b) AR(1) 正自相关残差下标准误随截断阶数单调增大，且 t 值被显著压低。
+    xnw = np.arange(1.0, 13.0)
+    rnw = np.array([-1.0, 1.0, -1.0, 1.0, -1.0, 1.0, -1.0, 1.0, 1.0, 1.0, -1.0, -1.0])
+    if abs(float(rnw.sum())) > 1e-12 or abs(float((xnw * rnw).sum())) > 1e-12:
+        raise AssertionError("等模残差构造必须与常数、x 都正交，否则回归不会精确还原真参数")
+    ynw = 1.0 + 2.0 * xnw + rnw
+    Xnw = xnw.reshape(-1, 1)
+    ols_nw = ols(Xnw, ynw)
+    nw0 = newey_west_se(ynw, Xnw, lags=0)
+    se_ols = np.asarray(ols_nw["se"], dtype=float)
+    se_nw0 = np.asarray(nw0["se"], dtype=float)
+    if float(np.max(np.abs(se_nw0 - se_ols) / se_ols)) > 1e-8:
+        raise AssertionError(
+            f"lags=0 且残差同方差时应退回 OLS 标准误，实际 {se_nw0} vs {se_ols}"
+        )
+    if [round(float(v), 9) for v in np.asarray(nw0["beta"])] != [1.0, 2.0]:
+        raise AssertionError(f"系数应精确还原 [1, 2]，实际 {nw0['beta']}")
+    if abs(float(nw0["r_squared"]) - float(ols_nw["r2"])) > 1e-9:
+        raise AssertionError("HAC 只改标准误，R^2 必须与 OLS 完全一致")
+    if abs(float(np.asarray(nw0["t_stat"])[1]) - float(np.asarray(nw0["beta"])[1])
+           / float(se_nw0[1])) > 1e-9:
+        raise AssertionError("t 统计量必须等于 beta / se")
+    rnw_g = rng(20240501)
+    n_g = 400
+    xg = rnw_g.normal(size=n_g)
+    eg = np.zeros(n_g)
+    epsg = rnw_g.normal(size=n_g)
+    for ti in range(1, n_g):
+        eg[ti] = 0.8 * eg[ti - 1] + epsg[ti]
+    yg = 1.0 + 0.5 * xg + eg
+    Xg = xg.reshape(-1, 1)
+    nw_g0 = newey_west_se(yg, Xg, lags=0)
+    nw_g5 = newey_west_se(yg, Xg, lags=5)
+    nw_g10 = newey_west_se(yg, Xg, lags=10)
+    nw_gauto = newey_west_se(yg, Xg)
+    se0 = float(np.asarray(nw_g0["se"])[1])
+    se5 = float(np.asarray(nw_g5["se"])[1])
+    se10 = float(np.asarray(nw_g10["se"])[1])
+    if not (se0 < se5 < se10):
+        raise AssertionError(f"AR(1) 残差下 HAC 标准误应随 L 单调增大，实际 {se0}/{se5}/{se10}")
+    if abs(se0 - 0.079604916155) > 1e-9 or abs(se5 - 0.084522882449) > 1e-9:
+        raise AssertionError(f"AR(1) 算例的 lag0/lag5 标准误偏离实测值：{se0}/{se5}")
+    if abs(se10 - 0.084890654111) > 1e-9:
+        raise AssertionError(f"AR(1) 算例的 lag10 标准误偏离实测值：{se10}")
+    if int(nw_gauto["lags"]) != 5:
+        raise AssertionError(f"n=400 的经验带宽应为 floor(4*(4)^(2/9)) = 5，实际 {nw_gauto['lags']}")
+    p_auto = float(np.asarray(nw_gauto["p_value"])[1])
+    if not (float(np.asarray(nw_g0["p_value"])[1]) < p_auto < float(np.asarray(nw_g10["p_value"])[1])):
+        raise AssertionError("自相关被 HAC 吸收后斜率 p 值应变大（t 值变小）")
+    if float(np.asarray(nw_g10["p_value"])[1]) > 1e-6:
+        raise AssertionError("该算例斜率在 lag=10 下仍应高度显著（p < 1e-6）")
+    for bad_call, label in (
+        (lambda: newey_west_se([1.0, 2.0], [[1.0], [2.0]]), "n <= k"),
+        (lambda: newey_west_se(ynw, Xnw, lags=-1), "负 lags"),
+        (lambda: newey_west_se(ynw, Xnw, lags=12), "lags 超过 n-1"),
+    ):
+        try:
+            bad_call()
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"Newey-West 的非法输入（{label}）必须抛 ValueError")
+    out["nw_se_lags0"] = [round(float(v), 12) for v in se_nw0]
+    out["nw_se_ols"] = [round(float(v), 12) for v in se_ols]
+    out["nw_lags0_max_rel_diff"] = round(
+        float(np.max(np.abs(se_nw0 - se_ols) / se_ols)), 20
+    )
+    out["nw_beta"] = [round(float(v), 9) for v in np.asarray(nw0["beta"])]
+    out["nw_r_squared"] = round(float(nw0["r_squared"]), 12)
+    out["nw_ols_r_squared"] = round(float(ols_nw["r2"]), 12)
+    out["nw_ar1_se_lag0"] = round(se0, 12)
+    out["nw_ar1_se_lag5"] = round(se5, 12)
+    out["nw_ar1_se_lag10"] = round(se10, 12)
+    out["nw_ar1_auto_lags"] = int(nw_gauto["lags"])
+    out["nw_ar1_se_auto"] = round(float(np.asarray(nw_gauto["se"])[1]), 12)
+    out["nw_ar1_p_lag0"] = round(float(np.asarray(nw_g0["p_value"])[1]), 12)
+    out["nw_ar1_p_lag10"] = round(float(np.asarray(nw_g10["p_value"])[1]), 12)
+    out["nw_ar1_ols_slope_se"] = round(float(np.asarray(ols(Xg, yg)["se"])[1]), 12)
+
+    # 26) BCa Bootstrap 区间
+    #     (a) 正态样本上端点应贴近精确 t 区间（相对宽度偏差 < 15%），且必然包含点估计；
+    #     (b) 偏斜统计量（方差）上偏差校正必须把区间整体往右推。
+    rbca = rng(20240501)
+    xb = rbca.normal(loc=5.0, scale=2.0, size=60)
+    bca = bca_bootstrap_ci(xb, np.mean, n_boot=2000, alpha=0.05, seed=20240501)
+    if int(bca["n_boot"]) != 2000:
+        raise AssertionError(f"n_boot 应回传 2000，实际 {bca['n_boot']}")
+    if abs(float(bca["theta_hat"]) - float(np.mean(xb))) > 1e-12:
+        raise AssertionError("theta_hat 必须是原样本上的统计量")
+    if abs(float(bca["theta_hat"]) - 5.034786856404088) > 1e-9:
+        raise AssertionError(f"theta_hat 实测值应为 5.034786856，实际 {bca['theta_hat']}")
+    if abs(float(bca["bias_correction"]) - 0.048898731212656255) > 1e-9:
+        raise AssertionError(f"z0 实测值应为 0.048898731，实际 {bca['bias_correction']}")
+    if abs(float(bca["acceleration"]) + 0.0016532948499605577) > 1e-9:
+        raise AssertionError(f"均值统计量的加速度实测应为 -0.001653295，实际 {bca['acceleration']}")
+    if abs(float(bca["acceleration"])) > 0.15:
+        raise AssertionError("均值统计量的 |jackknife 加速度| 必须很小（< 0.15）")
+    if abs(float(bca["ci_lower"]) - 4.6012321760118) > 1e-9:
+        raise AssertionError(f"BCa 下端点实测应为 4.601232176，实际 {bca['ci_lower']}")
+    if abs(float(bca["ci_upper"]) - 5.500376736823868) > 1e-9:
+        raise AssertionError(f"BCa 上端点实测应为 5.500376737，实际 {bca['ci_upper']}")
+    if not (float(bca["ci_lower"]) < float(bca["theta_hat"]) < float(bca["ci_upper"])):
+        raise AssertionError("BCa 区间必须包含点估计")
+    # 精确 t 区间：本模块没有 t 分位数函数，这里对自实现的 _t_sf_two_sided 做二分反解，
+    # 保持"整条链不依赖 scipy"的约束。
+    n_b = int(xb.size)
+    tc_lo, tc_hi = 0.0, 40.0
+    for _ in range(200):
+        tc_mid = 0.5 * (tc_lo + tc_hi)
+        if _t_sf_two_sided(tc_mid, float(n_b - 1)) > 0.05:
+            tc_lo = tc_mid
+        else:
+            tc_hi = tc_mid
+    tcrit = 0.5 * (tc_lo + tc_hi)
+    sd_b = float(np.std(xb, ddof=1))
+    half = tcrit * sd_b / math.sqrt(float(n_b))
+    t_lo = float(np.mean(xb)) - half
+    t_hi = float(np.mean(xb)) + half
+    width = t_hi - t_lo
+    d_lo = abs(float(bca["ci_lower"]) - t_lo) / width
+    d_hi = abs(float(bca["ci_upper"]) - t_hi) / width
+    if d_lo > 0.15 or d_hi > 0.15:
+        raise AssertionError(f"BCa 端点与精确 t 区间偏差过大：{d_lo:.4f}/{d_hi:.4f}（上限 0.15）")
+    if abs(tcrit - 2.000995378) > 1e-8:
+        raise AssertionError(f"df=59 的 95% t 分位数应约为 2.000995378，实际 {tcrit}")
+    bca_var = bca_bootstrap_ci(xb, np.var, n_boot=2000, alpha=0.05, seed=20240501)
+    pct_var = bootstrap_ci(xb, np.var, n_boot=2000, alpha=0.05, seed=20240501)
+    if abs(float(bca_var["acceleration"]) - 0.04720220387169089) > 1e-9:
+        raise AssertionError(f"方差统计量的加速度实测应为 0.047202204，实际 {bca_var['acceleration']}")
+    if abs(float(bca_var["bias_correction"]) - 0.13830420796140452) > 1e-9:
+        raise AssertionError(f"方差统计量的 z0 实测应为 0.138304208，实际 {bca_var['bias_correction']}")
+    if not (float(bca_var["ci_lower"]) < float(bca_var["theta_hat"]) < float(bca_var["ci_upper"])):
+        raise AssertionError("方差统计量的 BCa 区间必须包含点估计")
+    if not (float(bca_var["ci_lower"]) > float(pct_var["ci_low"])
+            and float(bca_var["ci_upper"]) > float(pct_var["ci_high"])):
+        raise AssertionError(
+            f"正偏差校正应把方差区间整体右移：BCa {bca_var['ci_lower']}/{bca_var['ci_upper']} "
+            f"vs 百分位法 {pct_var['ci_low']}/{pct_var['ci_high']}"
+        )
+    for bad_call, label in (
+        (lambda: bca_bootstrap_ci([1.0, 2.0], np.mean), "n < 3"),
+        (lambda: bca_bootstrap_ci(xb, np.mean, alpha=1.0), "alpha 越界"),
+        (lambda: bca_bootstrap_ci(xb, np.mean, n_boot=1), "n_boot < 2"),
+    ):
+        try:
+            bad_call()
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"BCa 的非法输入（{label}）必须抛 ValueError")
+    out["bca_ci_lower"] = round(float(bca["ci_lower"]), 9)
+    out["bca_ci_upper"] = round(float(bca["ci_upper"]), 9)
+    out["bca_theta_hat"] = round(float(bca["theta_hat"]), 9)
+    out["bca_bias_correction"] = round(float(bca["bias_correction"]), 9)
+    out["bca_acceleration"] = round(float(bca["acceleration"]), 9)
+    out["bca_n_boot"] = int(bca["n_boot"])
+    out["bca_t_lower"] = round(t_lo, 9)
+    out["bca_t_upper"] = round(t_hi, 9)
+    out["bca_t_crit"] = round(tcrit, 9)
+    out["bca_rel_dev_lower"] = round(d_lo, 6)
+    out["bca_rel_dev_upper"] = round(d_hi, 6)
+    out["bca_var_ci_lower"] = round(float(bca_var["ci_lower"]), 9)
+    out["bca_var_ci_upper"] = round(float(bca_var["ci_upper"]), 9)
+    out["bca_var_theta_hat"] = round(float(bca_var["theta_hat"]), 9)
+    out["bca_var_bias_correction"] = round(float(bca_var["bias_correction"]), 9)
+    out["bca_var_acceleration"] = round(float(bca_var["acceleration"]), 9)
+    out["bca_var_pct_ci_lower"] = round(float(pct_var["ci_low"]), 9)
+    out["bca_var_pct_ci_upper"] = round(float(pct_var["ci_high"]), 9)
+
     return out

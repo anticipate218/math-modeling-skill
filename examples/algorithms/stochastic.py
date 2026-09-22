@@ -42,6 +42,7 @@ __all__ = [
     "markov_absorption",
     "gamblers_ruin",
     "mmc_metrics",
+    "mmck_metrics",
     "mg1_metrics",
     "discrete_event_simulation",
     "mmc_simulate",
@@ -49,6 +50,7 @@ __all__ = [
     "gibbs_sampler_bivariate_normal",
     "gaussian_copula",
     "t_copula",
+    "geometric_brownian_motion",
     "Z95",
 ]
 
@@ -1604,6 +1606,213 @@ def t_copula(
     }
 
 
+def mmck_metrics(lam: float, mu: float, c: int, K: int) -> Dict[str, object]:
+    """M/M/c/K 有限容量排队系统（c 个并联服务台、系统最多容纳 K 个顾客）的稳态解析指标。
+
+    参数:
+        lam: 到达率 λ（每单位时间到达的顾客数），必须 >= 0。λ=0 时系统恒空，全部指标为 0。
+        mu: 单个服务台的服务率 μ（每单位时间服务完的顾客数），必须 > 0。
+        c: 服务台数，必须 >= 1（不足 K 台时空闲台不产生服务能力）。
+        K: 系统总容量（含正在被服务的 c 个），必须 >= c。K=c 时是**损失制**（无等待位置），
+           新到顾客直接被拒绝；K>c 时是"最多排 K-c 个人的等待制"。
+        注意：这里**不要求 λ < cμ**。有限容量的出生-死亡链状态空间只有 K+1 个状态，
+        即使 ρ=λ/(cμ) >= 1 稳态仍然存在（这正是加容量与不加容量的本质区别）。
+
+    返回:
+        dict，键为：
+        ``rho`` 利用率 λ/(cμ)（可以 >= 1，不会发散）；
+        ``p0`` 系统全空的稳态概率；
+        ``pn`` 长度 K+1 的 ndarray，p_n（n=0..K）的完整稳态分布；
+        ``lambda_eff`` 有效到达率 λ(1-p_K)——被拒的顾客没有真正进入系统；
+        ``blocking_probability`` 阻塞（拒绝）概率 p_K；
+        ``L`` 系统内平均顾客数 Σ n·p_n；
+        ``Lq`` 平均等待顾客数 Σ max(n-c,0)·p_n；
+        ``W`` 平均逗留时间（含服务），W = L/λ_eff；
+        ``Wq`` 平均排队等待时间，Wq = Lq/λ_eff；
+        ``c`` / ``K`` 原样回显的台数与容量。
+
+    算法:
+        出生-死亡过程求稳态。令 a = λ/μ，未归一化权重
+        w_n = a^n / n!（n <= c）、w_n = a^n / (c! c^(n-c))（c < n <= K），
+        p_n = w_n / Σ_{j=0..K} w_j。用递推 w_n = w_{n-1}·a/n（n<=c）、w_n = w_{n-1}·a/c（n>c）
+        避免阶乘溢出。再由 p_n 直接求和得 L、Lq、λ_eff = λ(1-p_K)，最后套 Little 公式 L=λ_eff·W、
+        Lq=λ_eff·Wq（**注意用 λ_eff 而不是 λ**，这是有限容量最容易写错的地方）。
+
+    复杂度:
+        时间 O(K) / 空间 O(K)。K 很大时（如 K>1e5）递推仍然稳定，因为每步只乘一个常数。
+
+    陷阱:
+        1. **Little 公式必须用 λ_eff**：用 λ 会让 W、Wq 偏小约 (1-p_K) 倍。λ_eff = λ(1-p_K) 才是
+           真正进入系统并被服务的顾客流强度。
+        2. ρ >= 1 时**不能**套用 M/M/c 的 Erlang-C 公式（那里 p_0 的分母是无限和、会发散）；
+           有限容量必须走本函数的截断和。ρ >= 1 且 K 有限时 L 会随 K 近似线性增长。
+        3. λ=0、μ>0 时 λ_eff=0，W=L/λ_eff 是 0/0；本函数按极限返回 W=Wq=0，不会抛 ZeroDivisionError。
+        4. p_K 是"到达即被拒"的概率。若题目考察的是"顾客愿意排队但被拒绝"，直接报 p_K 即可；
+           若考虑的是**复呼**（被拒后过一会儿再来），实际通过的到达率会高于 λ(1-p_K)，
+           需要另建模型，不要用本函数的结果。
+        5. 状态空间只有 K+1 个，p_n 是**真分布**（Σp_n=1）；M/M/c 的 p_n 是无限和截断，
+           两者只在 K→∞ 时一致。
+
+    参考:
+        Erlang 1917（损失制）；Kendall 1953 记号；Gross & Harris, "Fundamentals of Queueing Theory"，
+        有限容量 M/M/c/K 一节；Little 1961。
+    """
+    if mu <= 0:
+        raise ValueError(f"mu 必须 > 0，得到 {mu}")
+    if lam < 0:
+        raise ValueError(f"lam 必须 >= 0，得到 {lam}")
+    if int(c) != c or int(c) < 1:
+        raise ValueError(f"服务台数 c 必须是 >= 1 的整数，得到 {c}")
+    if int(K) != K or int(K) < int(c):
+        raise ValueError(f"容量 K 必须是 >= c(={int(c)}) 的整数，得到 {K}")
+    n_servers = int(c)
+    capacity = int(K)
+
+    a = lam / mu
+    weights = np.empty(capacity + 1, dtype=float)
+    weights[0] = 1.0
+    for n in range(1, capacity + 1):
+        weights[n] = weights[n - 1] * a / n if n <= n_servers else weights[n - 1] * a / n_servers
+    total = float(np.sum(weights))
+    if not math.isfinite(total) or total <= 0.0:
+        raise ValueError(f"稳态权重之和非法（{total}），请检查 lam/mu/c/K 的量级")
+    pn = weights / total
+    p0 = float(pn[0])
+
+    idx = np.arange(capacity + 1, dtype=float)
+    l_sys = float(np.sum(idx * pn))
+    lq = float(np.sum(np.maximum(idx - n_servers, 0.0) * pn))
+    blocking = float(pn[capacity])
+    lambda_eff = float(lam * (1.0 - blocking))
+
+    if lambda_eff > 0.0:
+        w_sys = l_sys / lambda_eff
+        wq = lq / lambda_eff
+    else:  # λ=0（或 λ>0 但容量 0 的退化情形）按极限取 0
+        w_sys = 0.0
+        wq = 0.0
+
+    return {
+        "rho": float(a / n_servers),
+        "p0": p0,
+        "pn": pn,
+        "lambda_eff": lambda_eff,
+        "blocking_probability": blocking,
+        "L": l_sys,
+        "Lq": lq,
+        "W": w_sys,
+        "Wq": wq,
+        "c": n_servers,
+        "K": capacity,
+    }
+
+
+def geometric_brownian_motion(
+    s0: float,
+    mu: float,
+    sigma: float,
+    t: float,
+    n_steps: int,
+    n_paths: int = 1,
+    seed: Optional[int] = None,
+) -> Dict[str, object]:
+    """几何布朗运动（GBM）的**精确解**路径模拟：dS = μS dt + σS dW。
+
+    参数:
+        s0: 初始价格/存量，必须 > 0（GBM 永远取正值；s0=0 会被吸收在 0，不是本模型）。
+        mu: 年化（或与 t 同单位）漂移率，可为负。
+        sigma: 波动率，必须 >= 0；sigma=0 退化为确定性指数增长 dS=μS dt。
+        t: 模拟总时长（必须 > 0）。
+        n_steps: 时间步数（必须 >= 1），步长 dt = t/n_steps。
+        n_paths: 路径条数（必须 >= 1）。只要统计量就取 1；要估矩/风险取 >= 1e4。
+        seed: 随机种子；None 表示使用 ``DEFAULT_SEED``。
+
+    返回:
+        dict，键为：
+        ``paths`` 形状 (n_paths, n_steps+1) 的价格矩阵，第 0 列恒为 s0；
+        ``times`` 长度 n_steps+1 的时间网格（0..t）；
+        ``log_returns`` 形状 (n_paths, n_steps) 的**逐步对数收益** ΔlnS（= drift·dt + σ√dt·Z）；
+        ``terminal_mean`` / ``terminal_std`` 终值 S_T 的样本均值与样本标准差（ddof=1）；
+        ``theoretical_terminal_mean`` = s0·exp(μt)（对数正态一阶矩，**不是** s0·exp((μ-σ²/2)t)）；
+        ``theoretical_terminal_var`` = s0²·e^{2μt}·(e^{σ²t}-1)；
+        ``theoretical_terminal_std`` 上式开方；
+        ``dt`` 步长；``drift_per_step`` = (μ-σ²/2)dt；``diffusion_per_step`` = σ√dt；
+        ``n_paths`` / ``n_steps`` 原样回显。
+
+    算法:
+        对 dS=μS dt+σS dW 用 Itô 公式得 lnS 服从带漂移的布朗运动，其**精确解**
+        S_{t+Δ} = S_t·exp((μ-σ²/2)Δ + σ√Δ·Z)，Z~N(0,1)。因此直接抽样对数增量再累加，
+        得到的是连续过程在网格点上的**精确分布**（不是离散化近似，无步长偏差）。
+        这也是它比 Euler-Maruyama 更适合 GBM 的原因：Euler 有 O(√Δt) 的弱误差，
+        而本函数只有蒙特卡洛误差。
+
+    复杂度:
+        时间 O(n_paths·n_steps) / 空间 O(n_paths·(n_steps+1))。
+
+    陷阱:
+        1. **均值别写错**：E[S_T]=s0·e^{μT}，而**中位数**才是 s0·e^{(μ-σ²/2)T}。波动越大两者
+           差得越远（σ=0.3、T=1 时相差约 4.6%）。论文里报"预期终值"必须报均值，
+           报中位数要写明，否则会被判为把对数漂移当成了算术漂移。
+        2. 方差随 σ²T 指数放大：σ=0.3、T=1 时终值标准差约为均值的 31%，用 1e4 条路径时
+           均值的相对标准误 ≈ 0.31/100 = 0.3%，够用；但**分位数**（如 VaR）需要更多路径，
+           且尾部收敛慢。
+        3. μ、σ、t 必须同单位（都用"年"或都用"月"）。σ 按年给而 t 用月是最常见的量纲错误，
+           会让 σ√t 差 √12≈3.46 倍。
+        4. 结果依赖 seed；论文中同时给出 seed、n_paths、n_steps。
+        5. 对数收益的样本均值是 (μ-σ²/2)dt 的无偏估计，可以据此反推 μ 做参数校验，
+           但**不能**直接对价格序列做算术平均来估 μ。
+
+    参考:
+        Itô 1951；Black & Scholes 1973；Hull, "Options, Futures, and Other Derivatives"，
+        几何布朗运动与蒙特卡洛定价一节。
+    """
+    if s0 <= 0:
+        raise ValueError(f"s0 必须 > 0（GBM 取正值），得到 {s0}")
+    if sigma < 0:
+        raise ValueError(f"sigma 必须 >= 0，得到 {sigma}")
+    if t <= 0:
+        raise ValueError(f"t 必须 > 0，得到 {t}")
+    if int(n_steps) != n_steps or int(n_steps) < 1:
+        raise ValueError(f"n_steps 必须是 >= 1 的整数，得到 {n_steps}")
+    if int(n_paths) != n_paths or int(n_paths) < 1:
+        raise ValueError(f"n_paths 必须是 >= 1 的整数，得到 {n_paths}")
+    steps = int(n_steps)
+    paths_n = int(n_paths)
+
+    dt = t / steps
+    drift = (mu - 0.5 * sigma * sigma) * dt
+    diffusion = sigma * math.sqrt(dt)
+
+    gen = rng(seed)
+    z = gen.standard_normal((paths_n, steps))
+    log_inc = drift + diffusion * z
+    log_paths = np.concatenate([np.zeros((paths_n, 1), dtype=float), np.cumsum(log_inc, axis=1)], axis=1)
+    paths = s0 * np.exp(log_paths)
+    times = np.linspace(0.0, t, steps + 1)
+
+    terminal = paths[:, -1]
+    terminal_mean = float(np.mean(terminal))
+    terminal_std = float(np.std(terminal, ddof=1)) if paths_n > 1 else 0.0
+    theory_mean = float(s0 * math.exp(mu * t))
+    theory_var = float(s0 * s0 * math.exp(2.0 * mu * t) * (math.exp(sigma * sigma * t) - 1.0))
+
+    return {
+        "paths": paths,
+        "times": times,
+        "log_returns": np.diff(log_paths, axis=1) if steps > 0 else np.zeros((paths_n, 0)),
+        "terminal_mean": terminal_mean,
+        "terminal_std": terminal_std,
+        "theoretical_terminal_mean": theory_mean,
+        "theoretical_terminal_var": theory_var,
+        "theoretical_terminal_std": float(math.sqrt(theory_var)),
+        "dt": float(dt),
+        "drift_per_step": float(drift),
+        "diffusion_per_step": float(diffusion),
+        "n_paths": paths_n,
+        "n_steps": steps,
+    }
+
+
 def _self_test() -> dict:
     """跑一组小规模确定性算例，返回关键数值供 examples/run_algorithms.py 断言。
 
@@ -1618,7 +1827,11 @@ def _self_test() -> dict:
         ``mm1_sim_wait`` / ``mm1_sim_queue_len`` 同参数下 20000 个顾客的仿真值；
         ``markov_pi0`` 两状态链的平稳概率、``markov_residual`` 实测 max|πP-π|；
         ``absorb_prob`` 赌徒破产型吸收链的吸收概率、``absorb_steps`` 期望步数；
-        ``ruin_sim`` / ``ruin_theory`` 赌徒破产的模拟值与解析值。
+        ``ruin_sim`` / ``ruin_theory`` 赌徒破产的模拟值与解析值；
+        ``mmck_*`` M/M/1/2 手算闭式解、K→∞ 收敛到 M/M/1 的偏差、Erlang-B 阻塞率对拍、
+        Little 定律与分布归一化残差、ρ>1 时阻塞率单调性；
+        ``gbm_*`` GBM 终值均值/标准差及与解析解的相对误差、对数收益矩误差、中位数误差、
+        σ=0 退化值与同种子复现最大偏差。
 
     算法:
         固定种子 2024（π 用 n=200000）、排队仿真 20000 个顾客、破产问题 p=0.49、
@@ -1764,6 +1977,102 @@ def _self_test() -> dict:
     if not 0.0 <= tcop_tail_large_df < 0.01:
         raise AssertionError(f"df=1000 的 t copula 尾相依应趋于 0，实际 {tcop_tail_large_df}")
 
+    # 断言 9：M/M/1/2（λ=1, μ=2, K=2）的**手算闭式解**。ρ=0.5，
+    # p0=1/(1+0.5+0.25)=4/7，p1=2/7，p2=1/7；λ_eff=1·(1-p2)=6/7；
+    # L=0·4/7+1·2/7+2·1/7=4/7，Lq=(2-1)·1/7=1/7，W=L/λ_eff=2/3，Wq=1/6。
+    mm1k = mmck_metrics(1.0, 2.0, 1, 2)
+    hand = {
+        "p0": 4.0 / 7.0,
+        "L": 4.0 / 7.0,
+        "Lq": 1.0 / 7.0,
+        "W": 2.0 / 3.0,
+        "Wq": 1.0 / 6.0,
+        "blocking_probability": 1.0 / 7.0,
+        "lambda_eff": 6.0 / 7.0,
+    }
+    mmck_hand_max_diff = max(abs(float(mm1k[k]) - v) for k, v in hand.items())
+    if mmck_hand_max_diff > 1e-12:
+        raise AssertionError(f"M/M/1/2 与手算闭式解的最大偏差 {mmck_hand_max_diff} 超过 1e-12")
+
+    # 断言 10：K→∞ 时 M/M/c/K（c=1）必须收敛到 M/M/1 的解析解（ρ=0.8 < 1）
+    mm1k_big = mmck_metrics(4.0, 5.0, 1, 200)
+    mmck_limit_max_diff = max(
+        abs(float(mm1k_big[key]) - float(m[key])) for key in ("L", "Lq", "W", "Wq")
+    )
+    if mmck_limit_max_diff > 1e-9:
+        raise AssertionError(f"K=200 的 M/M/1/K 与 M/M/1 的偏差 {mmck_limit_max_diff} 超过 1e-9")
+
+    # 断言 11：K=c 的纯损失制必须等于 Erlang-B 递推（独立路线：B1=1.5/2.5=0.6，B2=0.9/2.9）
+    erlang_b_loss = 1.0
+    for n_load in range(1, 3):
+        erlang_b_loss = 1.5 * erlang_b_loss / (n_load + 1.5 * erlang_b_loss)
+    mmck_loss = mmck_metrics(3.0, 2.0, 2, 2)
+    if abs(float(mmck_loss["blocking_probability"]) - erlang_b_loss) > 1e-12:
+        raise AssertionError(
+            f"M/M/2/2 阻塞率 {mmck_loss['blocking_probability']} 应等于 Erlang-B {erlang_b_loss}"
+        )
+
+    # 断言 12：Little 定律 L=λ_eff·W、Lq=λ_eff·Wq 与分布归一化，跨 4 组参数（含 ρ>1、λ=0）
+    little_resid = 0.0
+    pn_resid = 0.0
+    for (lam_i, mu_i, c_i, k_i) in ((4.0, 5.0, 2, 6), (6.0, 2.0, 2, 8), (10.0, 3.0, 3, 3), (0.0, 2.0, 1, 4)):
+        res_i = mmck_metrics(lam_i, mu_i, c_i, k_i)
+        pn_resid = max(pn_resid, abs(float(np.sum(np.asarray(res_i["pn"]))) - 1.0))
+        little_resid = max(little_resid, abs(float(res_i["L"]) - float(res_i["lambda_eff"]) * float(res_i["W"])))
+        little_resid = max(little_resid, abs(float(res_i["Lq"]) - float(res_i["lambda_eff"]) * float(res_i["Wq"])))
+    if pn_resid > 1e-12:
+        raise AssertionError(f"M/M/c/K 稳态分布之和偏离 1：{pn_resid}")
+    if little_resid > 1e-12:
+        raise AssertionError(f"Little 定律残差 {little_resid} 超过 1e-12")
+    # ρ=1.5 > 1 时容量越大阻塞率越低（单调性）
+    if not float(mmck_metrics(6.0, 2.0, 2, 8)["blocking_probability"]) > float(
+        mmck_metrics(6.0, 2.0, 2, 9)["blocking_probability"]
+    ):
+        raise AssertionError("ρ>1 时阻塞率应随容量 K 增大而下降")
+
+    # 断言 13：GBM 的终值矩与对数收益矩对上解析解（20000 条路径 × 252 步）
+    gbm = geometric_brownian_motion(100.0, 0.08, 0.2, 1.0, 252, n_paths=20000, seed=2024)
+    gbm_paths = np.asarray(gbm["paths"])
+    gbm_mean_rel_err = abs(float(gbm["terminal_mean"]) - float(gbm["theoretical_terminal_mean"])) / float(
+        gbm["theoretical_terminal_mean"]
+    )
+    if float(gbm["theoretical_terminal_std"]) <= 0:
+        raise AssertionError("GBM 理论标准差应 > 0")
+    gbm_std_rel_err = abs(float(gbm["terminal_std"]) - float(gbm["theoretical_terminal_std"])) / float(
+        gbm["theoretical_terminal_std"]
+    )
+    if gbm_mean_rel_err > 0.05:
+        raise AssertionError(f"GBM 终值均值相对误差 {gbm_mean_rel_err:.3%} 超过 5%")
+    if gbm_std_rel_err > 0.08:
+        raise AssertionError(f"GBM 终值标准差相对误差 {gbm_std_rel_err:.3%} 超过 8%")
+    if float(np.max(np.abs(gbm_paths[:, 0] - 100.0))) != 0.0:
+        raise AssertionError("GBM 路径第 0 列必须精确等于 s0")
+    log_ret = np.asarray(gbm["log_returns"])
+    gbm_logret_mean_err = abs(float(np.mean(log_ret)) - float(gbm["drift_per_step"])) / abs(
+        float(gbm["drift_per_step"])
+    )
+    gbm_logret_std_err = abs(float(np.std(log_ret)) - float(gbm["diffusion_per_step"])) / float(
+        gbm["diffusion_per_step"]
+    )
+    if gbm_logret_mean_err > 0.10:
+        raise AssertionError(f"GBM 对数收益均值偏离 (μ-σ²/2)dt 达 {gbm_logret_mean_err:.3%}")
+    if gbm_logret_std_err > 0.02:
+        raise AssertionError(f"GBM 对数收益标准差偏离 σ√dt 达 {gbm_logret_std_err:.3%}")
+    # 终值中位数应贴近 s0·exp((μ-σ²/2)t)，与均值 s0·exp(μt) 明确区分
+    gbm_median_theory = 100.0 * math.exp((0.08 - 0.5 * 0.2 * 0.2) * 1.0)
+    gbm_median_rel_err = abs(float(np.median(gbm_paths[:, -1])) - gbm_median_theory) / gbm_median_theory
+    if gbm_median_rel_err > 0.02:
+        raise AssertionError(f"GBM 终值中位数相对误差 {gbm_median_rel_err:.3%} 超过 2%")
+    # σ=0 时必须退化为确定性指数增长；同种子必须逐元素可复现
+    gbm_det = geometric_brownian_motion(100.0, 0.08, 0.0, 1.0, 252, n_paths=5, seed=2024)
+    gbm_det_terminal = float(np.max(np.asarray(gbm_det["paths"])[:, -1]))
+    if abs(gbm_det_terminal - 100.0 * math.exp(0.08)) > 1e-9:
+        raise AssertionError(f"σ=0 时终值应为 {100.0 * math.exp(0.08)}，实际 {gbm_det_terminal}")
+    gbm_again = geometric_brownian_motion(100.0, 0.08, 0.2, 1.0, 252, n_paths=20000, seed=2024)
+    gbm_repro_max_diff = float(np.max(np.abs(np.asarray(gbm_again["paths"]) - gbm_paths)))
+    if gbm_repro_max_diff != 0.0:
+        raise AssertionError(f"同种子 GBM 路径不可复现，最大偏差 {gbm_repro_max_diff}")
+
     return {
         "mc_pi_est": round(float(pi_est["estimate"]), 6),
         "mc_pi_stderr": round(float(pi_est["stderr"]), 6),
@@ -1814,4 +2123,31 @@ def _self_test() -> dict:
         "tcop_rho": round(tcop_rho, 6),
         "tcop_tail": round(tcop_tail, 8),
         "tcop_tail_closed": round(tcop_tail_closed, 8),
+        "mmck_p0_hand": round(float(mm1k["p0"]), 12),
+        "mmck_L_hand": round(float(mm1k["L"]), 12),
+        "mmck_Lq_hand": round(float(mm1k["Lq"]), 12),
+        "mmck_W_hand": round(float(mm1k["W"]), 12),
+        "mmck_Wq_hand": round(float(mm1k["Wq"]), 12),
+        "mmck_blocking_hand": round(float(mm1k["blocking_probability"]), 12),
+        "mmck_lambda_eff_hand": round(float(mm1k["lambda_eff"]), 12),
+        "mmck_hand_max_diff": mmck_hand_max_diff,
+        "mmck_limit_max_diff": mmck_limit_max_diff,
+        "mmck_loss_blocking": round(float(mmck_loss["blocking_probability"]), 12),
+        "mmck_erlang_b": round(float(erlang_b_loss), 12),
+        "mmck_pn_resid": pn_resid,
+        "mmck_little_resid": little_resid,
+        "mmck_rho_gt1_L": round(float(mmck_metrics(6.0, 2.0, 2, 8)["L"]), 9),
+        "mmck_rho_gt1_blocking8": round(float(mmck_metrics(6.0, 2.0, 2, 8)["blocking_probability"]), 9),
+        "mmck_rho_gt1_blocking9": round(float(mmck_metrics(6.0, 2.0, 2, 9)["blocking_probability"]), 9),
+        "gbm_terminal_mean": round(float(gbm["terminal_mean"]), 6),
+        "gbm_terminal_std": round(float(gbm["terminal_std"]), 6),
+        "gbm_theory_mean": round(float(gbm["theoretical_terminal_mean"]), 6),
+        "gbm_theory_std": round(float(gbm["theoretical_terminal_std"]), 6),
+        "gbm_mean_rel_err": round(gbm_mean_rel_err, 8),
+        "gbm_std_rel_err": round(gbm_std_rel_err, 8),
+        "gbm_logret_mean_err": round(gbm_logret_mean_err, 8),
+        "gbm_logret_std_err": round(gbm_logret_std_err, 8),
+        "gbm_median_rel_err": round(gbm_median_rel_err, 8),
+        "gbm_det_terminal": round(gbm_det_terminal, 9),
+        "gbm_repro_max_diff": gbm_repro_max_diff,
     }

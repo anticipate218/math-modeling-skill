@@ -7,7 +7,7 @@ description: >-
 license: MIT
 metadata:
   author: anticipate218
-  version: "1.10.0"
+  version: "1.11.0"
   language: zh-CN
 compatibility: 可选依赖 Python 3.9+；scripts/check_paper.py、scripts/check_latex.py、scripts/check_latex_full.py、scripts/download_templates.py 与 scripts/install_skill.py 仅用标准库（check_paper 读 PDF 需 pip install pypdf，check_latex 与 check_latex_full 需本机 TeX 发行版提供 xelatex/pdflatex）；scripts/make_figures.py 需 matplotlib，scripts/check_palette.py 与 examples/algorithms/ 需 numpy
 ---

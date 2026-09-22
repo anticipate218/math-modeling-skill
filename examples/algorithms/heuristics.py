@@ -1,9 +1,15 @@
 """启发式优化：模拟退火、遗传算法、粒子群、蚁群 TSP、差分进化、禁忌搜索、
-灰狼优化与变邻域搜索。
+灰狼优化、变邻域搜索，以及标准测试函数与算法对比台、人工蜂群。
 
-本模块共 8 个公开函数：``simulated_annealing``、``genetic_algorithm``、``particle_swarm``、
-``ant_colony_tsp``、``differential_evolution``、``tabu_search``、``grey_wolf_optimizer``、
-``variable_neighborhood_search``。
+本模块共 11 个公开函数，分三组：
+
+1. 元启发式求解器（8 个）：``simulated_annealing``、``genetic_algorithm``、
+   ``particle_swarm``、``ant_colony_tsp``、``differential_evolution``、
+   ``tabu_search``、``grey_wolf_optimizer``、``variable_neighborhood_search``。
+2. 基准与对比（2 个）：``benchmark_functions``（标准测试函数 + 已知全局最优）、
+   ``benchmark_optimizers``（固定 seed 集合下统一跑多个求解器，输出
+   best/mean/std/median/成功次数与排名，直接用于论文的"算法对比与鲁棒性"表）。
+3. 额外的群体智能求解器（1 个）：``artificial_bee_colony``（ABC 三阶段）。
 
 用途定位：当目标函数不可导、非凸、离散或组合爆炸（NP-hard）时，解析方法和梯度法失效，
 这类"随机搜索 + 局部改进"的元启发式是竞赛里最常见的兜底手段。
@@ -38,6 +44,9 @@ __all__ = [
     "tabu_search",
     "grey_wolf_optimizer",
     "variable_neighborhood_search",
+    "benchmark_functions",
+    "benchmark_optimizers",
+    "artificial_bee_colony",
 ]
 
 
@@ -93,6 +102,9 @@ def simulated_annealing(
            ``raise ValueError``；迭代中候选解的目标值非有限则被当作差解丢弃（该步照常降温、
            ``history`` 记旧值）。所以 NaN 不会污染返回值，但会被**静默忽略**——若 cost 大面积
            返回 NaN，搜索就会退化成在初始解附近空转而不报错，请自己先验证 cost 的有限性。
+        6. 温度下溢：``alpha`` 小且 ``iters`` 大时 ``T`` 会下溢成精确的 ``0.0``（如
+           ``alpha=0.5`` 约 1075 步之后）。本实现把 ``T == 0`` 定义为"零温极限：只接受非劣解"，
+           因此不会抛 ``ZeroDivisionError``；但这之后算法已完全退化为爬山，等价于提前停止。
 
     参考:
         Kirkpatrick, Gelatt & Vecchi 1983；Černý 1985（Metropolis 准则源自 1953 年 Metropolis 等）。
@@ -132,7 +144,10 @@ def simulated_annealing(
             history.append(best_cost)
             continue
         delta = cand_cost - cur_cost
-        if delta <= 0.0 or gen.random() < np.exp(-delta / T):
+        # T 在下溢后会是精确的 0.0：此时 exp(-delta / 0.0) 会抛 ZeroDivisionError，
+        # 因此把 T == 0 显式解释为"零温极限：只接受非劣解"。注意这里的短路顺序保证了
+        # T == 0 时**不消耗**随机数，从而不改变任何既有种子的随机序列。
+        if delta <= 0.0 or (T > 0.0 and gen.random() < np.exp(-delta / T)):
             cur, cur_cost = cand, cand_cost
             if cur_cost < best_cost:
                 best, best_cost = cur.copy(), cur_cost
@@ -406,7 +421,13 @@ def particle_swarm(
 
 
 def _parse_bounds(bounds) -> Tuple[np.ndarray, np.ndarray]:
-    """把 bounds 规范成 (lo, hi) 两个一维数组。"""
+    """把 bounds 规范成 (lo, hi) 两个一维数组，并统一校验有限性与 ``hi > lo``。
+
+    陷阱:
+        校验必须放在两种写法**汇合之后**。早期版本在 ``(lo, hi)`` 简写分支里直接
+        ``return``，于是 ``bounds=(5, 3)``（退化盒）与 ``bounds=(nan, 5)``（非有限）
+        都能绕过校验，PSO/DE/GWO 会静默返回 NaN 结果或空转，而不是按文档抛 ValueError。
+    """
     if bounds is None:
         raise ValueError("bounds 不能为 None（PSO 必须有搜索盒）")
     arr = np.asarray(bounds, dtype=float)
@@ -415,8 +436,7 @@ def _parse_bounds(bounds) -> Tuple[np.ndarray, np.ndarray]:
             raise ValueError("bounds 为 (lo, hi) 时长度必须为 2")
         lo = np.array([arr[0]], dtype=float)
         hi = np.array([arr[1]], dtype=float)
-        return lo, hi
-    if arr.ndim == 2 and arr.shape[1] == 2:
+    elif arr.ndim == 2 and arr.shape[1] == 2:
         lo = arr[:, 0].copy()
         hi = arr[:, 1].copy()
     else:
@@ -503,7 +523,9 @@ def ant_colony_tsp(
 
     gen = make_rng(seed)
     if n == 1:
-        return {"tour": [0], "length": 0.0, "history": [0.0]}
+        # 单城市退化算例：没有边可走，长度恒为 0。history 仍按文档承诺返回 iters + 1 项，
+        # 否则调用方按固定索引取收敛曲线尾值时会越界。
+        return {"tour": [0], "length": 0.0, "history": [0.0] * (iters + 1)}
 
     # 启发式权重 eta[i, j] = 1 / d(i, j)，零距离用大数代替 inf
     with np.errstate(divide="ignore"):
@@ -734,7 +756,11 @@ def tabu_search(
     算法:
         1. 令 cur = init，清空禁忌表；
         2. 每步枚举 ``neighbors_fn(cur)``，跳过非有限候选；候选若在禁忌表中且**不优于**
-           历史最优则丢弃（藐视准则 aspiration：优于历史最优的禁忌解仍可取用）；
+           历史最优则丢弃（藐视准则 aspiration：优于历史最优的禁忌解仍可取用）。
+           注意这条藐视准则在**非退化输入下不可达**：写进禁忌表的那个解在写入时刻必然
+           ``f >= best_fun``，而 ``best_fun`` 单调不增，所以"禁忌且未优于历史最优"恒成立。
+           它只在浮点键碰撞的退化场景下才真正生效（见陷阱 4：邻域步长小于 1e-12 时两个
+           不同解会共用同一个键），保留该分支是为了让那种场景下的搜索还能继续；
         3. 在剩下的候选中取目标值最小者（并列时用 ``seed`` 决定的生成器随机选一个），
            **无条件**移动过去（即使它比当前解差——这正是禁忌搜索跳出局部最优的机制）；
         4. 把新解写入禁忌表（解禁代数 = 当前步 + tabu_tenure），清理过期条目，更新历史最优。
@@ -1051,6 +1077,582 @@ def variable_neighborhood_search(
 
 
 # --------------------------------------------------------------------------- #
+# 标准测试函数与算法对比台
+# --------------------------------------------------------------------------- #
+#: ``benchmark_functions`` 支持的标准测试函数名（全部是**最小化**问题）。
+_BENCHMARK_NAMES: Tuple[str, ...] = (
+    "sphere",
+    "rastrigin",
+    "ackley",
+    "rosenbrock",
+    "griewank",
+    "schwefel",
+    "styblinski_tang",
+)
+
+#: name -> (lo, hi, 允许的最小维数, 文献已知全局最优值；None 表示按维数换算)
+_BENCHMARK_META: Dict[str, Tuple[float, float, int, Optional[float]]] = {
+    "sphere": (-5.12, 5.12, 1, 0.0),
+    "rastrigin": (-5.12, 5.12, 1, 0.0),
+    "ackley": (-32.768, 32.768, 1, 0.0),
+    "rosenbrock": (-2.048, 2.048, 2, 0.0),
+    "griewank": (-600.0, 600.0, 1, 0.0),
+    "schwefel": (-500.0, 500.0, 1, 0.0),
+    # 每维最优 -39.16616570377142（即 -2.9035340181859605 处的 0.5*(x^4-16x^2+5x)），
+    # 文献里常写作四舍五入后的 -39.16599，本模块用前者以便 func(optimal_x) 与它精确闭合。
+    "styblinski_tang": (-5.0, 5.0, 1, None),
+}
+
+#: name -> 全局最优解的**各分量公共取值**（所有函数的最优解都是等分量点）。
+_BENCHMARK_OPTIMAL_X: Dict[str, float] = {
+    "sphere": 0.0,
+    "rastrigin": 0.0,
+    "ackley": 0.0,
+    "rosenbrock": 1.0,
+    "griewank": 0.0,
+    "schwefel": 420.968746,
+    # g'(x) = 0.5 * (4x^3 - 32x + 5) = 0 的负根，用牛顿法解到双精度极限
+    "styblinski_tang": -2.9035340181859605,
+}
+
+
+def benchmark_functions(name: str = "sphere", dim: int = 2) -> dict:
+    """返回标准测试函数及其**独立可核对的**已知全局最优，供算法验证/对比使用。
+
+    参数:
+        name: 测试函数名，取值见 ``_BENCHMARK_NAMES``：``sphere``、``rastrigin``、
+            ``ackley``、``rosenbrock``、``griewank``、``schwefel``、``styblinski_tang``。
+            大小写与首尾空白不敏感。
+        dim: 维数，>= 1；``rosenbrock`` 至少 2 维。
+
+    返回:
+        ``{"name": str, "dim": int, "bounds": list, "func": callable,
+        "optimal_x": list, "optimal_value": float}``。
+        ``bounds`` 是逐维区间 ``[(lo, hi), ...]``，**可直接喂给** :func:`particle_swarm`、
+        :func:`differential_evolution`、:func:`grey_wolf_optimizer`；
+        ``func(x) -> float`` 是**纯函数**（无随机、无状态，同一输入永远同一输出），
+        输入一维 array_like、输出 Python float，约定为**最小化**；
+        ``optimal_x`` / ``optimal_value`` 取自文献的解析最优，不是本模块算出来的。
+        注意 ``func`` 是 callable，**不能直接 json 序列化**。
+
+    算法:
+        1. 名字先规范化再查表，未知名字直接报错并列出全部可用名字（不做模糊匹配，
+            避免"以为在测 Rastrigin 其实测的是 Sphere"这类静默错误）；
+        2. 所有函数都在**标准文献搜索盒**内定义（如 sphere 是 [-5.12, 5.12]，
+            ackley 是 [-32.768, 32.768]），``bounds`` 直接返回该盒；
+        3. ``func`` 逐个实现文献定义的闭式表达式，内部用 :func:`as_vector` 校验输入
+            （空输入、含非有限值、非数值输入都会抛 ValueError）；
+        4. 最优值：``styblinski_tang`` 是每维 ``-39.16616570377142``（精确解析值，见陷阱 1）
+            故按 ``-39.16616570377142 * dim`` 换算，
+            其余函数的最优点值都与维数无关。
+
+    复杂度:
+        时间 O(dim) / 空间 O(dim)（每次调用 ``func``）。
+
+    陷阱:
+        1. **本函数不会去"算"最优值**，``optimal_value`` 是文献常数。用它做"是否收敛到全局最优"
+            的判据时，必须自己设容差：``schwefel`` 的最优值在双精度下只能取到 1e-13 量级，
+            在 1e-15 级别上**不成立**，建议用
+            ``abs(f - optimal) <= 1e-4 * max(1, abs(optimal))`` 之类的相对容差。
+            （``styblinski_tang`` 的最优值本模块取的是精确值 ``-39.16616570377142 * dim``，
+            文献里常见的 ``-39.16599`` 是它的四舍五入版，两者相对差约 4.4e-6。）
+        2. ``rosenbrock`` 的"窄香蕉谷"使得它在 dim=2 尚可、dim>=10 时几乎所有随机算法都失败，
+            不要用它单方面宣布某个算法"不行"；它衡量的是**沿谷推进**的能力。
+        3. ``griewank`` / ``ackley`` 的最优盆地在标准盒内很窄（griewank 盒是 [-600, 600]，
+            而有效谷宽只有个位数），固定步长的局部邻域几乎必然失败——这正是它们的考察点，
+            但也很容易被误当成代码 bug。
+        4. 标准盒 ``bounds`` 是文献协议的一部分，**不要为了"让算法好看"而缩小它**；
+            缩小后与文献结果不可比。
+        5. 返回的 ``func`` 不带任何预缩放，``schwefel`` 的量级在 1e3、``sphere`` 在 1e1，
+            不同函数的目标值**不能横向比较**。
+
+    参考:
+        Jamil & Yang 2013, "A Literature Survey of Benchmark Functions For Global Optimization
+        Problems"（标准盒与最优值口径）；
+        Yao, Liu & Lin 1999, "Evolutionary Programming Made Faster"（sphere/rastrigin/ackley/
+        griewank/schwefel/styblinski_tang 的常用参数与最优值）。
+    """
+    if not isinstance(name, str):
+        raise ValueError(f"name 必须是字符串，得到 {type(name).__name__}")
+    key = name.strip().lower()
+    if key not in _BENCHMARK_META:
+        raise ValueError(
+            f"未知的测试函数名 {name!r}；可用：{', '.join(_BENCHMARK_NAMES)}"
+        )
+    try:
+        dim = int(dim)
+    except (TypeError, ValueError):
+        raise ValueError(f"dim 必须是整数，得到 {dim!r}")
+    if dim < 1:
+        raise ValueError(f"dim 必须 >= 1，得到 {dim}")
+
+    lo, hi, min_dim, table_opt = _BENCHMARK_META[key]
+    if dim < min_dim:
+        raise ValueError(f"{key} 至少需要 {min_dim} 维，得到 dim={dim}")
+
+    if key == "sphere":
+
+        def func(x) -> float:
+            arr = as_vector(x, "x")
+            return float(np.sum(arr ** 2))
+
+    elif key == "rastrigin":
+
+        def func(x) -> float:
+            arr = as_vector(x, "x")
+            return float(
+                10.0 * arr.size + np.sum(arr ** 2 - 10.0 * np.cos(2.0 * np.pi * arr))
+            )
+
+    elif key == "ackley":
+
+        def func(x) -> float:
+            arr = as_vector(x, "x")
+            n = arr.size
+            return float(
+                -20.0 * np.exp(-0.2 * np.sqrt(np.sum(arr ** 2) / n))
+                - np.exp(np.sum(np.cos(2.0 * np.pi * arr)) / n)
+                + 20.0
+                + np.e
+            )
+
+    elif key == "rosenbrock":
+
+        def func(x) -> float:
+            arr = as_vector(x, "x")
+            return float(
+                np.sum(100.0 * (arr[1:] - arr[:-1] ** 2) ** 2 + (1.0 - arr[:-1]) ** 2)
+            )
+
+    elif key == "griewank":
+
+        def func(x) -> float:
+            arr = as_vector(x, "x")
+            idx = np.sqrt(np.arange(1, arr.size + 1, dtype=float))
+            return float(np.sum(arr ** 2) / 4000.0 - np.prod(np.cos(arr / idx)) + 1.0)
+
+    elif key == "schwefel":
+
+        def func(x) -> float:
+            arr = as_vector(x, "x")
+            return float(
+                418.9828872724338 * arr.size
+                - np.sum(arr * np.sin(np.sqrt(np.abs(arr))))
+            )
+
+    else:  # styblinski_tang
+
+        def func(x) -> float:
+            arr = as_vector(x, "x")
+            return float(0.5 * np.sum(arr ** 4 - 16.0 * arr ** 2 + 5.0 * arr))
+
+    if key == "styblinski_tang":
+        # 每维最优值 -39.16616570377142（由最优分量 -2.9035340181859605 精确算出）
+        optimal_value = -39.16616570377142 * dim
+    else:
+        optimal_value = float(table_opt)  # type: ignore[arg-type]
+
+    return {
+        "name": key,
+        "dim": dim,
+        "bounds": [(float(lo), float(hi))] * dim,
+        "func": func,
+        "optimal_x": [float(_BENCHMARK_OPTIMAL_X[key])] * dim,
+        "optimal_value": float(optimal_value),
+    }
+
+
+#: ``benchmark_optimizers`` 支持的求解器（都是实数编码、有界、最小化的那些）。
+_BENCH_ALGORITHMS: Tuple[str, ...] = ("sa", "pso", "de", "gwo")
+
+#: ``benchmark_optimizers`` 在 seeds=None 时默认派生多少个随机种子。
+_BENCH_N_SEEDS: int = 5
+
+#: 对比台上各算法的种群/群体规模；``budget`` 按它换算代数，使各算法求值次数可比。
+_BENCH_SWARM: int = 30
+
+#: SA 的起始点用 ``make_rng(run_seed + 该偏移)`` 均匀采样，避免与 SA 自身的随机流复用；
+#: 取一个素数是为了尽量避开 ``seeds`` 里可能出现的相邻整数。
+_BENCH_SA_START_OFFSET: int = 7919
+
+
+def benchmark_optimizers(
+    name: str = "sphere",
+    dim: int = 2,
+    algorithms: Optional[Sequence[str]] = None,
+    seeds: Optional[Sequence[int]] = None,
+    budget: int = 3000,
+    success_tol: Optional[float] = None,
+    step_scale: float = 0.1,
+    seed: Optional[int] = None,
+) -> dict:
+    """在**同一预算、同一随机种子集合**下横向对比多个求解器，输出可直接进论文表格的统计量。
+
+    参数:
+        name: 测试函数名，口径与 :func:`benchmark_functions` 完全一致。
+        dim: 维数。
+        algorithms: 要对比的算法名序列，取值 ``"sa"`` / ``"pso"`` / ``"de"`` / ``"gwo"``；
+            None 表示全部四个。**不含** GA / ACO / 禁忌搜索 / VNS——它们的编码或邻域是
+            0/1、TSP 回路或"由调用方提供的局部算子"，与这里的实数有界最小化协议不同，
+            强行混进来会得出不可比的数字（要对比它们请各自构造等价算例）。
+        seeds: 每个算法要跑的随机种子序列。给了就用它（这是复现的关键，**必须写进论文**）；
+            None 则用 ``seed`` 派生 ``5`` 个种子。
+        budget: 每个算法每次运行的**目标函数求值次数上限**（约等于，见下）。
+            必须 >= 40，否则当前种群规模连一代都跑不满。
+        success_tol: "命中全局最优"的绝对容差。None 时取 ``1e-4 * max(1, |最优值|)``。
+        step_scale: 仅 SA 使用：连续邻域步长 = ``step_scale * (hi - lo)``（逐维标准差）。
+        seed: 只在 ``seeds=None`` 时生效，用于派生种子集合，保证整体可复现。
+
+    返回:
+        ``{"name", "dim", "optimal_value", "success_tol", "budget", "seeds",
+        "results": {算法名: {...}}, "ranking": list, "best_algorithm": str}``。
+        ``results[alg]`` 含 ``best`` / ``worst`` / ``mean`` / ``std`` / ``median`` /
+        ``success``（命中次数）/ ``success_rate`` / ``n_eval``（单次实际求值次数）/
+        ``values``（每次运行的原始最优值，可拿去画箱线图）。``ranking`` 按 ``mean`` 升序，
+        同分依次比 ``best`` 与名字，所以是**确定性**的。
+
+    算法:
+        1. 用 :func:`benchmark_functions` 取目标、标准盒与文献最优值，用 :func:`_parse_bounds`
+            再做一次盒校验；
+        2. 预算换算成各算法的代数，使四者单次求值次数**一致**：
+           ``sa`` 用 ``iters = budget - 1``（求值 ``iters + 1 = budget`` 次）；
+           ``pso`` / ``de`` / ``gwo`` 用规模 ``30``、``iters = n_gen = budget // 30 - 1``，
+           求值 ``30 * (iters + 1)`` 次——budget 取 30 的整数倍时四者完全相等；
+        3. SA 的温度调度由规模自适应：``T0 = mean(hi - lo)``，
+           ``alpha = 1e-4 ** (1 / iters)``（即末温恰为首温的 1e-4），避免把 T0 硬编码成
+           与函数量级不匹配的常数；起始点在盒内**均匀随机采样**（不是盒中心——sphere /
+           rastrigin / ackley / griewank 的全局最优恰好就是盒中心，用中心起步等于白送答案），
+           邻域为逐维高斯步长的截断到盒内；
+        4. 对每个算法、每个种子独立运行（各算法互不共享随机数），只收集**目标值**，
+           再统一算 best/mean/std/median/命中次数，最后排序。
+
+    复杂度:
+        时间 O(len(seeds) * len(algorithms) * budget) 次目标求值；
+        空间 O(len(seeds) + dim)（不保存迭代历史，只存每次运行的最优值）。
+
+    陷阱:
+        1. **``mean`` 与 ``best`` 会给出不同的结论**：元启发式的 ``best`` 常被单个幸运种子主导，
+            论文里报 ``best`` 必须同时给 ``mean``/``std`` 与种子；本函数正是为此把 ``values``
+            全量返回。
+        2. 预算一致**不等于**公平：SA 用 ``budget`` 次**单点**求值，PSO/DE/GWO 用同等次数但
+            是**并行**搜索，两者的"代数"完全不同。跨族比较时请显式说明这一点。
+        3. 这里所有算法都用**出厂参数**（``F=0.7``、``CR=0.9``、``c1=c2=2`` 等），
+            没有做参数调优。这不是"算法本身"的排名，而是"默认参数+这个预算下"的排名。
+        4. ``sa`` 的 ``neighbor`` 用固定相对步长 ``step_scale``，在高维（dim >= 30）下
+            会迅速退化为爬山，表现会明显偏差；这不是 SA 的固有性质。
+        5. 失败/成功判据用的是 ``success_tol`` 绝对容差，对 ``schwefel`` / ``styblinski_tang``
+            这类"最优值是四舍五入常数"的函数，成功次数会偏悲观（见
+            :func:`benchmark_functions` 的陷阱 1）。
+
+    参考:
+        同一组算例下报告 mean/std 与求值次数，是进化计算领域的标准评测协议；
+        Derrac et al. 2011, "A practical tutorial on the use of nonparametric statistical tests as
+        a methodology for comparing evolutionary and swarm intelligence algorithms"。
+    """
+    spec = benchmark_functions(name, dim)
+    objective = spec["func"]
+    optimal = float(spec["optimal_value"])
+    lo, hi = _parse_bounds(spec["bounds"])
+    span = hi - lo
+
+    if algorithms is None:
+        algs: List[str] = list(_BENCH_ALGORITHMS)
+    else:
+        if isinstance(algorithms, str):
+            raise ValueError("algorithms 应为名字序列（如 ['pso', 'de']），而不是单个字符串")
+        algs = [str(a).strip().lower() for a in algorithms]
+        if not algs:
+            raise ValueError("algorithms 不能为空序列")
+        unknown = sorted({a for a in algs if a not in _BENCH_ALGORITHMS})
+        if unknown:
+            raise ValueError(
+                f"不支持的算法 {unknown}；可用：{', '.join(_BENCH_ALGORITHMS)}"
+                "（GA/ACO/禁忌/VNS 的编码不同，不在本对比台内）"
+            )
+        if len(set(algs)) != len(algs):
+            raise ValueError(f"algorithms 里有重复项：{algs}")
+
+    try:
+        budget = int(budget)
+    except (TypeError, ValueError):
+        raise ValueError(f"budget 必须是整数，得到 {budget!r}")
+    if budget < 40:
+        raise ValueError(f"budget 必须 >= 40，得到 {budget}")
+
+    step_scale = float(step_scale)
+    if not (0.0 < step_scale < 1.0):
+        raise ValueError(f"step_scale 必须在 (0, 1) 内，得到 {step_scale}")
+
+    if success_tol is None:
+        tol = 1e-4 * max(1.0, abs(optimal))
+    else:
+        tol = float(success_tol)
+        if tol < 0.0:
+            raise ValueError(f"success_tol 不能为负，得到 {tol}")
+
+    gen = make_rng(seed)
+    if seeds is None:
+        seed_list = [int(v) for v in gen.integers(0, 1000000, size=_BENCH_N_SEEDS)]
+    else:
+        if isinstance(seeds, (int, np.integer)):
+            raise ValueError("seeds 应为种子序列（如 [0, 1, 2]），而不是单个整数")
+        seed_list = [int(s) for s in seeds]
+        if not seed_list:
+            raise ValueError("seeds 不能为空序列")
+
+    results: Dict[str, dict] = {}
+    for alg in algs:
+        values: List[float] = []
+        n_eval = 0
+        for run_seed in seed_list:
+            if alg == "sa":
+                iters = budget - 1
+                T0 = float(np.mean(span))
+                alpha = float(1e-4 ** (1.0 / iters))
+                x0 = lo + make_rng(run_seed + _BENCH_SA_START_OFFSET).random(lo.shape) * span
+                sigma = step_scale * span
+
+                def neighbor(x, g, _lo=lo, _hi=hi, _sigma=sigma):
+                    return np.clip(x + g.normal(0.0, _sigma, size=x.shape), _lo, _hi)
+
+                res = simulated_annealing(
+                    objective, x0, neighbor, T0=T0, alpha=alpha, iters=iters, seed=run_seed
+                )
+                values.append(float(res["best_cost"]))
+                n_eval = iters + 1
+            elif alg == "pso":
+                iters = max(1, budget // _BENCH_SWARM - 1)
+                res = particle_swarm(
+                    objective, spec["bounds"], n_particles=_BENCH_SWARM,
+                    iters=iters, seed=run_seed,
+                )
+                values.append(float(res["best_value"]))
+                n_eval = _BENCH_SWARM * (iters + 1)
+            elif alg == "de":
+                n_gen = max(1, budget // _BENCH_SWARM - 1)
+                res = differential_evolution(
+                    objective, spec["bounds"], pop_size=_BENCH_SWARM,
+                    n_gen=n_gen, seed=run_seed,
+                )
+                values.append(float(res["fun"]))
+                n_eval = int(res["n_eval"])
+            else:  # gwo
+                n_gen = max(1, budget // _BENCH_SWARM - 1)
+                res = grey_wolf_optimizer(
+                    objective, spec["bounds"], n_wolves=_BENCH_SWARM,
+                    n_gen=n_gen, seed=run_seed,
+                )
+                values.append(float(res["fun"]))
+                n_eval = _BENCH_SWARM * (n_gen + 1)
+
+        arr = np.asarray(values, dtype=float)
+        succ = int(np.sum(np.abs(arr - optimal) <= tol))
+        results[alg] = {
+            "best": float(np.min(arr)),
+            "worst": float(np.max(arr)),
+            "mean": float(np.mean(arr)),
+            "std": float(np.std(arr)),
+            "median": float(np.median(arr)),
+            "success": succ,
+            "success_rate": float(succ / float(arr.size)),
+            "n_eval": int(n_eval),
+            "values": [float(v) for v in arr],
+        }
+
+    order = sorted(algs, key=lambda a: (results[a]["mean"], results[a]["best"], a))
+    return {
+        "name": spec["name"],
+        "dim": int(spec["dim"]),
+        "optimal_value": float(optimal),
+        "success_tol": float(tol),
+        "budget": budget,
+        "seeds": seed_list,
+        "results": results,
+        "ranking": order,
+        "best_algorithm": order[0],
+    }
+
+
+# --------------------------------------------------------------------------- #
+# 人工蜂群
+# --------------------------------------------------------------------------- #
+def artificial_bee_colony(
+    objective: Callable[[np.ndarray], float],
+    bounds,
+    n_food: int = 20,
+    limit: Optional[int] = None,
+    iters: int = 100,
+    seed: Optional[int] = None,
+) -> dict:
+    """人工蜂群 ABC（Karaboga 2005：引领蜂 / 跟随蜂 / 侦察蜂三阶段，最小化 ``objective``）。
+
+    参数:
+        objective: ``objective(x) -> float``，目标函数，**约定为最小化**（要最大化请自己取负）。
+        bounds: 搜索盒，口径与 :func:`particle_swarm` 一致：``(lo, hi)`` 或 ``[(lo_i, hi_i), ...]``，
+            每维要求 ``hi > lo``（退化盒与非有限值都会抛 ValueError）。
+        n_food: 蜜源（食物源）数量，必须 >= 2；引领蜂与跟随蜂各 n_food 只。
+        limit: 侦察蜂阈值：某个蜜源连续 ``limit`` 轮没有被改进就被放弃、由侦察蜂随机重置。
+            None 表示取 ``n_food * n_dim``（常见经验值）。
+        iters: 迭代（轮）数，>= 0。
+        seed: 随机种子，None 用 ``DEFAULT_SEED``。
+
+    返回:
+        ``{"best_x": np.ndarray, "best_value": float, "history": List[float],
+        "n_eval": int, "n_scouts": int, "limit": int}``。
+        ``history`` 长度 = ``iters + 1``，元素是每轮结束时的历史最优值（单调不增）；
+        ``n_eval`` 是目标函数**实际求值次数**（写论文报预算用）；
+        ``n_scouts`` 是整轮过程中侦察蜂重置蜜源的总次数（多样性代理指标）。
+
+    算法:
+        1. 初始化：在 ``[lo, hi]`` 内独立均匀采样 ``n_food`` 个蜜源并求值，
+           每个蜜源的 ``trials`` 计 0；
+        2. 引领蜂阶段：对每个蜜源 ``i`` 随机选一个 ``k != i``，做
+           ``v = x_i + phi * (x_i - x_k)``，``phi ~ U(-1, 1)`` 逐维独立，随后把越界分量
+           拉回边界；``f(v) < f(x_i)`` 时贪心替换并把 ``trials[i]`` 归零，否则 ``trials[i] += 1``；
+        3. 跟随蜂阶段：按 ``p_i ∝ fit_i`` 轮盘赌选蜜源，对其做与第 2 步完全相同的邻域搜索。
+            ``fit`` 用 ``1 / (1 + f)``（``f >= 0``）或 ``1 + |f|``（``f < 0``），
+            **不是**目标值本身——直接用 ``f`` 做权重在最小化问题里会选到最差的蜜源；
+        4. 侦察蜂阶段：任何 ``trials[i] > limit`` 的蜜源被丢弃，换成盒内均匀随机新点
+           （``trials[i]`` 归零），``n_scouts`` 累加；
+        5. 每轮结束更新历史最优。
+
+    复杂度:
+        时间 O(iters * n_food * (dim + T_objective)) / 空间 O(n_food * dim + iters)。
+
+    陷阱:
+        1. ``limit`` 是最关键的参数：太小（如 1~2）会让蜜源在改进一次后很快被随机重置，
+            退化成随机搜索；太大（如 ``n_food * iters``）等于关掉侦察蜂，整群会一起早熟。
+            本函数的默认值 ``n_food * dim`` 只是文献常用启发式，换问题必须重调。
+        2. 跟随蜂用的是 ``p_i ∝ fit_i`` 的**有放回**轮盘赌，所以并不是"每个蜜源恰好被访问一次"。
+            这不影响正确性，但意味着每轮的"引领蜂 + 跟随蜂"两阶段合计求值次数恰为
+            ``2 * n_food``（与选择结果无关）；一旦发生侦察蜂重置，该轮会再多一次求值，
+            因此总求值次数是 ``返回的 n_eval = n_food + iters * 2 * n_food + n_scouts``。
+        3. 本实现每轮**恰好**放 ``n_food`` 只跟随蜂（标准 ABC 口径）。有的变体只放少量跟随蜂，
+            预算会不同，跨实现比较时先对齐口径。
+        4. ``objective`` 返回 NaN 时所有比较都是 False，该蜜源会被一直保留到被侦察蜂重置；
+            本实现不做有限性保护（与 :func:`differential_evolution` 一致）。
+        5. 与 PSO/DE 一样，ABC 也**不保证全局最优**；用 :func:`benchmark_optimizers` 时它不在
+            默认名单里，需要时请自行在等预算下对比。
+
+    参考:
+        Karaboga & Basturk 2007, "A powerful and efficient algorithm for numerical function
+        optimization: artificial bee colony (ABC) algorithm"；
+        Karaboga & Akay 2009（``limit`` 与侦察蜂机制的参数敏感性分析）。
+    """
+    if not callable(objective):
+        raise ValueError("objective 必须是可调用对象")
+    lo, hi = _parse_bounds(bounds)
+    lo = np.asarray(lo, dtype=float).ravel()
+    hi = np.asarray(hi, dtype=float).ravel()
+    if lo.size != hi.size or lo.size == 0:
+        raise ValueError("bounds 规范后 lo / hi 长度必须一致且非空")
+    n_dim = int(lo.size)
+
+    try:
+        n_food = int(n_food)
+    except (TypeError, ValueError):
+        raise ValueError(f"n_food 必须是整数，得到 {n_food!r}")
+    if n_food < 2:
+        raise ValueError(f"n_food 必须 >= 2（需要一个不同的 k），得到 {n_food}")
+    try:
+        iters = int(iters)
+    except (TypeError, ValueError):
+        raise ValueError(f"iters 必须是整数，得到 {iters!r}")
+    if iters < 0:
+        raise ValueError(f"iters 不能为负，得到 {iters}")
+    if limit is None:
+        limit = n_food * n_dim
+    try:
+        limit = int(limit)
+    except (TypeError, ValueError):
+        raise ValueError(f"limit 必须是整数，得到 {limit!r}")
+    if limit < 1:
+        raise ValueError(f"limit 必须 >= 1，得到 {limit}")
+
+    gen = make_rng(seed)
+    foods = lo + gen.random((n_food, n_dim)) * (hi - lo)  # 广播：逐维独立均匀
+    fun_vals = np.empty(n_food, dtype=float)
+    for i in range(n_food):
+        fun_vals[i] = float(objective(foods[i]))
+    trials = np.zeros(n_food, dtype=int)
+    n_eval = n_food
+
+    best_idx = int(np.argmin(fun_vals))
+    best_x = foods[best_idx].copy()
+    best_value = float(fun_vals[best_idx])
+    history: List[float] = [best_value]
+    n_scouts = 0
+
+    def nectar(rows: np.ndarray) -> np.ndarray:
+        """把目标值（越小越好）换成蜜源"花蜜量"（越大越好），且恒为正。"""
+        return np.where(rows >= 0.0, 1.0 / (1.0 + rows), 1.0 + np.abs(rows))
+
+    for _ in range(iters):
+        # --- 引领蜂 ---
+        for i in range(n_food):
+            k = int(gen.integers(0, n_food - 1))
+            if k >= i:
+                k += 1
+            phi = gen.uniform(-1.0, 1.0, size=n_dim)
+            cand = np.clip(foods[i] + phi * (foods[i] - foods[k]), lo, hi)
+            cand_f = float(objective(cand))
+            n_eval += 1
+            if cand_f < fun_vals[i]:
+                foods[i] = cand
+                fun_vals[i] = cand_f
+                trials[i] = 0
+            else:
+                trials[i] += 1
+
+        # --- 跟随蜂：按花蜜量轮盘赌选蜜源 ---
+        fit = nectar(fun_vals)
+        total = float(np.sum(fit))
+        if total > 0.0 and np.isfinite(total):
+            probs = fit / total
+        else:
+            probs = np.full(n_food, 1.0 / n_food)
+        picks = gen.choice(n_food, size=n_food, p=probs)
+        for i in [int(v) for v in picks]:
+            k = int(gen.integers(0, n_food - 1))
+            if k >= i:
+                k += 1
+            phi = gen.uniform(-1.0, 1.0, size=n_dim)
+            cand = np.clip(foods[i] + phi * (foods[i] - foods[k]), lo, hi)
+            cand_f = float(objective(cand))
+            n_eval += 1
+            if cand_f < fun_vals[i]:
+                foods[i] = cand
+                fun_vals[i] = cand_f
+                trials[i] = 0
+            else:
+                trials[i] += 1
+
+        # --- 侦察蜂：放弃枯竭蜜源 ---
+        for i in range(n_food):
+            if trials[i] > limit:
+                foods[i] = lo + gen.random(n_dim) * (hi - lo)
+                fun_vals[i] = float(objective(foods[i]))
+                n_eval += 1
+                trials[i] = 0
+                n_scouts += 1
+
+        cur_idx = int(np.argmin(fun_vals))
+        if fun_vals[cur_idx] < best_value:
+            best_value = float(fun_vals[cur_idx])
+            best_x = foods[cur_idx].copy()
+        history.append(best_value)
+
+    return {
+        "best_x": best_x,
+        "best_value": float(best_value),
+        "history": history,
+        "n_eval": int(n_eval),
+        "n_scouts": int(n_scouts),
+        "limit": int(limit),
+    }
+
+
+# --------------------------------------------------------------------------- #
 # 自测
 # --------------------------------------------------------------------------- #
 def _rastrigin(x) -> float:
@@ -1143,6 +1745,15 @@ def _self_test() -> dict:
         - 禁忌搜索：9 城圆上"打乱序"初始解的置换邻域，须不劣于初始解，
           且不超过正九边形周长 2*n*sin(pi/n)（闭式最优）；
         - VNS：一维 sum((x-3)^2) 的多尺度扰动邻域，须收敛到 x = 3（容差 1e-3）。
+        另覆盖 3 个新增函数与 3 处修复的回归：
+        - ``benchmark_functions``：7 个标准函数在各自声称的最优点处的取值必须与声称的
+          最优值闭合（1e-9 相对容差）、标准搜索盒、名字规范化、非法入参报错；
+        - ``benchmark_optimizers``：2 维 sphere、300 次求值、种子 (0,1,2) 下
+          PSO/DE 的 n_eval / mean / success_rate / ranking 口径，以及"同种子可复现"；
+        - ``artificial_bee_colony``：二维 Rastrigin 与二维 sphere 的收敛值、
+          history 长度 = iters+1、n_eval 口径（2*n_food 每轮 + 侦察蜂）、同种子可复现；
+        - 回归：SA 温度下溢到 0.0 不再抛 ZeroDivisionError、bounds 的一维简写
+          ``(lo, hi)`` 同样受有限性与 ``hi > lo`` 校验、ACO 单城市算例 history 长度。
 
     复杂度:
         时间约 O(1)（固定小算例，总求值量在 1e5 量级）/ 空间 O(1)。
@@ -1361,12 +1972,266 @@ def _self_test() -> dict:
     result["vns_quad_fun"] = round(float(vns_res["fun"]), 10)
     result["vns_quad_n_iter"] = int(vns_res["n_iter"])
 
+    # ---------- 新增：benchmark_functions 的"公式 ↔ 已知最优"自洽性 ----------
+    # 这里用的是**独立**信息：最优分量取自解析解（牛顿法/文献），最优值取自文献常数，
+    # 断言二者与实现里的闭式表达式互相闭合。任何一处抄错（比如 sphere 写成 |x|、
+    # rosenbrock 的最优点写成原点）都会在这里炸出来。
+    # 容差口径：绝对量级 ``1e-9 * dim``。**不要**用 ``1e-9 * max(1, |optimal_value|)``
+    # ——schwefel 的最优值约 -418.98，那个写法会把它放宽到 4.2e-7，而实测偏差只有
+    # 4.5e-13，等于该键几乎不设防。偏差随维数近似线性（参考最优点只给 7 位有效数字，
+    # 每维贡献约 9.1e-14），所以按 dim 线性缩放。
+    bm_opt_dev = 0.0
+    for bm_name in _BENCHMARK_NAMES:
+        bm_spec = benchmark_functions(bm_name, 3)
+        bm_here = bm_spec["func"](bm_spec["optimal_x"])
+        bm_dev = abs(bm_here - bm_spec["optimal_value"])
+        if bm_dev > 1e-9 * 3:
+            raise AssertionError(
+                f"测试函数 {bm_name} 在它声称的最优点 {bm_spec['optimal_x']} 处取到 "
+                f"{bm_here}，与声称的最优值 {bm_spec['optimal_value']} 不符"
+            )
+        bm_opt_dev = max(bm_opt_dev, bm_dev)
+    result["bm_opt_dev"] = round(float(bm_opt_dev), 15)
+
+    # 维度扫描：上面只点测了 dim=3，而偏差随维数增长，必须把各维都覆盖到
+    # （实测最坏组合是 schwefel dim=5，偏差 4.547e-13；只测 dim=3 会得到
+    # 2.274e-13 并让人误以为这是上界）。
+    bm_dev_dims = 0.0
+    bm_dev_worst_dim = 0
+    bm_dim_combos = 0
+    for bm_dim in range(2, 7):
+        for bm_name in _BENCHMARK_NAMES:
+            bm_spec = benchmark_functions(bm_name, bm_dim)
+            bm_here = bm_spec["func"](bm_spec["optimal_x"])
+            bm_dev = abs(bm_here - bm_spec["optimal_value"])
+            if bm_dev > 1e-9 * bm_dim:
+                raise AssertionError(
+                    f"测试函数 {bm_name}（dim={bm_dim}）在它声称的最优点 "
+                    f"{bm_spec['optimal_x']} 处取到 {bm_here}，与声称的最优值 "
+                    f"{bm_spec['optimal_value']} 不符"
+                )
+            if bm_dev > bm_dev_dims:
+                bm_dev_dims = bm_dev
+                bm_dev_worst_dim = bm_dim
+            bm_dim_combos += 1
+    result["bm_opt_dev_dims"] = round(float(bm_dev_dims), 15)
+    result["bm_opt_dev_worst_dim"] = int(bm_dev_worst_dim)
+    result["bm_dim_combos"] = int(bm_dim_combos)
+
+    # 独立闭式值：手算可核对的几组（与模块内实现无关）
+    bm_sph3 = benchmark_functions("sphere", 3)
+    if abs(bm_sph3["func"]([1.0, 2.0, 3.0]) - 14.0) > 1e-12:
+        raise AssertionError("sphere(1,2,3) 应为 14")
+    bm_ras2 = benchmark_functions("rastrigin", 2)
+    if abs(bm_ras2["func"]([1.0, 1.0]) - 2.0) > 1e-12:
+        raise AssertionError("rastrigin(1,1) 应为 2")
+    bm_gri5 = benchmark_functions("griewank", 5)
+    if abs(bm_gri5["func"](np.zeros(5))) > 1e-15:
+        raise AssertionError("griewank 在原点应为 0")
+    bm_ros4 = benchmark_functions("rosenbrock", 4)
+    if abs(bm_ros4["func"](np.ones(4))) > 1e-30:
+        raise AssertionError("rosenbrock 在全 1 点应为 0")
+
+    # 标准文献搜索盒（协议的一部分，缩小/放大会让结果与文献不可比）
+    for bm_name, bm_box in (
+        ("sphere", (-5.12, 5.12)),
+        ("rastrigin", (-5.12, 5.12)),
+        ("ackley", (-32.768, 32.768)),
+        ("rosenbrock", (-2.048, 2.048)),
+        ("griewank", (-600.0, 600.0)),
+        ("schwefel", (-500.0, 500.0)),
+        ("styblinski_tang", (-5.0, 5.0)),
+    ):
+        bm_spec = benchmark_functions(bm_name, 4)
+        if tuple(bm_spec["bounds"][0]) != bm_box:
+            raise AssertionError(f"{bm_name} 的标准搜索盒应为 {bm_box}")
+        if len(bm_spec["bounds"]) != 4:
+            raise AssertionError(f"{bm_name} 应返回 4 组逐维区间")
+    if benchmark_functions("rosenbrock", 4)["optimal_x"] != [1.0] * 4:
+        raise AssertionError("rosenbrock 的最优点应为全 1")
+    if benchmark_functions("sphere", 2)["optimal_x"] != [0.0, 0.0]:
+        raise AssertionError("sphere 的最优点应为原点")
+    if benchmark_functions("Sphere", 2)["name"] != "sphere":
+        raise AssertionError("benchmark_functions 的名字规范化应当是大小写不敏感的")
+    result["bm_dim"] = int(bm_sph3["dim"])
+    result["bm_optimal_value_rosenbrock"] = float(bm_ros4["optimal_value"])
+
+    def expect_raises(label: str, fn) -> None:
+        """断言 fn() 抛 ValueError（模块内禁止用 assert 关键字，统一走这里）。"""
+        try:
+            fn()
+        except ValueError:
+            return
+        raise AssertionError(f"{label} 本应抛 ValueError，实际却成功返回了")
+
+    expect_raises("benchmark_functions(name='foo')", lambda: benchmark_functions("foo"))
+    expect_raises("benchmark_functions(dim=0)", lambda: benchmark_functions("sphere", 0))
+    expect_raises(
+        "benchmark_functions('rosenbrock', dim=1)",
+        lambda: benchmark_functions("rosenbrock", 1),
+    )
+
+    # ---------- 新增：benchmark_optimizers 在多组种子上给出确定性统计 ----------
+    bo = benchmark_optimizers(
+        "sphere", 2, algorithms=("pso", "de"), seeds=(0, 1, 2), budget=300
+    )
+    if sorted(bo["ranking"]) != ["de", "pso"]:
+        raise AssertionError(f"对比台的 ranking 应包含 pso 与 de，得到 {bo['ranking']}")
+    if bo["best_algorithm"] != bo["ranking"][0]:
+        raise AssertionError("best_algorithm 与 ranking 首项不一致")
+    for bo_alg in ("pso", "de"):
+        bo_r = bo["results"][bo_alg]
+        if len(bo_r["values"]) != 3:
+            raise AssertionError(f"{bo_alg} 应记录 3 次运行的原始值")
+        if bo_r["n_eval"] != 300:
+            raise AssertionError(f"{bo_alg} 单次求值次数应为 300，得到 {bo_r['n_eval']}")
+        if not (bo_r["worst"] >= bo_r["median"] >= bo_r["best"]):
+            raise AssertionError(f"{bo_alg} 的 worst/median/best 顺序不对")
+        if abs(bo_r["mean"] - float(np.mean(bo_r["values"]))) > 1e-12:
+            raise AssertionError(f"{bo_alg} 的 mean 与 values 不相符")
+        if abs(bo_r["success_rate"] - bo_r["success"] / 3.0) > 1e-12:
+            raise AssertionError(f"{bo_alg} 的 success_rate 与 success 不相符")
+        # 300 次求值下，两个求解器在 2 维 sphere 上都该进入 5e-2 以内（实测约 3e-3 / 1e-2）
+        if not (np.isfinite(bo_r["mean"]) and bo_r["mean"] < 0.05):
+            raise AssertionError(f"{bo_alg} 在 2 维 sphere（300 次求值）上均值 {bo_r['mean']} 太差")
+    bo2 = benchmark_optimizers(
+        "sphere", 2, algorithms=("pso", "de"), seeds=(0, 1, 2), budget=300
+    )
+    if bo2 != bo:
+        raise AssertionError("benchmark_optimizers 在相同 seeds 下结果不可复现")
+    if bo["ranking"] != sorted(bo["results"], key=lambda k: bo["results"][k]["mean"]):
+        raise AssertionError(f"ranking 没有按 mean 升序排列：{bo['ranking']}")
+    result["bench_pso_mean"] = round(float(bo["results"]["pso"]["mean"]), 10)
+    result["bench_de_mean"] = round(float(bo["results"]["de"]["mean"]), 10)
+    result["bench_rank0"] = bo["ranking"][0]
+    result["bench_budget"] = int(bo["budget"])
+    expect_raises(
+        "benchmark_optimizers(algorithms=('xyz',))",
+        lambda: benchmark_optimizers("sphere", 2, algorithms=("xyz",)),
+    )
+    expect_raises(
+        "benchmark_optimizers(algorithms=[])",
+        lambda: benchmark_optimizers("sphere", 2, algorithms=[]),
+    )
+    expect_raises(
+        "benchmark_optimizers(budget=10)",
+        lambda: benchmark_optimizers("sphere", 2, budget=10),
+    )
+    expect_raises(
+        "benchmark_optimizers(seeds=[])",
+        lambda: benchmark_optimizers("sphere", 2, seeds=[]),
+    )
+
+    # ---------- 新增：人工蜂群 ABC ----------
+    rast2 = benchmark_functions("rastrigin", 2)
+    abc_res = artificial_bee_colony(rast2["func"], rast2["bounds"], n_food=15, iters=200, seed=5)
+    if len(abc_res["history"]) != 201:
+        raise AssertionError(f"ABC 的 history 长度应为 iters+1=201，得到 {len(abc_res['history'])}")
+    if abs(abc_res["best_value"] - rast2["func"](abc_res["best_x"])) > 1e-12:
+        raise AssertionError("ABC 返回的 best_value 与 best_x 处的目标值不一致")
+    # 每轮恰好 2*n_food 次求值（引领蜂 + 跟随蜂各 n_food），外加初始化与侦察蜂重置
+    abc_expect = 15 + 200 * (2 * 15) + abc_res["n_scouts"]
+    if abc_res["n_eval"] != abc_expect:
+        raise AssertionError(
+            f"ABC 的 n_eval={abc_res['n_eval']}，按 15+200*30+{abc_res['n_scouts']} 应为 {abc_expect}"
+        )
+    if abc_res["limit"] != 30:
+        raise AssertionError(f"ABC 的 limit 缺省应为 n_food*n_dim=30，得到 {abc_res['limit']}")
+    if not (abc_res["best_value"] < 1e-8):
+        raise AssertionError(f"ABC 在二维 Rastrigin 上只找到 {abc_res['best_value']}")
+    abc_again = artificial_bee_colony(rast2["func"], rast2["bounds"], n_food=15, iters=200, seed=5)
+    if not (
+        abc_again["best_value"] == abc_res["best_value"]
+        and abc_again["n_eval"] == abc_res["n_eval"]
+        and abc_again["n_scouts"] == abc_res["n_scouts"]
+        and abc_again["history"] == abc_res["history"]
+        and bool(np.array_equal(abc_again["best_x"], abc_res["best_x"]))
+    ):
+        raise AssertionError("ABC 在相同种子下结果不可复现")
+    result["abc_rastrigin_value"] = round(float(abc_res["best_value"]), 12)
+    result["abc_rastrigin_n_eval"] = int(abc_res["n_eval"])
+    result["abc_rastrigin_n_scouts"] = int(abc_res["n_scouts"])
+    result["abc_history_len"] = len(abc_res["history"])
+
+    sph2 = benchmark_functions("sphere", 2)
+    abc_sph = artificial_bee_colony(sph2["func"], sph2["bounds"], n_food=20, iters=100, seed=1)
+    if not (abc_sph["best_value"] < 1e-12):
+        raise AssertionError(f"ABC 在二维 sphere 上只找到 {abc_sph['best_value']}")
+    if abc_sph["n_eval"] != 20 + 100 * 40 + abc_sph["n_scouts"]:
+        raise AssertionError("ABC 在 sphere 上的 n_eval 与预算口径不一致")
+    result["abc_sphere_value"] = float(abc_sph["best_value"])
+
+    expect_raises(
+        "artificial_bee_colony(n_food=1)",
+        lambda: artificial_bee_colony(sph2["func"], sph2["bounds"], n_food=1),
+    )
+    expect_raises(
+        "artificial_bee_colony(limit=0)",
+        lambda: artificial_bee_colony(sph2["func"], sph2["bounds"], limit=0),
+    )
+    expect_raises(
+        "artificial_bee_colony(iters=-1)",
+        lambda: artificial_bee_colony(sph2["func"], sph2["bounds"], iters=-1),
+    )
+    expect_raises(
+        "artificial_bee_colony(objective=1)",
+        lambda: artificial_bee_colony(1, sph2["bounds"]),
+    )
+
+    # ---------- 新增：本次修复的回归断言 ----------
+    # (1) SA 在 T 下溢到 0.0 后不得抛 ZeroDivisionError，且此时应退化为"只接受非劣解"：
+    #     neighbor 恒返回更差的点，所以最优值必须停在初始值 100.0，history 长度仍为 iters+1。
+    def _sa_sq(x) -> float:
+        return float(np.sum(np.asarray(x, dtype=float) ** 2))
+
+    def _sa_worse(x, gen: np.random.Generator) -> np.ndarray:
+        return np.asarray(x, dtype=float) + 1.0
+
+    sa_zero = simulated_annealing(
+        _sa_sq, np.array([10.0]), _sa_worse, T0=1.0, alpha=0.5, iters=1500, seed=3
+    )
+    if len(sa_zero["history"]) != 1501:
+        raise AssertionError("SA 零温回归：history 长度应为 iters+1")
+    if abs(sa_zero["best_cost"] - 100.0) > 1e-12:
+        raise AssertionError(
+            f"SA 零温回归：所有候选都更差，最优值应保持 100.0，得到 {sa_zero['best_cost']}"
+        )
+    result["sa_zeroT_cost"] = round(float(sa_zero["best_cost"]), 10)
+    result["sa_zeroT_len"] = len(sa_zero["history"])
+
+    # (2) bounds 的一维简写 (lo, hi) 必须与逐维写法受同样的校验
+    expect_raises(
+        "particle_swarm(bounds=(5.0, 3.0))",
+        lambda: particle_swarm(_sa_sq, (5.0, 3.0), n_particles=5, iters=2),
+    )
+    expect_raises(
+        "particle_swarm(bounds=(nan, 5.0))",
+        lambda: particle_swarm(_sa_sq, (float("nan"), 5.0), n_particles=5, iters=2),
+    )
+    expect_raises(
+        "differential_evolution(bounds=(5.0, 3.0))",
+        lambda: differential_evolution(_sa_sq, (5.0, 3.0), pop_size=6, n_gen=2),
+    )
+    expect_raises(
+        "grey_wolf_optimizer(bounds=(-inf, 5.0))",
+        lambda: grey_wolf_optimizer(_sa_sq, (float("-inf"), 5.0), n_wolves=6, n_gen=2),
+    )
+
+    # (3) ACO 单城市退化算例的 history 长度也必须等于 iters + 1
+    aco_one = ant_colony_tsp(np.zeros((1, 1)), iters=5, seed=0)
+    if len(aco_one["history"]) != 6:
+        raise AssertionError(
+            f"ACO 单城市算例的 history 长度应为 6，得到 {len(aco_one['history'])}"
+        )
+    result["aco_single_hist_len"] = len(aco_one["history"])
+
     # ---------- 通用一致性：所有 history 必须是单调不增的"历史最优"序列 ----------
     for name, hist in (
         ("de", de_r["history"]),
         ("gwo", gwo_r["history"]),
         ("tabu", tabu_res["history"]),
         ("vns", vns_res["history"]),
+        ("abc", abc_res["history"]),
     ):
         if any(hist[i + 1] > hist[i] + 1e-12 for i in range(len(hist) - 1)):
             raise AssertionError(f"{name} 的 history 不是单调不增的历史最优序列")

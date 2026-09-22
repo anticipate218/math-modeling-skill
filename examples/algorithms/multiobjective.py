@@ -1,9 +1,10 @@
 """多目标优化：加权和法、ε-约束法、支配关系判定、非支配排序、拥挤距离、NSGA-II、
-Pareto 前沿、二维超体积与理想点距离。
+MOEA/D、Pareto 前沿、二维超体积、理想点距离与前沿质量指标。
 
-本模块共 9 个公开函数：支配与排序 ``pareto_dominates`` / ``fast_non_dominated_sort`` /
+本模块共 13 个公开函数：支配与排序 ``pareto_dominates`` / ``fast_non_dominated_sort`` /
 ``crowding_distance``，前沿构造 ``weighted_sum_pareto`` / ``epsilon_constraint_pareto`` /
-``nsga2``，前沿后处理 ``pareto_front`` / ``hypervolume_2d`` / ``ideal_point_distance``。
+``nsga2`` / ``moead``，前沿后处理 ``pareto_front`` / ``hypervolume_2d`` /
+``ideal_point_distance``，前沿质量评价 ``igd_metric`` / ``spacing_metric`` / ``knee_points``。
 
 定位：数学建模里"多个目标互相冲突、不存在单一最优解"的一类问题。此时正确的输出不是
 一个点，而是一整条（或一整片）**Pareto 前沿**，以及"这些解各自牺牲了什么"的量化说明。
@@ -21,7 +22,12 @@ SBX 交叉 + 多项式变异），但边界处理用简单截断、也没有做�
 - 支配关系：f1 支配 f2 当且仅当逐分量 ``f1 <= f2`` 且至少一个分量严格更小（因此两个
   完全相同的点互不支配，会同时留在第一前沿，这是有意为之）。
 - ``rank`` 是 **0 基**的前沿序号；``crowding_distance`` 只在**同一条前沿内部**计算，
-  边界点取 ``inf``，且在任一目标上取值域为 0 时该目标不贡献距离。
+  边界点取 ``inf``，且在任一目标上取值域为 0 时该**整个目标**被跳过（既不贡献距离，
+  也不把 ``inf`` 送给该目标上并列的端点）。
+- ``igd_metric`` 的 IGD 口径是"对**参考前沿**逐点取到近似集的最近距离再平均"，
+  与 ``hypervolume_2d`` 一样要求近似集与参考集的目标维数一致。
+- ``spacing_metric`` 用 Schott 间距：每个点到**其余点**的最近邻距离的样本标准差（除以 n-1），
+  完全均匀的前沿得 0，数值越小分布越均匀。默认用 L1 距离（Schott 原文口径）。
 - 加权和法用单纯形等距网格（权重非负且和为 1）；ε-约束法以**第 1 个目标**为 ε 上限、
   最小化其余目标的等权平均，约束用线性罚函数处理。
 - 随机性一律走 ``_common.rng``（PCG64），不使用任何全局随机状态。
@@ -45,9 +51,13 @@ __all__ = [
     "weighted_sum_pareto",
     "epsilon_constraint_pareto",
     "nsga2",
+    "moead",
     "pareto_front",
     "hypervolume_2d",
     "ideal_point_distance",
+    "igd_metric",
+    "spacing_metric",
+    "knee_points",
 ]
 
 
@@ -59,6 +69,10 @@ def _parse_box(bounds) -> Tuple[np.ndarray, np.ndarray]:
 
     口径（与本模块文档一致）：``(lo, hi)`` 两个标量表示 **1 维**问题；
     要 d 维共用同一区间请写 ``[(lo, hi)] * d``。
+
+    两种写法走**完全相同**的校验：元素必须有限，且每一维都要求 ``hi > lo``，
+    违反时一律抛 ``ValueError``（``(5.0, 3.0)``、``(5.0, 5.0)``、``(nan, 5.0)``、
+    ``(inf, 5.0)`` 都会被拒绝；退化维请先固定该变量）。
     """
     if bounds is None:
         raise ValueError("x_bounds 不能为 None（多目标优化必须有搜索盒）")
@@ -66,10 +80,12 @@ def _parse_box(bounds) -> Tuple[np.ndarray, np.ndarray]:
     if arr.ndim == 1:
         if arr.size != 2:
             raise ValueError(f"x_bounds 为 (lo, hi) 时长度必须为 2，得到 {arr.size}")
+        # 这里**不能**提前 return：一维简写与二维写法必须共用下面同一套有限性与
+        # hi > lo 校验，否则 (5.0, 3.0) / (nan, 5.0) / (inf, 5.0) 会被静默当成合法
+        # 搜索盒（个体全被钉在 lo 上），与 heuristics._parse_bounds 的口径不一致。
         lo = np.array([arr[0]], dtype=float)
         hi = np.array([arr[1]], dtype=float)
-        return lo, hi
-    if arr.ndim == 2 and arr.shape[1] == 2:
+    elif arr.ndim == 2 and arr.shape[1] == 2:
         lo = arr[:, 0].copy()
         hi = arr[:, 1].copy()
     else:
@@ -341,13 +357,16 @@ def crowding_distance(F: MatrixLike) -> np.ndarray:
     返回:
         形状 (n,) 的 float 数组。每个目标上按取值排序后，两个边界点该目标贡献 ``inf``；
         内部点贡献 ``(f_next - f_prev) / (f_max - f_min)``，各目标贡献相加。
-        因此 ``n <= 2`` 时全部为 ``inf``；n > 2 时边界点一定是 ``inf``。
+        因此 ``n <= 2`` 时全部为 ``inf``；n > 2 且存在非退化目标时，
+        那些在某个非退化目标上处于端点位置的解为 ``inf``。
 
     算法:
-        1. 对每个目标 k，用 ``argsort`` 排序，边界点记 ``inf``；
-        2. 内部点累加 ``(f[order[i+1], k] - f[order[i-1], k]) / (f_max - f_min)``；
-        3. 若该目标取值域为 0（前沿在该目标上完全退化），跳过该目标（贡献 0），
-           而不是除零得到 ``inf`` 或 NaN。
+        1. 对每个目标 k，用 ``argsort`` 排序；
+        2. 若该目标取值域为 0（前沿在该目标上完全退化），**整个目标跳过**（贡献 0），
+           既不记边界 ``inf``，也不做内部的除法——避免除零，也避免把 ``inf``
+           白送给两个按并列顺序排出来的任意点；
+        3. 否则边界点记 ``inf``，内部点累加
+           ``(f[order[i+1], k] - f[order[i-1], k]) / (f_max - f_min)``。
 
     复杂度:
         时间 O(m * n log n) / 空间 O(n)。
@@ -356,7 +375,8 @@ def crowding_distance(F: MatrixLike) -> np.ndarray:
         1. **必须按前沿分别调用**。把整份种群的目标矩阵直接丢进来会在不同前沿之间
            比较距离，得到的数没有任何意义（这也是常见误用）。
         2. 距离已经按各目标的取值范围归一化，所以量纲不同的目标可以直接相加；
-           但取值范围为 0 的目标必须跳过，否则 0/0 会污染整条前沿。
+           但取值范围为 0 的目标必须整体跳过（本函数已处理），否则 0/0 会污染整条前沿，
+           或者把边界 ``inf`` 记到并列点上、让任意解被误判为边界解。
         3. 若前沿中有重复点（目标值完全相同），它们的距离会互相"顶掉"对方，
            表现为一大一小，不代表真实的多样性——去重后计算更可靠。
 
@@ -372,11 +392,13 @@ def crowding_distance(F: MatrixLike) -> np.ndarray:
     for k in range(m):
         order = np.argsort(M[:, k], kind="stable")
         vals = M[order, k]
-        dist[order[0]] = np.inf
-        dist[order[-1]] = np.inf
         span = float(vals[-1] - vals[0])
+        # 退化目标（取值域为 0）不贡献任何距离，也不能把边界 inf 记到两个任意的
+        # 并列点上，否则这些点会被错误地当成"边界受保护"，从而躲过 NSGA-II 的截断。
         if span <= 0.0:
             continue
+        dist[order[0]] = np.inf
+        dist[order[-1]] = np.inf
         dist[order[1:-1]] += (vals[2:] - vals[:-2]) / span
     return dist
 
@@ -497,7 +519,8 @@ def epsilon_constraint_pareto(
     算法:
         1. 随机采样估计第 1 个目标在盒约束下的取值范围，生成 n_grid 个 ε；
         2. 对每个 ε 最小化 ``mean(sign * f[1:])``（m == 1 时退化为最小化 f_1 本身），
-           罚函数为 ``P * max(0, sign * f_1 - eps)``，``P = 1e3 * 目标 1 的采样极差``；
+           罚函数为 ``P * max(0, sign * f_1 - eps)``，``P = 1e3 * max(采样极差, 1)``
+           （下界 1 是为了防止"目标 1 在盒约束下几乎不变"时罚系数退化成 0）；
         3. 用同一个 :func:`_pattern_search` 求解，并回代检查可行性。
 
     复杂度:
@@ -689,6 +712,178 @@ def nsga2(
 
 
 # --------------------------------------------------------------------------- #
+# 基于分解的多目标进化（MOEA/D）
+# --------------------------------------------------------------------------- #
+def moead(
+    objective_fn: Callable[[np.ndarray], ArrayLike],
+    x_bounds,
+    n_partitions: int = 12,
+    n_iter: int = 100,
+    neighborhood_size: Optional[int] = None,
+    seed: Optional[int] = None,
+    minimize: bool = True,
+    mutation_sigma: Optional[float] = None,
+) -> dict:
+    """MOEA/D：把多目标问题分解成一组**切比雪夫（Tchebycheff）标量化子问题**同时进化。
+
+    参数:
+        objective_fn: ``objective_fn(x) -> np.ndarray``，目标向量，形状 (m,)。
+        x_bounds: 决策变量盒约束，口径同 :func:`weighted_sum_pareto`。
+        n_partitions: 单纯形权重的划分份数，>= 1。权重个数（即子问题个数）为
+            ``C(n_partitions + m - 1, m - 1)``，随目标个数 m 组合增长——m = 3 且
+            n_partitions = 12 时是 91 个子问题，注意求值预算。
+        n_iter: 进化代数，>= 0（0 表示只评估初始种群；初始种群本身也算一次求值）。
+        neighborhood_size: 邻域大小 T。None 表示 ``max(2, ceil(0.1 * 子问题个数))``。
+            邻域按**权重空间**的欧氏距离取最近 T 个权重。
+        seed: 随机种子；None 表示使用 ``DEFAULT_SEED``。
+        minimize: True（默认）全部取最小；False 全部取最大（内部统一取负）。
+        mutation_sigma: 若为 None 用 ``0.1 * 区间宽度`` 的高斯变异；若给定正数，则用
+            ``mutation_sigma * 区间宽度``（口径与 :func:`nsga2` 一致，便于做消融实验）。
+
+    返回:
+        dict，键为：
+        ``X``        形状 (n_sub, n_dim) 的最终种群决策向量（第 i 行是第 i 个子问题的解）；
+        ``F``        形状 (n_sub, m) 的目标值（``objective_fn`` 的**原始输出**）；
+        ``G``        形状 (n_sub, m) 的**内部最小化空间**目标值（``minimize=False`` 时为 -F）；
+        ``weights``  形状 (n_sub, m) 的单纯形权重网格，每行和为 1；
+        ``ideal``    形状 (m,) 的理想点，在**内部最小化空间** ``G`` 上（``minimize=True``
+                     时它就是 F 的逐分量最小值；``minimize=False`` 时它是 -F 的逐分量
+                     最小值）。注意是所有**求值过**的点上的最小值，**包含未被任何子问题
+                     接受的子代**，因此它可能严格优于最终种群的逐分量最小值；
+        ``front``    最终种群第 0 层前沿的下标列表（升序），基于 ``G`` 分层；
+        ``history``  长度 ``n_iter + 1`` 的 int 列表，第 k 项是**第 k 代种群的
+                     第一前沿规模**（口径与 :func:`nsga2` 一致，便于两条路径对比）；
+        ``n_weights``        子问题个数；
+        ``neighborhood_size`` 实际使用的邻域大小 T。
+
+    算法:
+        1. 试探性求值一次得到目标个数 m，用 ``_simplex_grid(m, n_partitions + 1)`` 生成
+           权重网格，并对每个权重取权重空间最近的 T 个下标构成邻域；
+        2. 均匀随机初始化 n_sub 个个体（**每个子问题一个解**），求目标值，初始化理想点
+           ``z = min(G)``；
+        3. 每一代：随机排列所有子问题；对子问题 i，在其邻域内随机取三个不同个体
+           （允许重复）做 DE/rand/1 型差分交叉 ``child = x_r1 + 0.5 (x_r2 - x_r3)``，
+           再按 ``1/n_dim`` 的概率逐分量做高斯变异，投影回盒约束；
+        4. 求子代目标值，用 ``z = min(z, G_child)`` 更新理想点；
+        5. 用切比雪夫函数 ``g(x; w_j) = max_k w_jk (G_k - z_k)`` 在 i 的**整个邻域**内做
+           贪心替换：若 ``g(child; w_j) <= g(X_j; w_j)`` 就用子代替换第 j 个子问题的解；
+        6. 每代记录第一前沿规模。
+
+    复杂度:
+        时间 O(n_iter * n_sub * (T * m + T_objective))，
+        空间 O(n_sub * (n_dim + m) + n_sub^2)（邻域矩阵）。
+
+    陷阱:
+        1. 邻域替换是"按**自己的权重**做贪心"，**不保证** Pareto 支配意义上的单调改进：
+           一个解可能在自己的标量化子问题上变好、却把邻居的多样性顶掉。所以 MOEA/D 的
+           前沿规模会忽大忽小，不能用它判断收敛——要判断收敛请用超体积或 IGD。
+        2. 切比雪夫函数里的理想点 z 每代都在下降，而 z 下降会让**已有解**的 g 值上升。
+           因此不要把 g 值当成"单调收敛曲线"记录下来。另外 ``ideal`` 是**所有求值过**的
+           点（含被拒绝的子代）上的最小值，通常严格优于 ``F.min(axis=0)``；
+           想报"种群达到的理想点"请自己用 ``F.min(axis=0)`` 算，不要直接用 ``ideal``。
+        3. 权重网格是**等距格点**，不是均匀分布在单纯形上（越靠边的权重越稀疏）。
+           目标个数 m >= 4 时格点密度会严重不均，需要换成两层的 Das-Dennis 构造
+           （``n_partitions`` 外层/内层不同），本实现没有做。
+        4. 这是"每个子问题保一个解"的分解式算法，种群规模由 ``n_partitions`` 决定而不是
+           由调用者直接指定——想要固定种群规模请用 :func:`nsga2`。
+        5. 变异强度默认是区间宽度的 0.1 倍，在**窄区间**或高精度问题上会过大；
+           高精度需求请显式传小的 ``mutation_sigma``。
+
+    参考:
+        Zhang & Li 2007, "MOEA/D: A Multiobjective Evolutionary Algorithm Based on
+        Decomposition", IEEE TEC 11(6)；Li & Zhang 2009（切比雪夫分解的进一步分析）。
+    """
+    lo, hi = _parse_box(x_bounds)
+    if isinstance(n_partitions, bool) or not isinstance(n_partitions, (int, np.integer)):
+        raise ValueError(f"n_partitions 必须是整数，得到 {n_partitions!r}")
+    if int(n_partitions) < 1:
+        raise ValueError(f"n_partitions 必须 >= 1，得到 {n_partitions}")
+    if isinstance(n_iter, bool) or not isinstance(n_iter, (int, np.integer)):
+        raise ValueError(f"n_iter 必须是整数，得到 {n_iter!r}")
+    if int(n_iter) < 0:
+        raise ValueError(f"n_iter 必须 >= 0，得到 {n_iter}")
+    if not isinstance(minimize, (bool, np.bool_)):
+        raise ValueError(f"minimize 必须是布尔值，得到 {minimize!r}")
+    if neighborhood_size is not None:
+        if isinstance(neighborhood_size, bool) or not isinstance(
+            neighborhood_size, (int, np.integer)
+        ):
+            raise ValueError(f"neighborhood_size 必须是整数或 None，得到 {neighborhood_size!r}")
+        if int(neighborhood_size) < 1:
+            raise ValueError(f"neighborhood_size 必须 >= 1，得到 {neighborhood_size}")
+    if mutation_sigma is not None:
+        sigma_frac = float(mutation_sigma)
+        if not np.isfinite(sigma_frac) or sigma_frac <= 0.0:
+            raise ValueError(f"mutation_sigma 必须是正有限数，得到 {mutation_sigma!r}")
+    else:
+        sigma_frac = 0.1
+
+    gen = make_rng(seed)
+    d = int(lo.size)
+    span = hi - lo
+    sign = 1.0 if bool(minimize) else -1.0
+    n_parts = int(n_partitions)
+    n_it = int(n_iter)
+
+    m = int(_eval_vec(objective_fn, lo + gen.random(d) * span).size)
+    weights = _simplex_grid(m, n_parts + 1)
+    n_sub = int(weights.shape[0])
+    if neighborhood_size is None:
+        t_size = max(2, min(n_sub, int(np.ceil(0.1 * n_sub))))
+    else:
+        t_size = min(int(neighborhood_size), n_sub)
+
+    # 权重空间的邻域：L2 距离最近的 T 个权重（含自身）
+    w_diff = weights[:, None, :] - weights[None, :, :]
+    w_dist = np.sqrt(np.einsum("ijk,ijk->ij", w_diff, w_diff))
+    neighbors = np.argsort(w_dist, axis=1, kind="stable")[:, :t_size]
+
+    X = lo + gen.random((n_sub, d)) * span
+    F = _eval_pop(objective_fn, X)
+    if F.shape[1] != m:
+        raise ValueError(f"objective_fn 返回的目标个数不固定：{m} 与 {F.shape[1]}")
+    G = sign * F
+    ideal = G.min(axis=0).copy()
+    sigma = sigma_frac * span
+
+    def _tchebycheff(g_vec: np.ndarray, w: np.ndarray) -> float:
+        return float(np.max(w * (g_vec - ideal)))
+
+    history: List[int] = [len(fast_non_dominated_sort(G)["fronts"][0])]
+    for _ in range(n_it):
+        for raw_i in gen.permutation(n_sub):
+            i = int(raw_i)
+            neigh = neighbors[i]
+            pick = gen.choice(neigh, size=3, replace=True)
+            child = X[int(pick[0])] + 0.5 * (X[int(pick[1])] - X[int(pick[2])])
+            mask = gen.random(d) < (1.0 / float(d))
+            child = child + mask * gen.standard_normal(d) * sigma
+            child = np.clip(child, lo, hi)
+            f_child = _eval_vec(objective_fn, child)
+            g_child = sign * f_child
+            ideal = np.minimum(ideal, g_child)
+            for raw_j in neigh:
+                j = int(raw_j)
+                if _tchebycheff(g_child, weights[j]) <= _tchebycheff(G[j], weights[j]):
+                    X[j] = child
+                    F[j] = f_child
+                    G[j] = g_child
+        history.append(len(fast_non_dominated_sort(G)["fronts"][0]))
+
+    return {
+        "X": X,
+        "F": F,
+        "G": G,
+        "weights": weights,
+        "ideal": ideal,
+        "front": [int(i) for i in fast_non_dominated_sort(G)["fronts"][0]],
+        "history": history,
+        "n_weights": n_sub,
+        "neighborhood_size": int(t_size),
+    }
+
+
+# --------------------------------------------------------------------------- #
 # 前沿提取 / 超体积 / 理想点距离
 # --------------------------------------------------------------------------- #
 def pareto_front(F: MatrixLike) -> dict:
@@ -710,8 +905,10 @@ def pareto_front(F: MatrixLike) -> dict:
         时间 O(n^2 * m) / 空间 O(n^2)。
 
     陷阱:
-        返回的下标是**原始矩阵中的位置**，不是排序后的位置；如果你先把 F 排序再调用，
-        拿到的下标必须在原数组上重新映射，否则会取错解。
+        1. 返回的下标是**原始矩阵中的位置**，不是排序后的位置；如果你先把 F 排序再调用，
+           拿到的下标必须在原数组上重新映射，否则会取错解。
+        2. **不做去重**：目标值完全相同的重复解会全部出现在 ``index`` 里（互相不支配）。
+           下游若要做多样性/超体积统计，先自己 ``np.unique`` 或按目标值去重。
 
     参考:
         Deb et al. 2002。
@@ -846,6 +1043,253 @@ def ideal_point_distance(F: MatrixLike, weights: Optional[ArrayLike] = None) -> 
 
 
 # --------------------------------------------------------------------------- #
+# 前沿质量评价
+# --------------------------------------------------------------------------- #
+def igd_metric(F: MatrixLike, reference_front: MatrixLike) -> dict:
+    """IGD（Inverted Generational Distance）：**参考前沿**上的每个点到近似集的最小距离的平均。
+
+    参数:
+        F: 待评价的近似前沿目标矩阵，形状 (n_approx, m)，全部按最小化理解。
+        reference_front: 参考前沿（真实前沿的采样或理论前沿的离散点），形状 (n_ref, m)，
+            目标个数 m 必须与 F 一致。
+
+    返回:
+        dict，键为：
+        ``igd``           float，``(1 / n_ref) * sum_j min_i ||R_j - F_i||_2``，越小越好，
+                          0 表示参考前沿上的每个点都被近似集"贴上"了；
+        ``nearest``       形状 (n_ref,) 的数组，即被平均的那组数，按参考点的顺序给出，
+                          用来定位"参考前沿的哪一段没被覆盖"；
+        ``mean_nearest``  等价于 ``igd``（单独给出便于阅读）；
+        ``worst_nearest`` 最大的那个最近距离，即最差的一段覆盖；
+        ``n_reference``   参考点个数；
+        ``n_approx``      近似集大小。
+
+    算法:
+        1. 广播计算所有 (i, j) 组合的欧氏距离矩阵，形状 (n_approx, n_ref)；
+        2. 对每个参考点 j 取 ``min_i`` 得到 ``nearest[j]``；
+        3. ``igd = mean(nearest)``。
+
+    复杂度:
+        时间 O(n_approx * n_ref * m) / 空间 O(n_approx * n_ref)（距离矩阵是内存瓶颈）。
+
+    陷阱:
+        1. 方向不要搞反。**对参考集逐点取最近**是 IGD（衡量"覆盖度"）；对近似集逐点取最近
+           再平均是 GD（衡量"贴近度"）。只报告 GD 会漏掉"前沿只覆盖了一小段但每点都很准"
+           这种最典型的失败模式，而只报告 IGD 会漏掉"覆盖很全但有一堆远离前沿的杂点"。
+           两者配合看才有意义。
+        2. IGD 的数值强烈依赖**参考前沿的采样密度和分布**。拿 100 个点采出来的参考前沿和
+           拿 1000 个点采出来的结果不可比；不同论文的 IGD 数字不比较就是这个原因。
+        3. 这里没做目标量纲归一化。量纲大（例如某个目标是成本、量级 1e6）的目标会直接
+           主导平均距离，评价前应先把 F 与 reference_front 放到同一尺度上（例如一起做
+           min-max 归一化）。
+        4. 参考前沿必须与近似集**同维**；F 为空、维数不一致都会抛 ``ValueError``。
+
+    参考:
+        Van Veldhuizen & Lamont 1998（Generational Distance / IGD）；Zitzler et al. 2003。
+    """
+    A = as_matrix(F, "F")
+    R = as_matrix(reference_front, "reference_front")
+    if A.shape[1] != R.shape[1]:
+        raise ValueError(
+            f"F 与 reference_front 的目标个数必须一致，得到 {A.shape[1]} 与 {R.shape[1]}"
+        )
+    diff = A[:, None, :] - R[None, :, :]
+    dist = np.sqrt(np.einsum("ijk,ijk->ij", diff, diff))
+    nearest = dist.min(axis=0)
+    return {
+        "igd": float(nearest.mean()),
+        "nearest": nearest,
+        "mean_nearest": float(nearest.mean()),
+        "worst_nearest": float(nearest.max()),
+        "n_reference": int(R.shape[0]),
+        "n_approx": int(A.shape[0]),
+    }
+
+
+def spacing_metric(F: MatrixLike, metric: str = "l1") -> dict:
+    """Spacing（Schott 间距）：前沿上每个点到**其余点**最近距离的标准差，衡量分布均匀性。
+
+    参数:
+        F: 目标矩阵，形状 (n, m)，应当是**同一条前沿**上的解（全部最小化）。
+        metric: ``"l1"``（默认，Schott 原文口径，曼哈顿距离）或 ``"l2"``（欧氏距离）。
+
+    返回:
+        dict，键为：
+        ``spacing``       float，``sqrt( sum_i (d_bar - d_i)^2 / (n - 1) )``，其中
+                          ``d_i`` 是第 i 个点到其余点的最近距离、``d_bar`` 是它们的均值。
+                          **完全均匀时恰为 0**，越大越不均匀；``n == 1`` 时按约定取 0.0
+                          （只有一个点时"均匀性"无定义，为 0 是为了让它在聚合指标里不起作用）；
+        ``nearest``       形状 (n,) 的数组，即 ``d_i``；``n == 1`` 时为 ``[0.0]``；
+        ``mean_nearest``  ``d_bar``；
+        ``n``             解的个数；
+        ``metric``        实际使用的距离口径。
+
+    算法:
+        1. 广播计算两两距离矩阵，把对角线置为 ``inf``；
+        2. 逐行取最小值得到 ``d_i``；
+        3. 返回 ``d_i`` 的样本标准差（分母 n - 1，与 Schott 原文一致）。
+
+    复杂度:
+        时间 O(n^2 * m) / 空间 O(n^2)（两两距离矩阵）。
+
+    陷阱:
+        1. 分母是 **n - 1**（样本标准差），不是 n。论文与开源实现两种口径都存在，
+           跨实现比较数值前必须先确认分母——差一个因子 ``sqrt(n/(n-1))``。
+        2. Spacing 只度量**均匀性**，完全不度量**收敛性**：一条离真实前沿很远的、
+           但间距均匀的假前沿，Spacing 可以比真实前沿还小。必须与 IGD / 超体积联合使用。
+        3. 相邻很近的重复点会把 ``d_i`` 压到 ~0，且它邻居的 ``d_i`` 也被拉低，
+           于是"有一个几乎重复的点"就能显著抬高 Spacing。评价前先去重。
+        4. 只对**同一条前沿**调用。把整份种群丢进来会在不同层之间取最近邻，
+           得到的值没有意义（与 :func:`crowding_distance` 的要求一致）。
+
+    参考:
+        Schott 1995, "Fault Tolerant Design Using Single and Multicriteria Genetic
+        Algorithm Optimization"（Spacing 指标）。
+    """
+    M = as_matrix(F, "F")
+    n = M.shape[0]
+    key = str(metric).lower()
+    if key not in ("l1", "l2"):
+        raise ValueError(f"metric 只支持 'l1' 或 'l2'，得到 {metric!r}")
+    if n == 1:
+        return {
+            "spacing": 0.0,
+            "nearest": np.zeros(1, dtype=float),
+            "mean_nearest": 0.0,
+            "n": 1,
+            "metric": key,
+        }
+    diff = M[:, None, :] - M[None, :, :]
+    if key == "l1":
+        d = np.abs(diff).sum(axis=2)
+    else:
+        d = np.sqrt(np.einsum("ijk,ijk->ij", diff, diff))
+    np.fill_diagonal(d, np.inf)
+    nearest = d.min(axis=1)
+    d_bar = float(nearest.mean())
+    spacing = float(np.sqrt(float(((d_bar - nearest) ** 2).sum()) / float(n - 1)))
+    return {
+        "spacing": spacing,
+        "nearest": nearest,
+        "mean_nearest": d_bar,
+        "n": int(n),
+        "metric": key,
+    }
+
+
+def knee_points(F: MatrixLike, method: str = "angle") -> dict:
+    """二维前沿上的**拐点（knee）**：在"再牺牲一点某个目标就能大幅换到另一个目标"处。
+
+    参数:
+        F: 目标矩阵，形状 (n, 2)，应当是**同一条二维前沿**上的解（全部最小化）。
+        method: ``"angle"``（默认）用"折线转角最大"判定，``"distance"`` 用"到两端点连线的
+            垂直距离最大"判定。两种口径在典型的凸出前沿上结论一致，在长尾/多段前沿上会不同。
+
+    返回:
+        dict，键为：
+        ``index``      拐点在**原始矩阵中的下标**（int）；
+        ``order``      按第 1 个目标升序排序后的原始下标列表，长度 n；
+        ``scores``     形状 (n,) 的数组，**按原始下标回填**每个点的拐点评分（两个端点为 0.0；
+                       ``"angle"`` 口径是**转角**，单位弧度——最小化前沿上它恒为非负，
+                       越接近直线越小、拐点最大；``"distance"`` 口径是到两端点连线的
+                       垂直距离）；
+        ``score``      拐点的评分；
+        ``method``     实际使用的口径；
+        ``degenerate`` bool。前沿**退化成一条直线**（没有拐点）时为 True，此时 ``index``
+                       只是平分线上的第一个点，调用者应当忽略它；
+        ``monotone``   bool。按第 1 个目标升序后第 2 个目标是否单调不增（同一条最小化前沿
+                       应当满足）。为 False 说明输入并不是一条非支配前沿，结论不可信。
+
+    算法:
+        1. 用 ``lexsort`` 按 (f0, f1) 升序排序，得到折线 ``P_0 ... P_{n-1}``
+           （最小化口径下 f1 应当单调不增）；
+        2. ``"angle"``：对每个内点 i，令 ``a = P_{i-1} - P_i``、``b = P_{i+1} - P_i``，
+           转角 ``theta_i = pi - arccos(a·b / (|a||b|))``；``"distance"``：令
+           ``theta_i = |cross(P_{n-1} - P_0, P_i - P_0)| / ||P_{n-1} - P_0||``；
+        3. 取评分最大的内点作为拐点；两端点评分恒为 0；
+        4. 上述评分先写在"按 f0 升序"的排序口径下，返回前用 ``scores[order] = ...``
+           回填到**原始下标**口径，这样调用者可以直接把 ``scores`` 与 ``F`` 的行对齐。
+
+    复杂度:
+        时间 O(n log n) / 空间 O(n)。
+
+    陷阱:
+        1. 只支持 **m == 2**。三维以上"拐点"没有唯一定义（要靠参考点或流形方法，
+           例如 knee 的 ε-dominance 定义），本函数直接抛 ``ValueError`` 而不是给一个
+           看起来合理但无法解释的数。
+        2. 端点连线的口径对**长尾前沿**很敏感：只要有一端拉得很长，"到直线距离最大"
+           就会滑向尾部中段而不是真正的拐点。此时应改用 ``"angle"``，或者先把前沿
+           归一化到同一尺度。两种口径的评分**量纲不同**（弧度 vs 目标量纲），不要混用。
+        3. 拐点不是"最优解"，它只是"性价比最高的折中点"。如果建模题的决策者偏好未知，
+           正确的做法是把拐点和两端点一起报出来，而不是只报拐点。
+        4. 输入必须是**非支配前沿**且不含重复点：重复点会让转角退化成 0 或 NaN
+           （重复点之间的方向向量为零），并且会凭空造出一个"拐点"。评价前先去重。
+
+    参考:
+        Das 1999, "On characterizing the knee of the Pareto front"；
+        Branke et al. 2004（knee 区域的 ε-dominance 定义）。
+    """
+    M = as_matrix(F, "F")
+    if M.shape[1] != 2:
+        raise ValueError(f"knee_points 只支持二维目标，得到 {M.shape[1]} 个目标")
+    n = M.shape[0]
+    if n < 3:
+        raise ValueError(f"knee_points 至少需要 3 个点（两端点 + 至少一个内点），得到 {n}")
+    key = str(method).lower()
+    if key not in ("angle", "distance"):
+        raise ValueError(f"method 只支持 'angle' 或 'distance'，得到 {method!r}")
+
+    order = np.lexsort((M[:, 1], M[:, 0]))
+    P = M[order]
+    scores = np.zeros(n, dtype=float)
+    extent = float(max(P[:, 0].max() - P[:, 0].min(), P[:, 1].max() - P[:, 1].min()))
+    tol = 1e-9 * max(extent, 1.0)
+
+    monotone = bool(np.all(np.diff(P[:, 1]) <= tol))
+
+    if key == "angle":
+        a = P[:-2] - P[1:-1]
+        b = P[2:] - P[1:-1]
+        na = np.sqrt(np.einsum("ij,ij->i", a, a))
+        nb = np.sqrt(np.einsum("ij,ij->i", b, b))
+        dot = np.einsum("ij,ij->i", a, b)
+        denom = na * nb
+        cos = np.divide(dot, denom, out=np.ones_like(dot), where=denom > 0)
+        theta = np.pi - np.arccos(np.clip(cos, -1.0, 1.0))
+        theta = np.where(denom > 0, theta, 0.0)
+        scores[1:-1] = theta
+        # 共线前沿的真值是 0，但 arccos 在 cos ≈ ±1 附近的条件数很差（误差约 sqrt(eps)），
+        # 实测共线算例会给出 ~2e-8 弧度的残差，所以退化判据用 1e-6 弧度（约 6e-5 度）——
+        # 比任何有意义的转角小几个数量级，又能吸收这个数值残差。
+        degenerate = bool(scores.max() < 1e-6)
+    else:
+        base = P[-1] - P[0]
+        norm = float(np.sqrt(float(base @ base)))
+        if norm <= 0.0:
+            degenerate = True
+        else:
+            rel = P[1:-1] - P[0]
+            cross = np.abs(rel[:, 0] * base[1] - rel[:, 1] * base[0]) / norm
+            scores[1:-1] = cross
+            degenerate = bool(scores.max() <= tol)
+
+    best_sorted = int(np.argmax(scores))
+    idx = int(order[best_sorted])
+    # 评分回填到原始下标口径，保证 scores 与 F 的行一一对应（见"算法"第 4 步）。
+    scores_out = np.empty(n, dtype=float)
+    scores_out[order] = scores
+    return {
+        "index": idx,
+        "order": [int(i) for i in order],
+        "scores": scores_out,
+        "score": float(scores[best_sorted]),
+        "method": key,
+        "degenerate": degenerate,
+        "monotone": monotone,
+    }
+
+
+# --------------------------------------------------------------------------- #
 # 自测
 # --------------------------------------------------------------------------- #
 def _quadratic_objectives(x: np.ndarray) -> np.ndarray:
@@ -891,7 +1335,7 @@ def _self_test() -> dict:
         全部随机过程走固定 seed 的 ``_common.rng``，两次调用逐位一致。
 
     算法:
-        覆盖 9 个函数，并优先安排**闭式解 / 独立结论**校验：
+        覆盖 13 个函数，并优先安排**闭式解 / 独立结论**校验：
         1. 超体积手算：F = [[0,1],[1,0]]、reference = [2,2] 的面积恰为 3.0
            （两块矩形 1x1 与 1x2 无重叠部分），并被写进断言；
         2. 非支配排序：4 个手工点写死期望的前沿成员与 rank；
@@ -905,7 +1349,21 @@ def _self_test() -> dict:
         8. ZDT1（3 维决策变量）：最终前沿与 ``f2 = 1 - sqrt(f1)`` 的最大偏差 < 0.05，
            即 g 确实被压到了 1 附近；
         9. ideal_point_distance：对称解集 [[0,1],[1,0]] 的 closeness 闭式为 0.5，
-           正理想点上的解 closeness 为 1；pareto_front 的下标与手工排序结果一致。
+           正理想点上的解 closeness 为 1；pareto_front 的下标与手工排序结果一致；
+        10. crowding_distance 的退化列：某个目标取值域为 0 时，该目标不得把边界 ``inf``
+           送给按并列次序排出来的任意点（回归检测：修复前会多出两个 ``inf``）；
+        11. igd_metric：手算 1.5 与"与参考集相同则为 0"，另与一个独立的三重循环最近邻
+           实现逐点对拍（随机 9x3 对 5x3 算例，容差 1e-12），并检查"覆盖更密 IGD 更小"；
+        12. spacing_metric：均匀前沿恰为 0（L1/L2 两种口径），非均匀手算例恰为
+           ``sqrt(1/3)``，单点前沿按约定取 0，且更不均匀的前沿 Spacing 更大；
+        13. knee_points：直线前沿 x+y=1 上 [0.4,0.4] 的转角与到弦的垂直距离都是闭式值，
+           两种口径结论一致，打乱输入次序后下标要能映射回原始位置、``scores`` 也要按原始
+           下标回填，共线前沿必须报
+           ``degenerate``，被支配的输入必须被 ``monotone`` 标记识别出来；
+        14. moead：子问题个数 ``C(n_partitions + m - 1, m - 1)``、权重行和为 1、
+           ``history`` 长度为 ``n_iter + 1``、``F == objective_fn(X)`` 逐位一致、
+           ``minimize=False`` 与"目标取负 + minimize=True"逐位等价、第一前沿互不支配
+           且落在解析前沿上（实测偏差恰为 0.0，容差 1e-6）。
 
     复杂度:
         时间约 O(1)（固定小算例，总目标求值量在 1e5 量级以下）/ 空间 O(1)。
@@ -1108,4 +1566,275 @@ def _self_test() -> dict:
     result["zdt1_front_size"] = int(zdt_front.size)
     result["zdt1_nondominated"] = 1
     result["zdt1_history_len"] = len(zhist)
+
+    # ---------- 10. crowding_distance：退化目标不得把 inf 送给并列点 ----------
+    # 第 2 个目标恒为 0，是退化列。修好之后该列被整体跳过，只有第 1 个目标贡献距离：
+    # 全部 5 个点在 [0, 4] 上等距，内部点各得 (2 - 0)/4 = 0.5，两个真端点得 inf。
+    # 修复前该列会按 argsort 的并列次序把 inf 白送给下标 0 和 4，得到 4 个 inf。
+    cd_deg = crowding_distance(
+        np.array([[3.0, 0.0], [4.0, 0.0], [0.0, 0.0], [1.0, 0.0], [2.0, 0.0]])
+    )
+    deg_inf_idx = [int(i) for i in np.flatnonzero(np.isinf(cd_deg))]
+    if deg_inf_idx != [1, 2]:
+        raise AssertionError(
+            "退化目标不应把 inf 送给并列点：只有第 1 目标的两个真端点（下标 1、2）该为 inf，"
+            f"实测 inf 出现在 {deg_inf_idx}"
+        )
+    if (
+        abs(float(cd_deg[0]) - 0.5) > 1e-12
+        or abs(float(cd_deg[3]) - 0.5) > 1e-12
+        or abs(float(cd_deg[4]) - 0.5) > 1e-12
+    ):
+        raise AssertionError(f"非退化目标上的内部点拥挤距离应均为 0.5，得到 {cd_deg.tolist()}")
+    result["crowding_degenerate_inf_count"] = int(len(deg_inf_idx))
+    result["crowding_degenerate_mid"] = round(float(cd_deg[0]), 6)
+
+    # ---------- 11. igd_metric：手算 + 独立三重循环对拍 ----------
+    igd_good = np.array([[0.0, 0.0], [3.0, 0.0]])
+    igd_ref = np.array([[0.0, 0.0], [6.0, 0.0]])
+    ig = igd_metric(igd_good, igd_ref)
+    if abs(float(ig["igd"]) - 1.5) > 1e-12:
+        raise AssertionError(f"IGD 手算值应为 (0 + 3) / 2 = 1.5，得到 {ig['igd']}")
+    if abs(float(ig["worst_nearest"]) - 3.0) > 1e-12:
+        raise AssertionError(f"最差覆盖距离应为 3.0，得到 {ig['worst_nearest']}")
+    if int(ig["n_reference"]) != 2 or int(ig["n_approx"]) != 2:
+        raise AssertionError(f"IGD 返回的计数不对：{ig['n_reference']} / {ig['n_approx']}")
+    ig_zero = igd_metric(igd_ref, igd_ref)
+    if abs(float(ig_zero["igd"])) > 1e-12:
+        raise AssertionError(f"近似集与参考集相同时 IGD 必须为 0，得到 {ig_zero['igd']}")
+
+    # 独立参考实现：三重循环逐点做最近邻，再对参考点取平均
+    gen_igd = make_rng(31337)
+    igd_rand_a = gen_igd.random((9, 3)) * 4.0
+    igd_rand_r = gen_igd.random((5, 3)) * 4.0
+    ref_igd = 0.0
+    for j in range(igd_rand_r.shape[0]):
+        best = float("inf")
+        for i in range(igd_rand_a.shape[0]):
+            acc = 0.0
+            for k in range(3):
+                dk = float(igd_rand_r[j, k] - igd_rand_a[i, k])
+                acc += dk * dk
+            best = min(best, acc ** 0.5)
+        ref_igd += best
+    ref_igd /= float(igd_rand_r.shape[0])
+    got_igd = float(igd_metric(igd_rand_a, igd_rand_r)["igd"])
+    if abs(got_igd - ref_igd) > 1e-12:
+        raise AssertionError(f"IGD 与独立三重循环实现不符：{got_igd} vs {ref_igd}")
+
+    # 语义检查：覆盖更密的近似集 IGD 必须更小（参考前沿是直线段 f0 + f1 = 1 上的 21 点）
+    line_grid = np.linspace(0.0, 1.0, 21)
+    igd_line_ref = np.column_stack([line_grid, 1.0 - line_grid])
+    igd_coarse = igd_metric(
+        np.column_stack([np.linspace(0.0, 1.0, 3), 1.0 - np.linspace(0.0, 1.0, 3)]), igd_line_ref
+    )["igd"]
+    igd_fine = igd_metric(
+        np.column_stack([np.linspace(0.0, 1.0, 11), 1.0 - np.linspace(0.0, 1.0, 11)]), igd_line_ref
+    )["igd"]
+    if not float(igd_coarse) > float(igd_fine):
+        raise AssertionError(f"覆盖更密的前沿 IGD 应更小：粗略 {igd_coarse} vs 密集 {igd_fine}")
+    try:
+        igd_metric(np.zeros((3, 2)), np.zeros((3, 3)))
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("IGD 在近似集与参考集目标个数不一致时必须抛 ValueError")
+    result["igd_hand"] = round(float(ig["igd"]), 9)
+    result["igd_worst_nearest"] = round(float(ig["worst_nearest"]), 9)
+    result["igd_zero_when_exact"] = round(float(ig_zero["igd"]), 9)
+    result["igd_random_matches_bruteforce"] = round(got_igd, 6)
+    result["igd_denser_is_smaller"] = bool(float(igd_coarse) > float(igd_fine))
+
+    # ---------- 12. spacing_metric：均匀前沿恰为 0 + 手算 sqrt(1/3) ----------
+    sp_uniform_front = np.array([[float(i), 5.0 - float(i)] for i in range(6)])
+    sp_uniform = spacing_metric(sp_uniform_front)
+    if abs(float(sp_uniform["spacing"])) > 1e-12:
+        raise AssertionError(f"完全均匀的前沿 Spacing 必须为 0，得到 {sp_uniform['spacing']}")
+    sp_uniform_l2 = spacing_metric(sp_uniform_front, metric="l2")
+    if abs(float(sp_uniform_l2["spacing"])) > 1e-12:
+        raise AssertionError(f"L2 口径下均匀前沿 Spacing 也必须为 0，得到 {sp_uniform_l2['spacing']}")
+    sp_hand = spacing_metric(np.array([[0.0, 0.0], [1.0, 0.0], [3.0, 0.0]]))
+    sp_expected = float(np.sqrt(1.0 / 3.0))
+    if abs(float(sp_hand["spacing"]) - sp_expected) > 1e-12:
+        raise AssertionError(
+            f"Spacing 手算值应为 sqrt((2*(1/3)^2 + (2/3)^2) / 2) = sqrt(1/3) = {sp_expected}，得到 {sp_hand['spacing']}"
+        )
+    if abs(float(sp_hand["mean_nearest"]) - 4.0 / 3.0) > 1e-12:
+        raise AssertionError(f"平均最近邻距离应为 (1+1+2)/3 = 4/3，得到 {sp_hand['mean_nearest']}")
+    sp_single = spacing_metric(np.array([[7.0, 7.0]]))
+    if abs(float(sp_single["spacing"])) > 1e-12:
+        raise AssertionError(f"单点前沿的 Spacing 按约定取 0，得到 {sp_single['spacing']}")
+    # 语义检查：把一个点挪到更不均匀的位置，Spacing 必须变大
+    sp_skew = spacing_metric(np.array([[0.0, 0.0], [1.0, 0.0], [3.0, 0.0]]))
+    sp_even = spacing_metric(np.array([[0.0, 0.0], [2.0, 0.0], [4.0, 0.0]]))
+    if not float(sp_skew["spacing"]) > float(sp_even["spacing"]):
+        raise AssertionError(f"更不均匀的前沿 Spacing 必须更大：{sp_skew['spacing']} vs {sp_even['spacing']}")
+    try:
+        spacing_metric(sp_uniform_front, metric="l3")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("Spacing 对未知 metric 必须抛 ValueError")
+    result["spacing_uniform"] = round(float(sp_uniform["spacing"]), 9)
+    result["spacing_uniform_l2"] = round(float(sp_uniform_l2["spacing"]), 9)
+    result["spacing_hand"] = round(float(sp_hand["spacing"]), 9)
+    result["spacing_single"] = round(float(sp_single["spacing"]), 9)
+    result["spacing_skew_bigger"] = bool(float(sp_skew["spacing"]) > float(sp_even["spacing"]))
+
+    # ---------- 13. knee_points：手算拐点 + 两种口径一致 + 退化前沿 ----------
+    knee_hand = np.array([[0.0, 1.0], [0.4, 0.4], [1.0, 0.0]])
+    kn_angle = knee_points(knee_hand)
+    if int(kn_angle["index"]) != 1:
+        raise AssertionError(f"直线前沿 x+y=1 上 [0.4,0.4] 应为拐点，得到下标 {kn_angle['index']}")
+    if bool(kn_angle["degenerate"]):
+        raise AssertionError("非共线前沿不应被标成退化")
+    if not bool(kn_angle["monotone"]):
+        raise AssertionError("按 f0 升序后 f1 单调不增的前沿应被标成 monotone")
+    kn_dist = knee_points(knee_hand, method="distance")
+    if int(kn_dist["index"]) != 1:
+        raise AssertionError(f"距离口径下拐点也应是下标 1，得到 {kn_dist['index']}")
+    if abs(float(kn_dist["score"]) - 0.2 / float(np.sqrt(2.0))) > 1e-12:
+        raise AssertionError(
+            f"到直线 x+y=1 的垂直距离应为 0.2/sqrt(2)，得到 {kn_dist['score']}"
+        )
+    kn_shuffled = knee_points(np.array([[1.0, 0.0], [0.0, 1.0], [0.4, 0.4]]))
+    if int(kn_shuffled["index"]) != 2:
+        raise AssertionError(f"打乱输入次序后 index 必须映射回原始下标 2，得到 {kn_shuffled['index']}")
+    if kn_shuffled["order"] != [1, 2, 0]:
+        raise AssertionError(f"排序后的原始下标应恢复为 [1, 2, 0]，得到 {kn_shuffled['order']}")
+    # scores 必须按原始下标回填（不是排序口径）：打乱输入后最大值仍应落在下标 2
+    sc_shuffled = np.asarray(kn_shuffled["scores"], dtype=float)
+    if int(np.argmax(sc_shuffled)) != 2:
+        raise AssertionError(
+            f"scores 必须按原始下标回填（最大值在下标 2），得到 {sc_shuffled.tolist()}"
+        )
+    if abs(float(sc_shuffled[2]) - float(kn_shuffled["score"])) > 1e-12:
+        raise AssertionError(
+            f"scores[2] 应等于 score，得到 {sc_shuffled[2]} vs {kn_shuffled['score']}"
+        )
+    # 共线（且单调）前沿没有拐点：两种口径都必须报 degenerate
+    knee_flat = np.array([[0.0, 2.0], [1.0, 1.0], [2.0, 0.0]])
+    if not bool(knee_points(knee_flat)["degenerate"]):
+        raise AssertionError("共线前沿在 angle 口径下必须报 degenerate")
+    if not bool(knee_points(knee_flat, method="distance")["degenerate"]):
+        raise AssertionError("共线前沿在 distance 口径下必须报 degenerate")
+    # 非支配但非单调的输入要能识别出来（[[0,0],[1,1],[2,2]] 是被支配的一串点）
+    kn_bad = knee_points(np.array([[0.0, 0.0], [1.0, 1.0], [2.0, 2.0]]))
+    if bool(kn_bad["monotone"]):
+        raise AssertionError("f1 随 f0 上升的输入必须被标成非单调（它不是最小化前沿）")
+    # 拐点不必落在中间：4 点前沿上距离口径的拐点是下标 2
+    kn_four = knee_points(
+        np.array([[0.0, 1.0], [0.5, 0.75], [0.9, 0.5], [1.0, 0.0]]), method="distance"
+    )
+    if int(kn_four["index"]) != 2:
+        raise AssertionError(f"4 点前沿的拐点应为下标 2，得到 {kn_four['index']}")
+    if abs(float(kn_four["score"]) - 0.4 / float(np.sqrt(2.0))) > 1e-12:
+        raise AssertionError(f"拐点垂直距离应为 0.4/sqrt(2)，得到 {kn_four['score']}")
+    for bad_call in (
+        lambda: knee_points(np.zeros((4, 3))),
+        lambda: knee_points(np.zeros((2, 2))),
+        lambda: knee_points(knee_hand, method="curvature"),
+    ):
+        try:
+            bad_call()
+        except ValueError:
+            continue
+        raise AssertionError("knee_points 对非二维 / 点数不足 / 未知 method 必须抛 ValueError")
+    result["knee_index"] = int(kn_angle["index"])
+    result["knee_index_shuffled"] = int(kn_shuffled["index"])
+    result["knee_index_four_points"] = int(kn_four["index"])
+    result["knee_angle_score"] = round(float(kn_angle["score"]), 9)
+    result["knee_distance_score"] = round(float(kn_dist["score"]), 9)
+    result["knee_methods_agree"] = bool(int(kn_angle["index"]) == int(kn_dist["index"]))
+    result["knee_degenerate_flag"] = bool(
+        knee_points(knee_flat)["degenerate"] and knee_points(knee_flat, method="distance")["degenerate"]
+    )
+    result["knee_monotone_flag"] = bool(kn_angle["monotone"])
+    result["knee_nonmonotone_detected"] = bool(not kn_bad["monotone"])
+    result["knee_scores_aligned"] = bool(int(np.argmax(sc_shuffled)) == 2)
+
+    # ---------- 14. moead：权重网格 + 目标一致性 + maximize 等价 + 前沿质量 ----------
+    # 设计取舍（沿用第 9 组的教训）：这里只断言**精确的结构不变量**和**闭式前沿命中**，
+    # 黄金值只记整数/布尔量，不记 60 代进化出来的连续量。
+    moe = moead(_quadratic_objectives, quad_bounds, n_partitions=8, n_iter=60, seed=20240101)
+    if int(moe["n_weights"]) != 9:
+        raise AssertionError(f"m=2、n_partitions=8 时子问题个数应为 9，得到 {moe['n_weights']}")
+    if int(moe["neighborhood_size"]) != 2:
+        raise AssertionError(
+            f"邻域大小应为 max(2, ceil(0.1*9)) = 2，得到 {moe['neighborhood_size']}"
+        )
+    if len(moe["history"]) != 61:
+        raise AssertionError(f"history 长度应为 n_iter + 1 = 61，得到 {len(moe['history'])}")
+    if not all(1 <= int(h) <= 9 for h in moe["history"]):
+        raise AssertionError(f"history 取值应落在 [1, 9] 内：{moe['history']}")
+    w_sum_err = float(np.max(np.abs(moe["weights"].sum(axis=1) - 1.0)))
+    if w_sum_err > 1e-12:
+        raise AssertionError(f"权重网格每行之和必须为 1，最大偏差 {w_sum_err}")
+    if not bool(np.all(moe["ideal"] <= moe["F"].min(axis=0) + 1e-15)):
+        # ideal 是"所有求值过的点"上的最小值，因此必然逐分量不劣于最终种群的逐分量最小值
+        raise AssertionError(
+            f"ideal 应逐分量不劣于 F 的最小值：{moe['ideal'].tolist()} vs {moe['F'].min(axis=0).tolist()}"
+        )
+    # X 与 F 必须严格对应（内部一致性的精确不变量）
+    if not np.array_equal(_eval_pop(_quadratic_objectives, moe["X"]), moe["F"]):
+        raise AssertionError("MOEA/D 返回的 F 与 objective_fn(X) 不逐位一致")
+    if not np.array_equal(moe["G"], moe["F"]):
+        raise AssertionError("minimize=True 时内部最小化空间 G 应逐位等于 F")
+    # minimize=False 必须与"对目标取负后 minimize=True"完全等价（逐位相同）
+    moe_max = moead(
+        _quadratic_objectives, quad_bounds, n_partitions=8, n_iter=60, seed=20240101, minimize=False
+    )
+    moe_neg = moead(
+        lambda x: -_quadratic_objectives(x), quad_bounds, n_partitions=8, n_iter=60, seed=20240101
+    )
+    if not np.array_equal(moe_max["G"], moe_neg["G"]):
+        raise AssertionError("minimize=False 必须与目标取负后的 minimize=True 逐位一致")
+    # front 必须是（独立检查下的）互不支配集合，且落在解析前沿上
+    moe_front = np.asarray(moe["front"], dtype=int)
+    if moe_front.size == 0:
+        raise AssertionError("MOEA/D 返回了空的第一前沿")
+    moe_f = moe["F"][moe_front]
+    for a in range(moe_f.shape[0]):
+        weaker = np.all(moe_f <= moe_f[a], axis=1) & np.any(moe_f < moe_f[a], axis=1)
+        weaker[a] = False
+        if bool(np.any(weaker)):
+            raise AssertionError(f"MOEA/D 第一前沿内部存在支配关系：第 {a} 个点被支配")
+    moe_dev = _front_deviation(moe_f)
+    if moe_dev > 1e-6:
+        raise AssertionError(f"MOEA/D 前沿应落在二次算例的解析前沿上，最大偏差 {moe_dev}")
+    for bad_kwargs in (
+        {"n_partitions": 0},
+        {"n_iter": -1},
+        {"neighborhood_size": 0},
+        {"mutation_sigma": 0.0},
+        {"minimize": 1},
+    ):
+        call_kwargs = {"n_partitions": 8, "n_iter": 0, "seed": 1}
+        call_kwargs.update(bad_kwargs)
+        try:
+            moead(_quadratic_objectives, quad_bounds, **call_kwargs)
+        except ValueError:
+            continue
+        raise AssertionError(f"moead 对非法参数 {bad_kwargs} 必须抛 ValueError")
+    result["moead_n_weights"] = int(moe["n_weights"])
+    result["moead_neighborhood_size"] = int(moe["neighborhood_size"])
+    result["moead_history_len"] = len(moe["history"])
+    result["moead_weights_sum_one"] = bool(w_sum_err <= 1e-12)
+    result["moead_ideal_not_worse"] = True
+    result["moead_F_consistent"] = True
+    result["moead_maximize_matches_negation"] = bool(np.array_equal(moe_max["G"], moe_neg["G"]))
+    result["moead_front_nondominated"] = True
+    result["moead_front_on_analytic"] = True
+    result["moead_front_dev"] = round(float(moe_dev), 9)
+    # 搜索盒校验的回归检测：一维简写 (lo, hi) 必须与 [(lo, hi)] 走同一套有限性与
+    # hi > lo 校验（修复前这里会静默接受非法搜索盒，把全部个体钉在 lo 上）。
+    for bad_box in ((5.0, 3.0), (5.0, 5.0), (float("nan"), 5.0), (float("inf"), 5.0)):
+        try:
+            _parse_box(bad_box)
+        except ValueError:
+            continue
+        raise AssertionError(f"x_bounds={bad_box} 必须抛 ValueError（hi <= lo 或非有限）")
+    ok_lo, ok_hi = _parse_box((0.0, 1.0))
+    if ok_lo.tolist() != [0.0] or ok_hi.tolist() != [1.0]:
+        raise AssertionError(f"x_bounds=(0.0, 1.0) 必须解析成 1 维盒 [0, 1]，得到 {ok_lo} / {ok_hi}")
     return result

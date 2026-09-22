@@ -203,7 +203,9 @@ def main(argv: List[str]) -> int:
         for name in available:
             module = importlib.import_module("algorithms." + name)
             fresh[name] = module._self_test()
-        with open(GOLDEN_PATH, "w", encoding="utf-8") as fh:
+        # newline="\n"：Windows 上默认会把 "\n" 翻译成 "\r\n"，重建一次基线就会让
+        # 整个 JSON 变成 CRLF 并被 git 报 "CRLF will be replaced by LF"，diff 全红。
+        with open(GOLDEN_PATH, "w", encoding="utf-8", newline="\n") as fh:
             json.dump(fresh, fh, ensure_ascii=False, indent=2, sort_keys=True)
             fh.write("\n")
         print(f"已重写 {os.path.relpath(GOLDEN_PATH, os.path.dirname(HERE))}")

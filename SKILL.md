@@ -168,6 +168,7 @@ python scripts/check_paper.py paper.md --contest mcm       # 美赛
 | 需要想创新点、判断哪些参数能改、怎么证明创新有效 | `references/innovation-playbook.md` |
 | 需要查 GitHub 模型库、许可证和资源边界 | `references/github-resources.md` |
 | 需要优秀论文/官方来源链接，或想知道为什么仓库不放他人论文图 | `references/paper-examples.md` |
+| 用户想要"直接可抄"的提示词模板（开局→审题→选型→求解→检验→写作→提交） | `references/prompt-templates.md` |
 | 需要参考带注释的 Python 基线实现 | `examples/modeling_patterns.py` |
 | 需要可直接运行的算法实现（仅 numpy + 标准库） | `examples/algorithms/`、`examples/run_algorithms.py`、`examples/algorithms_golden.json` |
 | 要写论文、搭章节骨架、安排篇幅 | `references/paper-structure.md` |

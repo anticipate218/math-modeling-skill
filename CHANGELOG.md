@@ -1,3 +1,40 @@
+## [1.11.1] - 2026-10-10
+
+本版是 v1.11.0 的**补丁**：以"新用户"身份从 Release ZIP 完整走了一遍
+「下载 → 安装 → 按流程做小题 → 生成论文 → 自检 → 真编译模板」，把实测撞到的
+2 处真实缺陷修掉。技能包本体（算法、references、模板）无任何改动。
+
+### 修复
+
+| 文件 | 问题 | 严重度 |
+|---|---|---|
+| `scripts/check_paper.py` | README「怎么用」与 `assets/paper-outline.md` 共 3 处文档写的是 `--init -o my_paper.md`，而 argparse 只注册了 `--out`——照着 README 抄命令的新用户**第一条命令就报错** `unrecognized arguments: -o` | 高（文档/易用） |
+| `scripts/check_paper.py` | 匿名检查把参考文献里的**出版社名**误判为身份信息：`[\u4e00-\u9fa5]{2,15}大学` 会命中「华中科技大学出版社」（邓聚龙《灰色系统基本方法》正是建模论文高频引用），团队照实引教材会吃到一条"疑似身份信息"的 FAIL | 高（误报） |
+
+- 修法：`--out` 增加 `-o` 短别名（`dest` 不变，向后兼容）；`大学/学院/职业技术学院`
+  三个模式加 `(?!出版社)` 负向预查——出版社名不再触发，「清华/华中科技」等真实
+  校名照常拦截。
+- 回归防护：`--self-test` 的「好稿」固件追加一条「[2] 邓聚龙. 灰色系统基本方法[M].
+  武汉: 华中科技大学出版社, 2005.」，断言含出版社引用的合规稿必须保持 FAIL=0。
+
+### 实测记录（本版修复的验证路径）
+
+以普通用户身份从 `releases/latest` 下载 v1.11.0 的 ZIP（SHA-256 与发布值一致），
+按 `INSTALL.md` 用 `--from-zip --target auto` 装进隔离技能根，随后：
+安装自校验、`validate_skill.py --strict` 0 错 0 警、三份自检脚本与
+`download_templates.py --list` 全部退出码 0；`run_algorithms.py` 在安装副本上
+17 模块 / 1361 键 / 0 失败；按 SKILL.md 流程跑了一道 5 方案 × 4 指标的选址评价
+小题（熵权 TOPSIS + 灰色关联交叉 + `topsis_rank_sensitivity` ±20% 权重扰动），
+小算例手算对拍逐位吻合；`check_paper.py --init` 骨架开箱 FAIL=0，填入真实内容后
+自检器正确抓出 AI 声明位置/措辞与附录源程序 3 处真实缺陷；轻量 cumcm 模板用
+MiKTeX 真编译通过（xelatex ×3 + bibtex，PDF 生成）。
+
+### 已知边界
+
+- 本仓库网络环境下 `git clone` 走 HTTPS 两次都在打包阶段断流（`early EOF`），
+  属于本机到 GitHub 的链路问题而非仓库问题；INSTALL.md 预写的「原样重跑 →
+  改用 `--from-zip`」出路有效，Release ZIP 直链与 `--download` 重试逻辑工作正常。
+
 ## [1.11.0] - 2026-09-22
 
 本版是**算法库的一次扩容 + 一次体检**：`examples/algorithms/` 的 17 个模块从

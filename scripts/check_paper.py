@@ -86,11 +86,13 @@ SECTION_RULES: dict[str, dict[str, list[str]]] = {
     },
 }
 
-# 匿名合规：出现这些词就要人工确认（国赛/研赛严禁身份信息）
+# 匿名合规：出现这些词就要人工确认（国赛/研赛严禁身份信息）。
+# 注意"(?!出版社)"：参考文献里几乎必然出现"华中科技大学出版社"这类书社名，
+# 那是图书出版社、不是身份信息，不能因为把教材引了一版就判 FAIL。
 IDENTITY_PATTERNS = [
-    r"[\u4e00-\u9fa5]{2,15}大学",
-    r"[\u4e00-\u9fa5]{2,15}学院",
-    r"[\u4e00-\u9fa5]{2,10}职业技术学院",
+    r"[\u4e00-\u9fa5]{2,15}大学(?!出版社)",
+    r"[\u4e00-\u9fa5]{2,15}学院(?!出版社)",
+    r"[\u4e00-\u9fa5]{2,10}职业技术学院(?!出版社)",
     r"(指导)?教师[：:]\s*\S",
     r"队\s*号[：:]\s*\S",
     r"参赛队[号]?[：:]\s*\S",
@@ -567,6 +569,7 @@ SELF_TEST_CASES: list[tuple[str, str, str]] = [
 本参赛队在竞赛过程中未使用任何AI工具。
 ## 参考文献
 [1] 姜启源. 数学模型.
+[2] 邓聚龙. 灰色系统基本方法[M]. 武汉: 华中科技大学出版社, 2005.
 ## 附录
 支撑材料文件列表。以下为源程序：
 ```
@@ -836,7 +839,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--json", action="store_true", help="以 JSON 输出结果")
     parser.add_argument("--init", action="store_true",
                         help="生成该竞赛的论文骨架（用 --out 指定路径，默认 paper-<contest>.md）")
-    parser.add_argument("--out", default=None, help="--init 的输出路径；用 - 打印到标准输出")
+    parser.add_argument("--out", "-o", dest="out", default=None,
+                        help="--init 的输出路径（也可写 -o 路径）；用 - 打印到标准输出")
     parser.add_argument("--self-test", action="store_true", help="运行内置固件自检并退出")
     args = parser.parse_args(argv)
 
